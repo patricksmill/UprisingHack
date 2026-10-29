@@ -825,6 +825,19 @@ impl App {
                 _ => {}
             }
         }
+        // ZL's key uses a power in a battle the mouse aims in, and stays ZL
+        // everywhere else. held, it uses no more than the one
+        if pressed && code == self.settings.keys.zl && self.aim_captured {
+            if let Some(game) = &mut self.game {
+                let frame = game.system.frames;
+                if let Some(aim_mouse) = game.system.aim_mouse.as_mut().filter(|aim_mouse| aim_mouse.in_battle(frame)) {
+                    if !event.repeat {
+                        aim_mouse.use_power(frame);
+                    }
+                    return;
+                }
+            }
+        }
         let to_game = self.game.is_some()
             && !self.menus.menu_open
             && !self.menus.settings_open

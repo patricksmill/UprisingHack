@@ -15,7 +15,7 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 /// game stays recompiled. one place a function does, the pause menu's top
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another.
-pub const PLACES: [u32; 13] = [
+pub const PLACES: [u32; 14] = [
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
     SPRITE_FLUSH,
@@ -23,6 +23,7 @@ pub const PLACES: [u32; 13] = [
     PASS_BEGIN,
     RETICLE_DRAW,
     TOP_UI_AFTER_HUD,
+    UI_COMMANDS,
     PAUSE_MENU[0].site,
     PAUSE_MENU[1].site,
     PAUSE_MENU[1].place,
@@ -244,6 +245,33 @@ struct Saved {
 /// reticle takes in, so only this copy is made smaller.
 const RETICLE_DRAW: u32 = 0x007C4DC0;
 
+/// the battle UI's handling of what its touches asked for, the UI object
+/// in r0 and r1 0 while a battle is played. its power panel's command word
+/// asks it to use a power: bit 0, the power's place in the panel's list
+/// from bit 17, its id from bit 23, the box touched from bit 15. it uses
+/// it through 0x003636F8, which checks the player can and has uses left,
+/// and clears the word after.
+const UI_COMMANDS: u32 = 0x00A30D00;
+
+/// the power panel in the 2D context at the UI object's +0x140, the strip
+/// of three power boxes in the bottom screen's lower left corner, the
+/// current power in the middle one. what 0x00A129F0, its touch handling,
+/// and 0x00A17A10, its update, look at before they ask for a power.
+const POWER_PANEL: u32 = 0xB64;
+/// bit 0x800000 of its first word: no power can be used now.
+const POWERS_LOCKED: u32 = 0x0080_0000;
+/// bits of its second word that keep a touch from asking for one.
+const POWER_PANEL_BUSY: u32 = 0x2800_0000;
+const POWER_COMMAND: u32 = 8;
+/// the current power's place in the list, the list's length, the list,
+/// each a byte naming one of the panel's entries of 8 bytes: uses left at
+/// +0x11C, id at +0x11E, 1 at +0x121 while it can't be used.
+const CURRENT_POWER: u32 = 0x118;
+const POWER_COUNT: u32 = 0x184;
+const POWER_LIST: u32 = 0x188;
+/// what of the command word 0x00A17A10 keeps when it writes one.
+const POWER_COMMAND_KEPT: u32 = 0x007E_7FEE;
+
 pub struct AimMouse {
     /// reticle pixels moved since the game last took them.
     pub pending: [f32; 2],
@@ -278,6 +306,12 @@ pub struct AimMouse {
     /// and the last one Resume, Retreat or Remove Display was drawn by the
     /// top screen's edges in.
     edges_drawn: Option<u64>,
+    /// the frame the top screen's battle UI was last drawn in, which it is
+    /// in every frame of a battle and in no menu's.
+    battle_drawn: Option<u64>,
+    /// the frame the power key was pressed in, for the battle UI's next
+    /// update to use the current power, unless that is long after.
+    power_requested: Option<u64>,
     /// how many times wider than the console's 5:3 the top screen shows,
     /// 1 for its own shape: the view is that much wider and the top
     /// screen's 2D that much narrower, so it shows the right shape stretched.
@@ -308,6 +342,8 @@ impl Default for AimMouse {
             pause: [None; 15],
             pause_drawn: None,
             edges_drawn: None,
+            battle_drawn: None,
+            power_requested: None,
             widen: 1.0,
             screens: Vec::new(),
             lenses: Vec::new(),
@@ -335,6 +371,19 @@ impl AimMouse {
     /// game draws in every other one, and in a slow one a little less.
     pub fn pause_menu_shown(&self, frame: u64) -> bool {
         self.pause_drawn.is_some_and(|drawn| frame <= drawn + 3)
+    }
+
+    /// whether a battle is being played, not paused, frame as for
+    /// pause_menu_shown.
+    pub fn in_battle(&self, frame: u64) -> bool {
+        self.battle_drawn.is_some_and(|drawn| frame <= drawn + 3) && !self.pause_menu_shown(frame)
+    }
+
+    /// uses the current power, as touching its box does, in the battle UI's
+    /// next update, frame as for pause_menu_shown. the game checks it can be
+    /// used, as for a touch.
+    pub fn use_power(&mut self, frame: u64) {
+        self.power_requested = Some(frame);
     }
 
     /// the bottom screen pixel a touch of the top screen's pixel x, y
@@ -397,6 +446,7 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         }
         RETICLE_DRAW => shrink_reticle(system),
         TOP_UI_AFTER_HUD => top_screen_extras(system),
+        UI_COMMANDS => power_command(system),
         _ if PAUSE_MENU.iter().any(|to_top| to_top.site == pc || to_top.place == pc) => {
             if let Some(index) = PAUSE_MENU.iter().position(|to_top| to_top.site == pc) {
                 let mut recorded = recorded_call(system, pc);
@@ -537,12 +587,42 @@ fn add_delta(system: &mut System) {
     system.memory.write_bytes(out, &delta);
 }
 
+/// asks the battle UI to use the current power, when the power key was
+/// pressed, with the word its update, 0x00A17A10, writes for a touch of the
+/// middle box, and only when a touch would ask for it.
+fn power_command(system: &mut System) {
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    let requested = aim_mouse.power_requested.take().is_some_and(|pressed| system.frames <= pressed + 3);
+    if !requested || system.cpu.regs[1] != 0 {
+        return;
+    }
+    let object = system.cpu.regs[0];
+    let panel = read_word(system, object + 0x140) + POWER_PANEL;
+    let (locked, busy) = (read_word(system, panel), read_word(system, panel + 4));
+    let (current, count) = (read_word(system, panel + CURRENT_POWER), read_word(system, panel + POWER_COUNT));
+    if locked & POWERS_LOCKED != 0 || busy & POWER_PANEL_BUSY != 0 || current >= count {
+        return;
+    }
+    let mut entry = [0u8];
+    system.memory.read_bytes(panel + POWER_LIST + current, &mut entry);
+    let mut power = [0u8; 6];
+    system.memory.read_bytes(panel + entry[0] as u32 * 8 + 0x11C, &mut power);
+    let (uses, id, unusable) = (power[0] as i8, u16::from_le_bytes([power[2], power[3]]), power[5]);
+    if uses <= 0 || unusable != 0 {
+        return;
+    }
+    let kept = read_word(system, panel + POWER_COMMAND) & POWER_COMMAND_KEPT;
+    let command = kept | (id as u32) << 23 | (current & 0x3F) << 17 | 1 << 15 | 1;
+    system.memory.write_bytes(panel + POWER_COMMAND, &command.to_le_bytes());
+}
+
 /// draws the portraits and then the narration's line on the top screen as
 /// well: the game's own drawing of them, each called here as if the pass
 /// called it. back here after each, everything is put back, and once both
 /// are drawn the pass goes on.
 fn top_screen_extras(system: &mut System) {
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    aim_mouse.battle_drawn = Some(system.frames);
     if let Some(back) = aim_mouse.saved.take() {
         system.cpu.regs = back.regs;
         system.cpu.cpsr = back.cpsr;
@@ -999,5 +1079,17 @@ mod tests {
         assert_eq!(aim_mouse.pause_menu_touch(11, 120.0, 83.0), None);
         aim_mouse.widen = 1.0;
         assert!(near(aim_mouse.pause_menu_touch(11, 120.0, 83.0), 120.0));
+    }
+
+    /// in a battle until its UI stops being drawn, and not while paused.
+    #[test]
+    fn in_battle_while_its_ui_is_drawn() {
+        let mut aim_mouse = AimMouse::default();
+        assert!(!aim_mouse.in_battle(10));
+        aim_mouse.battle_drawn = Some(10);
+        assert!(aim_mouse.in_battle(13));
+        assert!(!aim_mouse.in_battle(14));
+        aim_mouse.pause_drawn = Some(10);
+        assert!(!aim_mouse.in_battle(11));
     }
 }
