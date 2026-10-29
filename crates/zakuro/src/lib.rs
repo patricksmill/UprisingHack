@@ -690,7 +690,9 @@ impl App {
             // the HUD made for a small screen, drawn smaller on a big one,
             // ZAKURO_HUD_SCALE, 1 as the game draws it
             let hud_scale = std::env::var("ZAKURO_HUD_SCALE").ok().and_then(|value| value.parse().ok()).unwrap_or(0.7);
-            system.aim_mouse = Some(zakuro_core::aim_mouse::AimMouse { hud_scale, ..Default::default() });
+            // the narration drawn on the top screen as well, ZAKURO_NARRATION_TOP=0 leaves it below
+            let narration_on_top = std::env::var("ZAKURO_NARRATION_TOP").map_or(true, |value| value != "0");
+            system.aim_mouse = Some(zakuro_core::aim_mouse::AimMouse { hud_scale, narration_on_top, ..Default::default() });
             // at 60 FPS the game has half a 3DS's time for each frame, which
             // its busiest scenes need more than: ZAKURO_OVERCLOCK times the
             // instructions in the same time, 1 as the console

@@ -14,7 +14,7 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 /// interpreter for it to stop there: the aim delta's and the camera box's
 /// callers, the sprite flush and the reticle's placing. the rest of the
 /// game can stay recompiled.
-pub const FUNCTIONS: [u32; 4] = [0x006D269C, 0x006D2D8C, 0x0092F408, 0x007C4854];
+pub const FUNCTIONS: [u32; 5] = [0x006D269C, 0x006D2D8C, 0x0092F408, 0x007C4854, 0x0060D39C];
 
 /// where 0x006D269C goes on after 0x00B12218 summed the aim delta, which it
 /// left at sp+8 as reticle pixels a second, with the aim object in r4 and
@@ -33,6 +33,33 @@ const BEFORE_CAMERA_TURN: u32 = 0x006D2ED4;
 /// with x and y first, in pixels of the screen drawn to.
 const SPRITE_FLUSH: u32 = 0x0092F408;
 
+/// in the top screen's battle UI pass, 0x0060D39C, just after it drew the
+/// health bar: the narration is drawn there too.
+const TOP_UI_AFTER_HUD: u32 = 0x0060D60C;
+
+/// draws a message's line, shadow then text, from where the message says,
+/// x at +0x14, y at +0x18, its size at +0x1C, +0x20: r0 the message, r1 the
+/// 2D context.
+const DRAW_MESSAGE_LINE: u32 = 0x009E9A14;
+
+/// the top HUD's score, flushed from the 2D context the narration's message
+/// is part of.
+const SCORE_FLUSH_CALLER: u32 = 0x009F2F90;
+
+/// the narration's message in the 2D context, shown when its first byte
+/// and its line at +4 are set.
+const NARRATION: u32 = 0x3124;
+
+/// what the CPU held where the narration's line was drawn in the game's
+/// place, put back when the call returns there, and where the line was.
+struct Saved {
+    regs: [u32; 16],
+    cpsr: zakuro_cpu::psr::Psr,
+    vfp: [u32; 32],
+    message: u32,
+    position: [u8; 8],
+}
+
 /// where placing the reticle, 0x007C4854, has worked out the size to draw
 /// it at, in s17, its base size over its depth, and is about to keep it.
 const RETICLE_SIZE: u32 = 0x007C4BD0;
@@ -46,11 +73,17 @@ pub struct AimMouse {
     /// how big the top screen's HUD and reticle are drawn, 1 as the game
     /// draws them.
     pub hud_scale: f32,
+    /// whether the narration is drawn on the top screen too.
+    pub narration_on_top: bool,
+    /// the 2D context the top HUD was last drawn through.
+    context: Option<u32>,
+    /// the CPU while the narration's line is drawn on the top screen.
+    saved: Option<Saved>,
 }
 
 impl Default for AimMouse {
     fn default() -> AimMouse {
-        AimMouse { pending: [0.0; 2], captured: false, hud_scale: 1.0 }
+        AimMouse { pending: [0.0; 2], captured: false, hud_scale: 1.0, narration_on_top: false, context: None, saved: None }
     }
 }
 
@@ -68,8 +101,17 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
     match pc {
         AFTER_AIM_DELTA => add_delta(system),
         BEFORE_CAMERA_TURN => close_box(system),
-        SPRITE_FLUSH => shrink_hud(system),
+        SPRITE_FLUSH => {
+            if system.cpu.regs[14] == SCORE_FLUSH_CALLER {
+                let context = system.cpu.regs[0];
+                if let Some(aim_mouse) = &mut system.aim_mouse {
+                    aim_mouse.context = Some(context);
+                }
+            }
+            shrink_hud(system);
+        }
         RETICLE_SIZE => shrink_reticle(system),
+        TOP_UI_AFTER_HUD => narration_on_top(system),
         _ => {}
     }
 }
@@ -118,10 +160,57 @@ fn add_delta(system: &mut System) {
     system.memory.write_bytes(out, &delta);
 }
 
-/// whether a sprite batch flushed from caller draws the top screen's HUD:
-/// the battle HUD's code, the bottom screen's is in 0x00A0xxxx-0x00A1xxxx.
-fn top_hud(caller: u32) -> bool {
-    (0x009E_0000..0x009F_8000).contains(&caller) || (0x0072_0000..0x0073_0000).contains(&caller)
+/// draws the narration's line on the top screen as well, centred at its
+/// bottom: the game's own drawing of it, called here as if the pass called
+/// it, with the line moved for the call. back here, everything is put back
+/// and the pass goes on.
+fn narration_on_top(system: &mut System) {
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    if let Some(back) = aim_mouse.saved.take() {
+        system.cpu.regs = back.regs;
+        system.cpu.cpsr = back.cpsr;
+        system.cpu.vfp.regs = back.vfp;
+        system.memory.write_bytes(back.message + 0x14, &back.position);
+        return;
+    }
+    let (true, Some(context)) = (aim_mouse.narration_on_top, aim_mouse.context) else { return };
+    let message = context + NARRATION;
+    let mut head = [0u8; 0x24];
+    system.memory.read_bytes(message, &mut head);
+    let word = |at: usize| u32::from_le_bytes(head[at..at + 4].try_into().unwrap());
+    if head[0] == 0 || word(4) == 0 {
+        return;
+    }
+    let (width, height) = (f32::from_bits(word(0x1C)), f32::from_bits(word(0x20)));
+    if !(0.0..=400.0).contains(&width) || !(0.0..=240.0).contains(&height) {
+        return;
+    }
+    let position: [u8; 8] = head[0x14..0x1C].try_into().unwrap();
+    let mut moved = [0u8; 8];
+    moved[..4].copy_from_slice(&((400.0 - width) * 0.5).to_le_bytes());
+    moved[4..].copy_from_slice(&(240.0 - height - 8.0).to_le_bytes());
+    system.memory.write_bytes(message + 0x14, &moved);
+    let cpu = &mut system.cpu;
+    let saved = Saved { regs: cpu.regs, cpsr: cpu.cpsr, vfp: cpu.vfp.regs, message, position };
+    cpu.regs[0] = message;
+    cpu.regs[1] = context;
+    cpu.regs[14] = TOP_UI_AFTER_HUD;
+    cpu.regs[15] = DRAW_MESSAGE_LINE;
+    cpu.cpsr.thumb = false;
+    if let Some(aim_mouse) = &mut system.aim_mouse {
+        aim_mouse.saved = Some(saved);
+    }
+}
+
+/// the top screen's battle HUD, by where its sprite flushes return to:
+/// score, health bar, wings, status icon. found in the USA build's air and
+/// ground battles, other HUD stays the size the game draws it.
+const TOP_HUD: [u32; 7] = [0x009F2F90, 0x009F45FC, 0x009F4800, 0x009F4BD4, 0x009F52C8, 0x009F557C, 0x00725828];
+
+/// whether a sprite batch flushed from caller draws the top screen's HUD,
+/// which the narration's line is part of while it is drawn there.
+fn top_hud(system: &System, caller: u32) -> bool {
+    TOP_HUD.contains(&caller) || system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.saved.is_some())
 }
 
 /// draws a top screen HUD element smaller: the quads the flush is about to
@@ -129,7 +218,7 @@ fn top_hud(caller: u32) -> bool {
 /// own middle when they are by none, like a marker on an enemy.
 fn shrink_hud(system: &mut System) {
     let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.hud_scale);
-    if scale == 1.0 || !top_hud(system.cpu.regs[14]) {
+    if scale == 1.0 || !top_hud(system, system.cpu.regs[14]) {
         return;
     }
     let batch = system.cpu.regs[0];
@@ -155,8 +244,10 @@ fn shrink_hud(system: &mut System) {
             max[axis] = max[axis].max(value);
         }
     }
-    // the whole screen, a fade or a flash, stays as it is
-    if max[0] - min[0] > 300.0 || max[1] - min[1] > 200.0 {
+    // the whole screen, a fade or a flash, stays as it is, the narration's
+    // line, as wide as it may be, doesn't
+    let narration = system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.saved.is_some());
+    if !narration && (max[0] - min[0] > 300.0 || max[1] - min[1] > 200.0) {
         return;
     }
     let anchor = |min: f32, max: f32, size: f32| {
@@ -168,7 +259,9 @@ fn shrink_hud(system: &mut System) {
             (min + max) * 0.5
         }
     };
-    let anchor = [anchor(min[0], max[0], 400.0), anchor(min[1], max[1], 240.0)];
+    // the narration's line shrinks toward the middle of the bottom edge,
+    // where it is put
+    let anchor = if narration { [200.0, 240.0] } else { [anchor(min[0], max[0], 400.0), anchor(min[1], max[1], 240.0)] };
     for at in corners {
         for axis in 0..2 {
             let value = get(&quads, at + axis * 4);
