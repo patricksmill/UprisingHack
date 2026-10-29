@@ -10,11 +10,10 @@ use crate::System;
 /// Kid Icarus: Uprising, the USA cartridge.
 pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 
-/// the functions the places below are in, which have to run in the
-/// interpreter for it to stop there: the aim delta's and the camera box's
-/// callers, the sprite flush and the reticle's placing. the rest of the
-/// game can stay recompiled.
-pub const FUNCTIONS: [u32; 5] = [0x006D269C, 0x006D2D8C, 0x0092F408, 0x007C4854, 0x0060D39C];
+/// the places below, which the interpreter has to run for it to stop at
+/// them: every function whose code takes one in runs in it, the rest of the
+/// game stays recompiled.
+pub const PLACES: [u32; 5] = [AFTER_AIM_DELTA, BEFORE_CAMERA_TURN, SPRITE_FLUSH, RETICLE_SIZE, TOP_UI_AFTER_HUD];
 
 /// where 0x006D269C goes on after 0x00B12218 summed the aim delta, which it
 /// left at sp+8 as reticle pixels a second, with the aim object in r4 and

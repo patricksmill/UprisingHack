@@ -215,22 +215,22 @@ impl Library {
     /// game does, so that the interpreter runs them. how many there are.
     pub fn check(&mut self, memory: &mut Memory) -> usize {
         let stale = self.code.check(0, 0, |address, bytes| memory.read_bytes(address, bytes));
-        for &start in &self.interpreted {
-            self.code.interpret(0, start);
+        for &address in &self.interpreted {
+            self.code.interpret_at(0, address);
         }
         self.found = Library::nothing_found();
         stale
     }
 
-    /// has the interpreter run the executable's function that starts at
-    /// start, for a host that has to stop inside it. whether there is one.
-    pub fn interpret(&mut self, start: u32) -> bool {
-        if !self.code.interpret(0, start) {
-            return false;
+    /// has the interpreter run every function of the executable whose code
+    /// takes in address, for a host that has to stop there. how many.
+    pub fn interpret_at(&mut self, address: u32) -> usize {
+        let marked = self.code.interpret_at(0, address);
+        if marked > 0 {
+            self.interpreted.push(address);
+            self.found = Library::nothing_found();
         }
-        self.interpreted.push(start);
-        self.found = Library::nothing_found();
-        true
+        marked
     }
 
     /// tells the code of the module called name where the title loaded it,

@@ -682,7 +682,7 @@ impl App {
         // recompiled code doesn't: the functions they are in are left to it
         if system.title.as_ref().is_some_and(|title| title.program_id() == zakuro_core::aim_mouse::PROGRAM_ID) {
             if let Some(library) = &mut system.recompiled {
-                if !zakuro_core::aim_mouse::FUNCTIONS.iter().all(|&start| library.interpret(start)) {
+                if !zakuro_core::aim_mouse::PLACES.iter().all(|&address| library.interpret_at(address) > 0) {
                     log::warn!("the recompiled code lacks a function mouse aiming stops in, interpreting all of it");
                     system.recompiled = None;
                 }
