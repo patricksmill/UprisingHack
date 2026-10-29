@@ -50,14 +50,34 @@ const SCORE_FLUSH_CALLER: u32 = 0x009F2F90;
 /// and its line at +4 are set.
 const NARRATION: u32 = 0x3124;
 
-/// what the CPU held where the narration's line was drawn in the game's
-/// place, put back when the call returns there, and where the line was.
+/// draws the speakers' portraits, up to four 256-pixel squares placed for
+/// the bottom screen: r0 the portraits, r1 the 2D context.
+const DRAW_PORTRAITS: u32 = 0x009E2BB4;
+
+/// where in the 2D context the bottom screen's portraits are kept, a pointer.
+const PORTRAITS: u32 = 0xC3C;
+
+/// how far the bottom screen's UI has faded out, 0 when fully shown: the
+/// bottom pass hands it on (0x0060DA48), and the portraits are drawn at one
+/// less it, and not at all once it is 1 (0x00A182C4).
+const BOTTOM_FADE: u32 = 0x2454;
+
+/// what the game's code is drawing on the top screen for us.
+#[derive(Clone, Copy, PartialEq)]
+enum Drawing {
+    Portraits,
+    Narration,
+}
+
+/// what the CPU held where the call was made in the game's place, put back
+/// when the call returns there, and the narration's position while it is
+/// moved.
 struct Saved {
     regs: [u32; 16],
     cpsr: zakuro_cpu::psr::Psr,
     vfp: [u32; 32],
-    message: u32,
-    position: [u8; 8],
+    drawing: Drawing,
+    moved: Option<(u32, [u8; 8])>,
 }
 
 /// where placing the reticle, 0x007C4854, has worked out the size to draw
@@ -75,23 +95,27 @@ pub struct AimMouse {
     pub hud_scale: f32,
     /// whether the narration is drawn on the top screen too.
     pub narration_on_top: bool,
+    /// how big the portraits are drawn on the top screen, 0 for not at all.
+    pub portrait_scale: f32,
     /// the 2D context the top HUD was last drawn through.
     context: Option<u32>,
-    /// the CPU while the narration's line is drawn on the top screen.
+    /// the CPU while the game draws the portraits or the narration on the
+    /// top screen.
     saved: Option<Saved>,
 }
 
 impl Default for AimMouse {
     fn default() -> AimMouse {
-        AimMouse { pending: [0.0; 2], captured: false, hud_scale: 1.0, narration_on_top: false, context: None, saved: None }
+        AimMouse { pending: [0.0; 2], captured: false, hud_scale: 1.0, narration_on_top: false, portrait_scale: 0.0, context: None, saved: None }
     }
 }
 
 impl AimMouse {
-    /// for the game, drawing the HUD at hud_scale and the narration on the
-    /// top screen too when narration_on_top.
-    pub fn new(hud_scale: f32, narration_on_top: bool) -> AimMouse {
-        AimMouse { hud_scale, narration_on_top, ..AimMouse::default() }
+    /// for the game, drawing the HUD at hud_scale, the narration on the top
+    /// screen too when narration_on_top, and the portraits there at
+    /// portrait_scale, 0 for not.
+    pub fn new(hud_scale: f32, narration_on_top: bool, portrait_scale: f32) -> AimMouse {
+        AimMouse { hud_scale, narration_on_top, portrait_scale, ..AimMouse::default() }
     }
 
     pub fn add(&mut self, dx: f32, dy: f32) {
@@ -117,7 +141,7 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
             shrink_hud(system);
         }
         RETICLE_SIZE => shrink_reticle(system),
-        TOP_UI_AFTER_HUD => narration_on_top(system),
+        TOP_UI_AFTER_HUD => top_screen_extras(system),
         _ => {}
     }
 }
@@ -166,20 +190,75 @@ fn add_delta(system: &mut System) {
     system.memory.write_bytes(out, &delta);
 }
 
-/// draws the narration's line on the top screen as well, centred at its
-/// bottom: the game's own drawing of it, called here as if the pass called
-/// it, with the line moved for the call. back here, everything is put back
-/// and the pass goes on.
-fn narration_on_top(system: &mut System) {
+/// draws the portraits and then the narration's line on the top screen as
+/// well: the game's own drawing of them, each called here as if the pass
+/// called it. back here after each, everything is put back, and once both
+/// are drawn the pass goes on.
+fn top_screen_extras(system: &mut System) {
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
     if let Some(back) = aim_mouse.saved.take() {
         system.cpu.regs = back.regs;
         system.cpu.cpsr = back.cpsr;
         system.cpu.vfp.regs = back.vfp;
-        system.memory.write_bytes(back.message + 0x14, &back.position);
+        if let Some((message, position)) = back.moved {
+            system.memory.write_bytes(message + 0x14, &position);
+        }
+        if back.drawing == Drawing::Portraits {
+            start_narration(system);
+        }
         return;
     }
-    let (true, Some(context)) = (aim_mouse.narration_on_top, aim_mouse.context) else { return };
+    if !start_portraits(system) {
+        start_narration(system);
+    }
+}
+
+/// has the game's code run function as if called from here with r0 and r1,
+/// coming back here, the CPU kept to be put back then.
+fn call_here(system: &mut System, function: u32, r0: u32, r1: u32, drawing: Drawing, moved: Option<(u32, [u8; 8])>) {
+    let cpu = &mut system.cpu;
+    let saved = Saved { regs: cpu.regs, cpsr: cpu.cpsr, vfp: cpu.vfp.regs, drawing, moved };
+    cpu.regs[0] = r0;
+    cpu.regs[1] = r1;
+    cpu.regs[14] = TOP_UI_AFTER_HUD;
+    cpu.regs[15] = function;
+    cpu.cpsr.thumb = false;
+    if let Some(aim_mouse) = &mut system.aim_mouse {
+        aim_mouse.saved = Some(saved);
+    }
+}
+
+/// the 2D context the top HUD was drawn through, when there is one.
+fn context(system: &System) -> Option<u32> {
+    system.aim_mouse.as_ref().and_then(|aim_mouse| aim_mouse.context)
+}
+
+/// starts drawing the portraits on the top screen, whether it did.
+fn start_portraits(system: &mut System) -> bool {
+    let scale = system.aim_mouse.as_ref().map_or(0.0, |aim_mouse| aim_mouse.portrait_scale);
+    let Some(context) = context(system).filter(|_| scale > 0.0) else { return false };
+    let mut pointer = [0u8; 4];
+    system.memory.read_bytes(context + PORTRAITS, &mut pointer);
+    let portraits = u32::from_le_bytes(pointer);
+    if portraits == 0 {
+        return false;
+    }
+    let mut fade = [0u8; 4];
+    system.memory.read_bytes(context + BOTTOM_FADE, &mut fade);
+    let fade = f32::from_le_bytes(fade);
+    if !(fade < 1.0) {
+        return false;
+    }
+    call_here(system, DRAW_PORTRAITS, portraits, context, Drawing::Portraits, None);
+    system.cpu.vfp.regs[0] = (1.0 - fade.max(0.0)).to_bits();
+    true
+}
+
+/// starts drawing the narration's line on the top screen, centred at its
+/// bottom, when a line is shown.
+fn start_narration(system: &mut System) {
+    let on = system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.narration_on_top);
+    let Some(context) = context(system).filter(|_| on) else { return };
     let message = context + NARRATION;
     let mut head = [0u8; 0x24];
     system.memory.read_bytes(message, &mut head);
@@ -196,16 +275,58 @@ fn narration_on_top(system: &mut System) {
     moved[..4].copy_from_slice(&((400.0 - width) * 0.5).to_le_bytes());
     moved[4..].copy_from_slice(&(240.0 - height - 8.0).to_le_bytes());
     system.memory.write_bytes(message + 0x14, &moved);
-    let cpu = &mut system.cpu;
-    let saved = Saved { regs: cpu.regs, cpsr: cpu.cpsr, vfp: cpu.vfp.regs, message, position };
-    cpu.regs[0] = message;
-    cpu.regs[1] = context;
-    cpu.regs[14] = TOP_UI_AFTER_HUD;
-    cpu.regs[15] = DRAW_MESSAGE_LINE;
-    cpu.cpsr.thumb = false;
-    if let Some(aim_mouse) = &mut system.aim_mouse {
-        aim_mouse.saved = Some(saved);
+    call_here(system, DRAW_MESSAGE_LINE, message, context, Drawing::Narration, Some((message, position)));
+}
+
+/// what the game's code is drawing on the top screen for us now, if anything.
+fn drawing(system: &System) -> Option<Drawing> {
+    system.aim_mouse.as_ref().and_then(|aim_mouse| aim_mouse.saved.as_ref()).map(|saved| saved.drawing)
+}
+
+/// the quads a flush is about to draw, where they are and what they hold.
+fn flushed_quads(system: &mut System) -> Option<(u32, Vec<u8>)> {
+    let batch = system.cpu.regs[0];
+    let mut header = [0u8; 12];
+    system.memory.read_bytes(batch + 0x38, &mut header);
+    let word = |i: usize| u32::from_le_bytes(header[i * 4..i * 4 + 4].try_into().unwrap());
+    let (end, count) = (word(0), word(1).wrapping_sub(word(2)));
+    if count == 0 || count > 0x400 || end < count * 0x60 {
+        return None;
     }
+    let mut quads = vec![0u8; (count * 0x60) as usize];
+    system.memory.read_bytes(end - count * 0x60, &mut quads);
+    Some((end - count * 0x60, quads))
+}
+
+fn get(quads: &[u8], at: usize) -> f32 {
+    f32::from_le_bytes(quads[at..at + 4].try_into().unwrap())
+}
+
+fn set(quads: &mut [u8], at: usize, value: f32) {
+    quads[at..at + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+/// puts the portraits, drawn for the bottom screen, in the top screen's
+/// bottom corners, smaller: a speaker on the left half of the bottom screen
+/// in the bottom left corner, one on the right in the bottom right.
+fn place_portraits(system: &mut System) {
+    let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.portrait_scale);
+    let Some((at, mut quads)) = flushed_quads(system) else { return };
+    for quad in (0..quads.len()).step_by(0x60) {
+        let middle = (0..4).map(|corner| get(&quads, quad + corner * 0x18)).sum::<f32>() / 4.0;
+        if !middle.is_finite() {
+            return;
+        }
+        // the bottom screen's edge the speaker is by, and the top screen's
+        let (from, to) = if middle < 160.0 { (0.0, 0.0) } else { (320.0, 400.0) };
+        for corner in (quad..quad + 0x60).step_by(0x18) {
+            let x = to + (get(&quads, corner) - from) * scale;
+            let y = 240.0 + (get(&quads, corner + 4) - 240.0) * scale;
+            set(&mut quads, corner, x);
+            set(&mut quads, corner + 4, y);
+        }
+    }
+    system.memory.write_bytes(at, &quads);
 }
 
 /// the top screen's battle HUD, by where its sprite flushes return to:
@@ -216,13 +337,17 @@ const TOP_HUD: [u32; 7] = [0x009F2F90, 0x009F45FC, 0x009F4800, 0x009F4BD4, 0x009
 /// whether a sprite batch flushed from caller draws the top screen's HUD,
 /// which the narration's line is part of while it is drawn there.
 fn top_hud(system: &System, caller: u32) -> bool {
-    TOP_HUD.contains(&caller) || system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.saved.is_some())
+    TOP_HUD.contains(&caller) || drawing(system) == Some(Drawing::Narration)
 }
 
 /// draws a top screen HUD element smaller: the quads the flush is about to
 /// draw, scaled together toward the edge or corner they sit by, or their
 /// own middle when they are by none, like a marker on an enemy.
 fn shrink_hud(system: &mut System) {
+    if drawing(system) == Some(Drawing::Portraits) {
+        place_portraits(system);
+        return;
+    }
     let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.hud_scale);
     if scale == 1.0 || !top_hud(system, system.cpu.regs[14]) {
         return;
@@ -252,7 +377,7 @@ fn shrink_hud(system: &mut System) {
     }
     // the whole screen, a fade or a flash, stays as it is, the narration's
     // line, as wide as it may be, doesn't
-    let narration = system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.saved.is_some());
+    let narration = drawing(system) == Some(Drawing::Narration);
     if !narration && (max[0] - min[0] > 300.0 || max[1] - min[1] > 200.0) {
         return;
     }

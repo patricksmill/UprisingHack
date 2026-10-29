@@ -692,7 +692,9 @@ impl App {
             let hud_scale = std::env::var("ZAKURO_HUD_SCALE").ok().and_then(|value| value.parse().ok()).unwrap_or(0.7);
             // the narration drawn on the top screen as well, ZAKURO_NARRATION_TOP=0 leaves it below
             let narration_on_top = std::env::var("ZAKURO_NARRATION_TOP").map_or(true, |value| value != "0");
-            system.aim_mouse = Some(zakuro_core::aim_mouse::AimMouse::new(hud_scale, narration_on_top));
+            // and the portraits, in the top screen's bottom corners at ZAKURO_PORTRAIT_SCALE, 0 for not
+            let portrait_scale = std::env::var("ZAKURO_PORTRAIT_SCALE").ok().and_then(|value| value.parse().ok()).unwrap_or(0.5);
+            system.aim_mouse = Some(zakuro_core::aim_mouse::AimMouse::new(hud_scale, narration_on_top, portrait_scale));
             // at 60 FPS the game has half a 3DS's time for each frame, which
             // its busiest scenes need more than: ZAKURO_OVERCLOCK times the
             // instructions in the same time, 1 as the console
