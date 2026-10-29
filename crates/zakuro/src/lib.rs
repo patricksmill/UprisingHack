@@ -705,7 +705,9 @@ impl App {
             let mirror_bottom = std::env::var("ZAKURO_MIRROR_BOTTOM").map_or(true, |value| value != "0");
             // and the pause menu, where the mouse touches it, ZAKURO_PAUSE_TOP=0 leaves it below
             let pause_on_top = std::env::var("ZAKURO_PAUSE_TOP").map_or(true, |value| value != "0");
-            system.aim_mouse = Some(zakuro_core::aim_mouse::AimMouse::new(hud_scale, narration_on_top, portrait_scale, mirror_bottom, pause_on_top));
+            // and its options lit by the mouse over them, as on a PC, ZAKURO_MENU_HOVER=0 as a stylus
+            let menu_hover = std::env::var("ZAKURO_MENU_HOVER").map_or(true, |value| value != "0");
+            system.aim_mouse = Some(zakuro_core::aim_mouse::AimMouse::new(hud_scale, narration_on_top, portrait_scale, mirror_bottom, pause_on_top, menu_hover));
             // at 60 FPS the game has half a 3DS's time for each frame, which
             // its busiest scenes need more than: ZAKURO_OVERCLOCK times the
             // instructions in the same time, 1 as the console
@@ -922,30 +924,33 @@ impl App {
         consumed || self.game.is_none() || self.menus.menu_open || self.gui.as_ref().is_some_and(Gui::wants_pointer)
     }
 
-    /// touches the bottom screen while the button is down over it.
+    /// touches the bottom screen while the button is down over it, and
+    /// tells the game's menus where over it the mouse is, for them to light
+    /// what is under it.
     fn touch(&mut self) {
         let Some(window) = &self.window else { return };
         let size = window.inner_size();
         let (top, bottom) = layout(size.width, size.height, self.layout.screens(), self.top_width(), self.settings.integer_scale);
-        // with the top screen alone there is nothing to touch, but for the
-        // pause menu drawn there
-        let Some(bottom) = bottom else {
-            let touched = top.filter(|_| self.mouse_down && self.pause_menu_shown()).and_then(|top| {
+        let pointer = match bottom {
+            Some(bottom) => {
+                let x = (self.cursor.0 - bottom.x) / bottom.width * 320.0;
+                let y = (self.cursor.1 - bottom.y) / bottom.height * 240.0;
+                ((0.0..320.0).contains(&x) && (0.0..240.0).contains(&y)).then_some((x, y))
+            }
+            // with the top screen alone there is nothing to touch, but for
+            // the pause menu drawn there
+            None => top.filter(|_| self.pause_menu_shown()).and_then(|top| {
                 let game = self.game.as_ref()?;
                 let x = (self.cursor.0 - top.x) / top.width * 400.0;
                 let y = (self.cursor.1 - top.y) / top.height * 240.0;
-                let (x, y) = game.system.aim_mouse.as_ref()?.pause_menu_touch(game.system.frames, x, y)?;
-                Some((x as u16, y as u16))
-            });
-            self.keyboard.touch(touched);
-            return;
+                game.system.aim_mouse.as_ref()?.pause_menu_touch(game.system.frames, x, y)
+            }),
         };
-        let x = self.cursor.0 - bottom.x;
-        let y = self.cursor.1 - bottom.y;
-        let inside = x >= 0.0 && y >= 0.0 && x < bottom.width && y < bottom.height;
-        self.keyboard.touch((self.mouse_down && inside).then(|| {
-            ((x / bottom.width * 320.0) as u16, (y / bottom.height * 240.0) as u16)
-        }));
+        let pointer = pointer.filter(|_| !self.pointer_taken(false));
+        self.keyboard.touch(pointer.filter(|_| self.mouse_down).map(|(x, y)| (x as u16, y as u16)));
+        if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+            aim_mouse.hover(pointer);
+        }
     }
 
     /// tilts the console while the right button is held, toward where the

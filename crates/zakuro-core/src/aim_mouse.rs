@@ -14,8 +14,9 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 /// them: every function whose code takes one in runs in it, the rest of the
 /// game stays recompiled. one place a function does, the pause menu's top
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
-/// in one function, their bottom sites in another.
-pub const PLACES: [u32; 14] = [
+/// in one function, their bottom sites in another, and the paused input's
+/// in one.
+pub const PLACES: [u32; 18] = [
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
     SPRITE_FLUSH,
@@ -30,6 +31,10 @@ pub const PLACES: [u32; 14] = [
     MIRRORED[0].site,
     MIRRORED[1].site,
     MIRRORED[2].site,
+    PAUSE_KEY,
+    PAUSE_OPTION_FOUND,
+    OPTIONS_OPTION_FOUND,
+    DIALOG_INPUT,
 ];
 
 /// where 0x006D269C goes on after 0x00B12218 summed the aim delta, which it
@@ -272,6 +277,68 @@ const POWER_LIST: u32 = 0x188;
 /// what of the command word 0x00A17A10 keeps when it writes one.
 const POWER_COMMAND_KEPT: u32 = 0x007E_7FEE;
 
+/// the battle UI's input while paused, 0x0060DC7C, with the pause screen
+/// in r9: where it hands the key pressed, r5, to 0x00A0C5A8, its keys'
+/// handling, a code from 0x00A3115C, -1 for none.
+const PAUSE_KEY: u32 = 0x0060DD04;
+/// then the touch to 0x00A01DA0, its touches': whether touching in r8,
+/// whether that began now in r6, the pixel in r7 and s16. the touch picks
+/// the option under it, and only one that began now uses it.
+const PAUSE_TOUCH: u32 = 0x0060DD10;
+/// and where it goes on, after both.
+const PAUSE_INPUT_DONE: u32 = 0x0060DD28;
+/// where the main page's touches, 0x00A0867C, and an Options page's,
+/// 0x00A06188, entered with the pause screen in r0, found the option under
+/// the touch: r1 on the main page, with the pause screen in r0, r4 on a
+/// page of Options, with it in r6. off every option they return before.
+const PAUSE_TOUCHES: u32 = 0x00A0867C;
+const OPTIONS_TOUCHES: u32 = 0x00A06188;
+const PAUSE_OPTION_FOUND: u32 = 0x00A08820;
+const OPTIONS_OPTION_FOUND: u32 = 0x00A06384;
+/// the pause screen's state, 2 its main page, 7 Options, the page of
+/// Options shown and the one being gone to, and the option picked, which
+/// is drawn lit, -1 for none.
+const PAUSE_STATE: u32 = 4;
+const OPTIONS_PAGE: u32 = 0x678;
+const OPTIONS_PAGE_NEXT: u32 = 0x6EC;
+const PAUSE_CURSOR: u32 = 0x67C;
+/// the page of Options whose touches drag what they hold, Control
+/// Configuration.
+const OPTIONS_DRAG_PAGE: u32 = 5;
+/// pages of Options whose sliders a held touch sets, where the page looks
+/// for an option: Reticle/Camera's, in the rows above 70, and Volume's,
+/// from 121 to 288 across each row, its name left of that.
+const CAMERA_PAGE: u32 = 6;
+const CAMERA_SLIDERS_BELOW: i32 = 70;
+const VOLUME_PAGE: u32 = 7;
+const VOLUME_SLIDERS: std::ops::RangeInclusive<i32> = 121..=288;
+/// the keys that move or use the pause screen's option: the directions,
+/// then the codes 0x00A0C5A8 uses it on.
+const CURSOR_KEYS: [i32; 7] = [0, 1, 2, 3, 4, 6, 9];
+
+/// a dialog's input, 0x007226C4, the dialog in r4, the option picked before
+/// in r6, just after it read 0x00A3115C's input onto the stack: the pixel
+/// touched at sp, whether that began now at sp+9, the key at sp+0xA. only a
+/// touch that began now picks a button, which uses it.
+const DIALOG_INPUT: u32 = 0x00722758;
+/// and where it plays the cursor's sound for an option picked by a key, r5
+/// -1, after it lit the one picked.
+const DIALOG_CURSOR_SOUND: u32 = 0x007229E4;
+/// the dialog's buttons: how many, their boxes, 4 shorts each, left, right,
+/// top, bottom, inclusive, and the one picked, -1 for none.
+const DIALOG_BUTTON_COUNT: u32 = 0x28C;
+const DIALOG_BUTTONS: u32 = 0x2A8;
+const DIALOG_CURSOR: u32 = 0x294;
+
+/// a pause screen's touch given a hover in place of the real one's.
+struct Hovering {
+    /// r6, r7, r8 and s16, as they were.
+    touch: [u32; 4],
+    /// whether the page's touches looked, and found an option.
+    looked: bool,
+    found: bool,
+}
+
 pub struct AimMouse {
     /// reticle pixels moved since the game last took them.
     pub pending: [f32; 2],
@@ -312,6 +379,24 @@ pub struct AimMouse {
     /// the frame the power key was pressed in, for the battle UI's next
     /// update to use the current power, unless that is long after.
     power_requested: Option<u64>,
+    /// whether the mouse over a menu's options lights the one under it, as
+    /// on a PC, without using it, and over none lights none. keys bring the
+    /// game's own cursor back until the mouse moves again.
+    pub menu_hover: bool,
+    /// the bottom screen pixel the mouse is over, none off it.
+    pointer: Option<(f32, f32)>,
+    /// whether the mouse moved since a key was last pressed in a menu.
+    mouse_mode: bool,
+    /// the frame the pause screen last took input in.
+    paused: Option<u64>,
+    /// the pause screen's option a hover over nothing took the light off,
+    /// for the next key to light it again.
+    cleared: Option<u32>,
+    /// the pause screen's touch while a hover takes its place.
+    hovering: Option<Hovering>,
+    /// whether a hover took the dialog's light off its buttons, for its
+    /// cursor's sound not to play for that.
+    dialog_cleared: bool,
     /// how many times wider than the console's 5:3 the top screen shows,
     /// 1 for its own shape: the view is that much wider and the top
     /// screen's 2D that much narrower, so it shows the right shape stretched.
@@ -344,6 +429,13 @@ impl Default for AimMouse {
             edges_drawn: None,
             battle_drawn: None,
             power_requested: None,
+            menu_hover: false,
+            pointer: None,
+            mouse_mode: false,
+            paused: None,
+            cleared: None,
+            hovering: None,
+            dialog_cleared: false,
             widen: 1.0,
             screens: Vec::new(),
             lenses: Vec::new(),
@@ -356,9 +448,17 @@ impl AimMouse {
     /// for the game, drawing the HUD at hud_scale, the narration on the top
     /// screen too when narration_on_top, the portraits there at
     /// portrait_scale, 0 for not, the hearts, item box and power icon there
-    /// when mirror_bottom, and the pause menu when pause_on_top.
-    pub fn new(hud_scale: f32, narration_on_top: bool, portrait_scale: f32, mirror_bottom: bool, pause_on_top: bool) -> AimMouse {
-        AimMouse { hud_scale, narration_on_top, portrait_scale, mirror_bottom, pause_on_top, ..AimMouse::default() }
+    /// when mirror_bottom, the pause menu when pause_on_top, and menus lit
+    /// by the mouse over them when menu_hover.
+    pub fn new(hud_scale: f32, narration_on_top: bool, portrait_scale: f32, mirror_bottom: bool, pause_on_top: bool, menu_hover: bool) -> AimMouse {
+        AimMouse { hud_scale, narration_on_top, portrait_scale, mirror_bottom, pause_on_top, menu_hover, ..AimMouse::default() }
+    }
+
+    /// the mouse moved to the bottom screen's pixel, or off it: menus light
+    /// what is under it from now on, until a key is pressed in one.
+    pub fn hover(&mut self, pointer: Option<(f32, f32)>) {
+        self.pointer = pointer;
+        self.mouse_mode = true;
     }
 
     pub fn add(&mut self, dx: f32, dy: f32) {
@@ -447,6 +547,21 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         RETICLE_DRAW => shrink_reticle(system),
         TOP_UI_AFTER_HUD => top_screen_extras(system),
         UI_COMMANDS => power_command(system),
+        PAUSE_KEY => pause_key(system),
+        PAUSE_TOUCH => hover_pause(system),
+        PAUSE_INPUT_DONE => hovered_pause(system),
+        PAUSE_TOUCHES | OPTIONS_TOUCHES | PAUSE_OPTION_FOUND | OPTIONS_OPTION_FOUND => {
+            if let Some(hovering) = system.aim_mouse.as_mut().and_then(|aim_mouse| aim_mouse.hovering.as_mut()) {
+                hovering.looked = true;
+                hovering.found |= matches!(pc, PAUSE_OPTION_FOUND | OPTIONS_OPTION_FOUND);
+            }
+        }
+        DIALOG_INPUT => hover_dialog(system),
+        DIALOG_CURSOR_SOUND => {
+            if system.aim_mouse.as_mut().is_some_and(|aim_mouse| std::mem::take(&mut aim_mouse.dialog_cleared)) {
+                system.cpu.regs[5] = 0;
+            }
+        }
         _ if PAUSE_MENU.iter().any(|to_top| to_top.site == pc || to_top.place == pc) => {
             if let Some(index) = PAUSE_MENU.iter().position(|to_top| to_top.site == pc) {
                 let mut recorded = recorded_call(system, pc);
@@ -614,6 +729,126 @@ fn power_command(system: &mut System) {
     let kept = read_word(system, panel + POWER_COMMAND) & POWER_COMMAND_KEPT;
     let command = kept | (id as u32) << 23 | (current & 0x3F) << 17 | 1 << 15 | 1;
     system.memory.write_bytes(panel + POWER_COMMAND, &command.to_le_bytes());
+}
+
+/// a key pressed on the pause screen gives the keys the menu back, and
+/// lights the option a hover took the light off, using the key up if it
+/// would move or use the option. the screen opening does as well, before
+/// the mouse moves over it.
+fn pause_key(system: &mut System) {
+    let pause = system.cpu.regs[9];
+    let key = system.cpu.regs[5] as i32;
+    let cursor = read_word(system, pause + PAUSE_CURSOR) as i32;
+    let frame = system.frames;
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    if !aim_mouse.paused.is_some_and(|paused| frame <= paused + 3) {
+        aim_mouse.mouse_mode = false;
+        aim_mouse.cleared = None;
+    }
+    aim_mouse.paused = Some(frame);
+    if key == -1 {
+        return;
+    }
+    aim_mouse.mouse_mode = false;
+    let Some(option) = aim_mouse.cleared.take() else { return };
+    if cursor == -1 {
+        system.memory.write_bytes(pause + PAUSE_CURSOR, &option.to_le_bytes());
+        if CURSOR_KEYS.contains(&key) {
+            system.cpu.regs[5] = u32::MAX;
+        }
+    }
+}
+
+/// gives the pause screen's main page or a page of Options the mouse over
+/// it as a touch that is held there, not one that began now, which lights
+/// the option under it without using it. off the menu, nothing is lit. a
+/// real touch, a key last, or the page of Options whose touches drag what
+/// they hold, it gets as it is, and a slider is not set: Volume's row is
+/// lit from left of it, Reticle/Camera's are as off the menu.
+fn hover_pause(system: &mut System) {
+    let pause = system.cpu.regs[9];
+    let (state, page, next) = (read_word(system, pause + PAUSE_STATE), read_word(system, pause + OPTIONS_PAGE), read_word(system, pause + OPTIONS_PAGE_NEXT));
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    let options = state == 7 && page == next;
+    if !aim_mouse.menu_hover || !aim_mouse.mouse_mode || system.cpu.regs[8] != 0 || !(state == 2 || options && page != OPTIONS_DRAG_PAGE) {
+        return;
+    }
+    let pointer = aim_mouse.pointer.map(|(x, y)| (x as i32, y as i32));
+    let pointer = match pointer {
+        Some((_, y)) if options && page == CAMERA_PAGE && y < CAMERA_SLIDERS_BELOW => None,
+        Some((x, y)) if options && page == VOLUME_PAGE && VOLUME_SLIDERS.contains(&x) => Some((VOLUME_SLIDERS.start() - 1, y)),
+        pointer => pointer,
+    };
+    let Some((x, y)) = pointer else {
+        clear_pause_cursor(system, pause);
+        return;
+    };
+    let regs = &mut system.cpu.regs;
+    let touch = [regs[6], regs[7], regs[8], system.cpu.vfp.regs[16]];
+    aim_mouse.hovering = Some(Hovering { touch, looked: false, found: false });
+    regs[6] = 0;
+    regs[7] = x as u32;
+    regs[8] = 1;
+    system.cpu.vfp.regs[16] = y as u32;
+}
+
+/// after the pause screen took a hover: the real touch back for what comes
+/// after, and the light off if the page looked for an option under the
+/// mouse and found none.
+fn hovered_pause(system: &mut System) {
+    let Some(hovering) = system.aim_mouse.as_mut().and_then(|aim_mouse| aim_mouse.hovering.take()) else { return };
+    let [r6, r7, r8, s16] = hovering.touch;
+    (system.cpu.regs[6], system.cpu.regs[7], system.cpu.regs[8]) = (r6, r7, r8);
+    system.cpu.vfp.regs[16] = s16;
+    if hovering.looked && !hovering.found {
+        clear_pause_cursor(system, system.cpu.regs[9]);
+    }
+}
+
+/// lights none of the pause screen's options, keeping the one lit for a key.
+fn clear_pause_cursor(system: &mut System, pause: u32) {
+    let cursor = read_word(system, pause + PAUSE_CURSOR);
+    if cursor as i32 == -1 {
+        return;
+    }
+    system.memory.write_bytes(pause + PAUSE_CURSOR, &u32::MAX.to_le_bytes());
+    if let Some(aim_mouse) = &mut system.aim_mouse {
+        aim_mouse.cleared = Some(cursor);
+    }
+}
+
+/// lights the dialog's button under the mouse, none off them, as a key
+/// moving to it would, but for the sound when it is none. a touch that began
+/// now, or a key, it gets as it is, and a key gives the keys the dialog back.
+fn hover_dialog(system: &mut System) {
+    let (dialog, sp) = (system.cpu.regs[4], system.cpu.regs[13]);
+    let mut input = [0u8; 0xB];
+    system.memory.read_bytes(sp, &mut input);
+    let (began, key) = (input[9] != 0, input[10] as i8);
+    let count = (read_word(system, dialog + DIALOG_BUTTON_COUNT) as i32).clamp(0, 8) as u32;
+    let mut boxes = [0u8; 8 * 8];
+    system.memory.read_bytes(dialog + DIALOG_BUTTONS, &mut boxes[..count as usize * 8]);
+    let cursor = read_word(system, dialog + DIALOG_CURSOR) as i32;
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    aim_mouse.dialog_cleared = false;
+    if key != -1 {
+        aim_mouse.mouse_mode = false;
+    }
+    if !aim_mouse.menu_hover || !aim_mouse.mouse_mode || began || count == 0 {
+        return;
+    }
+    let under = aim_mouse.pointer.and_then(|(x, y)| {
+        let (x, y) = (x as i32, y as i32);
+        boxes.as_chunks::<8>().0[..count as usize].iter().position(|button| {
+            let edge = |at: usize| i16::from_le_bytes([button[at], button[at + 1]]) as i32;
+            (edge(0)..=edge(2)).contains(&x) && (edge(4)..=edge(6)).contains(&y)
+        })
+    });
+    let option = under.map_or(-1, |under| under as i32);
+    if option != cursor {
+        aim_mouse.dialog_cleared = option == -1;
+        system.memory.write_bytes(dialog + DIALOG_CURSOR, &option.to_le_bytes());
+    }
 }
 
 /// draws the portraits and then the narration's line on the top screen as
@@ -1079,6 +1314,21 @@ mod tests {
         assert_eq!(aim_mouse.pause_menu_touch(11, 120.0, 83.0), None);
         aim_mouse.widen = 1.0;
         assert!(near(aim_mouse.pause_menu_touch(11, 120.0, 83.0), 120.0));
+    }
+
+    /// the mouse moving, onto a menu or off it, gives menus the mouse back
+    /// from keys.
+    #[test]
+    fn hovering_gives_menus_the_mouse() {
+        let mut aim_mouse = AimMouse::new(1.0, false, 0.0, false, false, true);
+        assert!(!aim_mouse.mouse_mode);
+        aim_mouse.hover(Some((90.0, 170.0)));
+        assert!(aim_mouse.mouse_mode);
+        assert_eq!(aim_mouse.pointer, Some((90.0, 170.0)));
+        aim_mouse.mouse_mode = false;
+        aim_mouse.hover(None);
+        assert!(aim_mouse.mouse_mode);
+        assert_eq!(aim_mouse.pointer, None);
     }
 
     /// in a battle until its UI stops being drawn, and not while paused.
