@@ -12,13 +12,18 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 
 /// the places below, which the interpreter has to run for it to stop at
 /// them: every function whose code takes one in runs in it, the rest of the
-/// game stays recompiled.
-pub const PLACES: [u32; 8] = [
+/// game stays recompiled. one place a function does, the pause menu's top
+/// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
+/// in one function, their bottom sites in another.
+pub const PLACES: [u32; 11] = [
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
     SPRITE_FLUSH,
     RETICLE_DRAW,
     TOP_UI_AFTER_HUD,
+    PAUSE_MENU[0].site,
+    PAUSE_MENU[1].site,
+    PAUSE_MENU[1].place,
     MIRRORED[0].site,
     MIRRORED[1].site,
     MIRRORED[2].site,
@@ -44,6 +49,76 @@ const SPRITE_FLUSH: u32 = 0x0092F408;
 /// in the top screen's battle UI pass, 0x0060D39C, just after it drew the
 /// health bar: the narration is drawn there too.
 const TOP_UI_AFTER_HUD: u32 = 0x0060D60C;
+
+/// a bottom screen call the top screen makes too, in the same frame's top
+/// pass of the 2D context it draws through, with what the last bottom pass
+/// gave it.
+struct ToTop {
+    /// the call's bl in the bottom pass.
+    site: u32,
+    /// where in the top pass it is made again, just after a call there.
+    place: u32,
+    /// r1 points at a 4x4 projection and r2 at a 3x4 view the call takes,
+    /// which are on the bottom pass's stack, so they are kept, the
+    /// projection made the top screen's.
+    projection: bool,
+}
+
+/// the pause menu and the dialogs over it, Retreat's for one, in the
+/// middle of the top screen.
+const PAUSE_MENU: [ToTop; 15] = [
+    // the bottom battle UI pass, 0x0060D93C, calling 0x00A01A1C while
+    // paused: the dimming, Resume and Retreat, Options, the loot and Remove
+    // Display, with the pause screen in r0, the 2D context in r1 and in r2
+    // whether to show it. made again after the top pass, 0x0060D3EC, drew
+    // the pause screen's label, which it does only while paused
+    ToTop { site: 0x0060DBB4, place: 0x0060D68C, projection: false },
+    // the dialogs' bottom pass, 0x00722A50, calling 0x00721C64, the
+    // dimming and the box, with the dialogs' 2D context in r0 and how far
+    // they are shown in s0, then 0x00721484, the buttons. made again after
+    // their top pass, 0x007255AC, drew the corner icon it draws every frame
+    ToTop { site: 0x00722AF4, place: 0x00725828, projection: false },
+    ToTop { site: 0x00722B0C, place: 0x00725828, projection: false },
+    // and once their 2D is done, the text, drawn through the 3D renderer
+    // (r0) with a projection for the bottom screen: the lights (0x00909D54),
+    // the camera (0x0090A5B4), the start (0x0090FFA0), the message and the
+    // buttons' text (0x00909ACC, the text in r0), the end (0x0090A6A4).
+    // made again after the top pass's 2D is done, for the right eye's
+    // buffer, which 0x00916588 left it drawing into, and once it went back
+    // to the left eye's, as the top pass draws its own text in both
+    ToTop { site: 0x00722BA4, place: 0x007258A0, projection: false },
+    ToTop { site: 0x00722C30, place: 0x007258A0, projection: true },
+    ToTop { site: 0x00722C3C, place: 0x007258A0, projection: false },
+    ToTop { site: 0x00722D14, place: 0x007258A0, projection: false },
+    ToTop { site: 0x00722DAC, place: 0x007258A0, projection: false },
+    ToTop { site: 0x00722DB8, place: 0x007258A0, projection: false },
+    ToTop { site: 0x00722BA4, place: 0x007258C0, projection: false },
+    ToTop { site: 0x00722C30, place: 0x007258C0, projection: true },
+    ToTop { site: 0x00722C3C, place: 0x007258C0, projection: false },
+    ToTop { site: 0x00722D14, place: 0x007258C0, projection: false },
+    ToTop { site: 0x00722DAC, place: 0x007258C0, projection: false },
+    ToTop { site: 0x00722DB8, place: 0x007258C0, projection: false },
+];
+
+/// how far right the pause menu goes on the top screen, its 320 pixels in
+/// the middle of the top's 400, and so how far left a touch there goes.
+const PAUSE_MENU_OFFSET: f32 = 40.0;
+
+/// where the pause screen's sprite flushes come back to for Resume and
+/// Retreat, their buttons, icons and words, one quad each a flush, which go
+/// to the top screen's left and right edges.
+const PAUSE_BUTTONS: [u32; 4] = [0x00A0D788, 0x00A0D88C, 0x00A0D9F8, 0x00A0DB00];
+
+/// the rows Resume and Retreat are in, Resume from the left edge to 148,
+/// Retreat from 172 to the right edge, bottom screen pixels.
+const PAUSE_BUTTON_ROWS: std::ops::Range<f32> = 55.0..111.0;
+const RESUME_RIGHT: f32 = 148.0;
+const RETREAT_LEFT: f32 = 172.0;
+
+/// and for Remove Display, in the bottom right corner from 193 and 204 on,
+/// which goes to the top screen's.
+const REMOVE_DISPLAY: [u32; 2] = [0x00A0D524, 0x00A0D5DC];
+const REMOVE_DISPLAY_CORNER: [f32; 2] = [193.0, 204.0];
 
 /// draws a message's line, shadow then text, from where the message says,
 /// x at +0x14, y at +0x18, its size at +0x1C, +0x20: r0 the message, r1 the
@@ -110,6 +185,8 @@ struct Recorded {
     target: u32,
     regs: [u32; 4],
     floats: [u32; 8],
+    /// the projection and the view a call takes, see ToTop::projection.
+    matrices: Option<[u32; 28]>,
 }
 
 /// what the game's code is drawing on the top screen for us.
@@ -118,6 +195,17 @@ enum Drawing {
     Portraits,
     Mirrored(usize),
     Narration,
+    PauseMenu(usize),
+}
+
+impl Drawing {
+    /// where in the top pass it is drawn, and comes back to.
+    fn place(self) -> u32 {
+        match self {
+            Drawing::PauseMenu(index) => PAUSE_MENU[index].place,
+            _ => TOP_UI_AFTER_HUD,
+        }
+    }
 }
 
 /// what the CPU held where the call was made in the game's place, put back
@@ -161,26 +249,84 @@ pub struct AimMouse {
     /// the mirrored elements' calls from the last bottom pass, by MIRRORED's
     /// order.
     recorded: [Option<Recorded>; 3],
+    /// whether the pause menu and the dialogs over it are drawn on the top
+    /// screen too.
+    pub pause_on_top: bool,
+    /// their calls from the last bottom pass, by PAUSE_MENU's order.
+    pause: [Option<Recorded>; 15],
+    /// the frame the pause menu was last drawn on the top screen in.
+    pause_drawn: Option<u64>,
+    /// and the last one Resume, Retreat or Remove Display was drawn by the
+    /// top screen's edges in.
+    edges_drawn: Option<u64>,
 }
 
 impl Default for AimMouse {
     fn default() -> AimMouse {
-        AimMouse { pending: [0.0; 2], captured: false, hud_scale: 1.0, narration_on_top: false, portrait_scale: 0.0, context: None, saved: None, mirror_bottom: false, recorded: [None; 3] }
+        AimMouse {
+            pending: [0.0; 2],
+            captured: false,
+            hud_scale: 1.0,
+            narration_on_top: false,
+            portrait_scale: 0.0,
+            context: None,
+            saved: None,
+            mirror_bottom: false,
+            recorded: [None; 3],
+            pause_on_top: false,
+            pause: [None; 15],
+            pause_drawn: None,
+            edges_drawn: None,
+        }
     }
 }
 
 impl AimMouse {
     /// for the game, drawing the HUD at hud_scale, the narration on the top
     /// screen too when narration_on_top, the portraits there at
-    /// portrait_scale, 0 for not, and the hearts, item box and power icon
-    /// there when mirror_bottom.
-    pub fn new(hud_scale: f32, narration_on_top: bool, portrait_scale: f32, mirror_bottom: bool) -> AimMouse {
-        AimMouse { hud_scale, narration_on_top, portrait_scale, mirror_bottom, ..AimMouse::default() }
+    /// portrait_scale, 0 for not, the hearts, item box and power icon there
+    /// when mirror_bottom, and the pause menu when pause_on_top.
+    pub fn new(hud_scale: f32, narration_on_top: bool, portrait_scale: f32, mirror_bottom: bool, pause_on_top: bool) -> AimMouse {
+        AimMouse { hud_scale, narration_on_top, portrait_scale, mirror_bottom, pause_on_top, ..AimMouse::default() }
     }
 
     pub fn add(&mut self, dx: f32, dy: f32) {
         self.pending[0] += dx;
         self.pending[1] += dy;
+    }
+
+    /// whether the pause menu or a dialog over it was drawn on the top
+    /// screen lately, by frame, the frames the System counts: at 30 FPS the
+    /// game draws in every other one, and in a slow one a little less.
+    pub fn pause_menu_shown(&self, frame: u64) -> bool {
+        self.pause_drawn.is_some_and(|drawn| frame <= drawn + 3)
+    }
+
+    /// the bottom screen pixel a touch of the top screen's pixel x, y
+    /// touches while the pause menu is shown there, frame as for
+    /// pause_menu_shown. none off the bottom screen, or beside Resume,
+    /// Retreat or Remove Display by the top screen's edges, where the
+    /// bottom screen has them but the top screen does not.
+    pub fn pause_menu_touch(&self, frame: u64, x: f32, y: f32) -> Option<(f32, f32)> {
+        let edges = self.edges_drawn.is_some_and(|drawn| frame <= drawn + 3);
+        let right = 2.0 * PAUSE_MENU_OFFSET;
+        let x = if edges && PAUSE_BUTTON_ROWS.contains(&y) {
+            if x < RESUME_RIGHT {
+                x
+            } else if x >= RETREAT_LEFT + right {
+                x - right
+            } else {
+                return None;
+            }
+        } else if edges && y >= REMOVE_DISPLAY_CORNER[1] && x >= REMOVE_DISPLAY_CORNER[0] + PAUSE_MENU_OFFSET {
+            if x < REMOVE_DISPLAY_CORNER[0] + right {
+                return None;
+            }
+            x - right
+        } else {
+            x - PAUSE_MENU_OFFSET
+        };
+        ((0.0..320.0).contains(&x) && (0.0..240.0).contains(&y)).then_some((x, y))
     }
 }
 
@@ -202,6 +348,30 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         }
         RETICLE_DRAW => shrink_reticle(system),
         TOP_UI_AFTER_HUD => top_screen_extras(system),
+        _ if PAUSE_MENU.iter().any(|to_top| to_top.site == pc || to_top.place == pc) => {
+            if let Some(index) = PAUSE_MENU.iter().position(|to_top| to_top.site == pc) {
+                let mut recorded = recorded_call(system, pc);
+                if let Some(recorded) = recorded.as_mut().filter(|_| PAUSE_MENU[index].projection) {
+                    let mut bytes = [0u8; 0x70];
+                    system.memory.read_bytes(system.cpu.regs[1], &mut bytes[..0x40]);
+                    system.memory.read_bytes(system.cpu.regs[2], &mut bytes[0x40..]);
+                    let words = bytes.as_chunks::<4>().0.iter().map(|word| u32::from_le_bytes(*word));
+                    let mut matrices = [0u32; 28];
+                    matrices.iter_mut().zip(words).for_each(|(matrix, word)| *matrix = word);
+                    recorded.matrices = Some(matrices);
+                }
+                if let Some(aim_mouse) = &mut system.aim_mouse {
+                    for (kept, to_top) in aim_mouse.pause.iter_mut().zip(&PAUSE_MENU) {
+                        if to_top.site == pc {
+                            *kept = recorded;
+                        }
+                    }
+                }
+            }
+            if PAUSE_MENU.iter().any(|to_top| to_top.place == pc) {
+                top_screen_pause_menu(system, pc);
+            }
+        }
         _ if MIRRORED.iter().any(|mirrored| mirrored.site == pc) => record(system, pc),
         _ => {}
     }
@@ -267,7 +437,7 @@ fn top_screen_extras(system: &mut System) {
         let next = match back.drawing {
             Drawing::Portraits => 0,
             Drawing::Mirrored(index) => index + 1,
-            Drawing::Narration => return,
+            Drawing::Narration | Drawing::PauseMenu(_) => return,
         };
         if !start_mirrored(system, next) {
             start_narration(system);
@@ -283,23 +453,71 @@ fn top_screen_extras(system: &mut System) {
 /// pass to make it again.
 fn record(system: &mut System, site: u32) {
     let Some(index) = MIRRORED.iter().position(|mirrored| mirrored.site == site) else { return };
+    let Some(recorded) = recorded_call(system, site) else { return };
+    if let Some(aim_mouse) = &mut system.aim_mouse {
+        aim_mouse.recorded[index] = Some(recorded);
+    }
+}
+
+/// the call the bl at site is about to make, and what it is given.
+fn recorded_call(system: &mut System, site: u32) -> Option<Recorded> {
     let mut word = [0u8; 4];
     system.memory.read_bytes(site, &mut word);
     let word = u32::from_le_bytes(word);
-    // a bl: its target is 8 past it and the offset in words
-    if word >> 24 & 0x0F != 0x0B {
-        return;
+    // a bl: its target is 8 past it and the offset in words. one whose
+    // condition fails makes no call, what the registers hold is not for it
+    if word >> 24 & 0x0F != 0x0B || !zakuro_cpu::psr::check_condition(word >> 28, &system.cpu.cpsr) {
+        return None;
     }
     let offset = ((word << 8) as i32 >> 6) as u32;
     let target = site.wrapping_add(8).wrapping_add(offset);
     let cpu = &system.cpu;
-    let recorded = Recorded {
+    Some(Recorded {
         target,
         regs: [cpu.regs[0], cpu.regs[1], cpu.regs[2], cpu.regs[3]],
         floats: cpu.vfp.regs[..8].try_into().unwrap(),
+        matrices: None,
+    })
+}
+
+/// draws the pause menu, or a dialog over it, on the top screen as well,
+/// each call the last bottom pass made that comes here made again in turn,
+/// everything put back after each.
+fn top_screen_pause_menu(system: &mut System, place: u32) {
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    let mut next = 0;
+    if let Some(back) = aim_mouse.saved.take() {
+        system.cpu.regs = back.regs;
+        system.cpu.cpsr = back.cpsr;
+        system.cpu.vfp.regs = back.vfp;
+        let Drawing::PauseMenu(index) = back.drawing else { return };
+        next = index + 1;
+    }
+    if !aim_mouse.pause_on_top {
+        return;
+    }
+    let Some(index) = (next..PAUSE_MENU.len()).find(|&index| PAUSE_MENU[index].place == place && aim_mouse.pause[index].is_some()) else {
+        return;
     };
-    if let Some(aim_mouse) = &mut system.aim_mouse {
-        aim_mouse.recorded[index] = Some(recorded);
+    let Some(recorded) = aim_mouse.pause[index].take() else { return };
+    aim_mouse.pause_drawn = Some(system.frames);
+    call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::PauseMenu(index), None);
+    system.cpu.regs[2] = recorded.regs[2];
+    system.cpu.regs[3] = recorded.regs[3];
+    system.cpu.vfp.regs[..8].copy_from_slice(&recorded.floats);
+    if let Some(mut matrices) = recorded.matrices {
+        // the projection's second row turns the bottom screen's 320 pixels
+        // into its width, the top's middle 320 of 400 is that much less
+        for word in &mut matrices[4..8] {
+            *word = (f32::from_bits(*word) * 320.0 / 400.0).to_bits();
+        }
+        // below the stack the call starts with, put back after it
+        let at = system.cpu.regs[13] - 0x70;
+        let bytes: Vec<u8> = matrices.iter().flat_map(|word| word.to_le_bytes()).collect();
+        system.memory.write_bytes(at, &bytes);
+        system.cpu.regs[1] = at;
+        system.cpu.regs[2] = at + 0x40;
+        system.cpu.regs[13] = at;
     }
 }
 
@@ -329,7 +547,7 @@ fn call_here(system: &mut System, function: u32, r0: u32, r1: u32, drawing: Draw
     let saved = Saved { regs: cpu.regs, cpsr: cpu.cpsr, vfp: cpu.vfp.regs, drawing, moved };
     cpu.regs[0] = r0;
     cpu.regs[1] = r1;
-    cpu.regs[14] = TOP_UI_AFTER_HUD;
+    cpu.regs[14] = drawing.place();
     cpu.regs[15] = function;
     cpu.cpsr.thumb = false;
     if let Some(aim_mouse) = &mut system.aim_mouse {
@@ -446,6 +664,41 @@ fn place_mirrored(system: &mut System, mirrored: &Mirrored) {
     system.memory.write_bytes(at, &quads);
 }
 
+/// puts the pause menu or a dialog, drawn for the bottom screen, in the
+/// middle of the top screen as big as it is drawn, so a touch there is the
+/// same one moved left, see pause_menu_touch. what spans the bottom screen,
+/// the dimming and the band behind Options, spans the top screen, and
+/// Resume, Retreat and Remove Display go by its edges as they are by the
+/// bottom screen's.
+fn place_pause_menu(system: &mut System) {
+    let caller = system.cpu.regs[14];
+    let (buttons, corner) = (PAUSE_BUTTONS.contains(&caller), REMOVE_DISPLAY.contains(&caller));
+    let Some((at, mut quads)) = flushed_quads(system) else { return };
+    for quad in (0..quads.len()).step_by(0x60) {
+        let xs = (0..4).map(|corner| get(&quads, quad + corner * 0x18));
+        let (left, right) = xs.fold((f32::MAX, f32::MIN), |(left, right), x| (left.min(x), right.max(x)));
+        let across = left <= 0.5 && right >= 319.5;
+        // Resume on the left, Retreat on the right
+        let by_right = corner || (buttons && left + right >= 320.0);
+        let offset = match (buttons || corner, by_right) {
+            (false, _) => PAUSE_MENU_OFFSET,
+            (true, false) => 0.0,
+            (true, true) => 2.0 * PAUSE_MENU_OFFSET,
+        };
+        for corner in (quad..quad + 0x60).step_by(0x18) {
+            let x = get(&quads, corner);
+            set(&mut quads, corner, if across { x * 400.0 / 320.0 } else { x + offset });
+        }
+    }
+    system.memory.write_bytes(at, &quads);
+    if buttons || corner {
+        let frame = system.frames;
+        if let Some(aim_mouse) = &mut system.aim_mouse {
+            aim_mouse.edges_drawn = Some(frame);
+        }
+    }
+}
+
 /// puts the portraits, drawn for the bottom screen, in the top screen's
 /// bottom corners, smaller: a speaker on the left half of the bottom screen
 /// in the bottom left corner, one on the right in the bottom right.
@@ -487,6 +740,7 @@ fn shrink_hud(system: &mut System) {
     match drawing(system) {
         Some(Drawing::Portraits) => return place_portraits(system),
         Some(Drawing::Mirrored(index)) => return place_mirrored(system, &MIRRORED[index]),
+        Some(Drawing::PauseMenu(_)) => return place_pause_menu(system),
         _ => {}
     }
     let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.hud_scale);
@@ -556,4 +810,29 @@ fn shrink_reticle(system: &mut System) {
     system.memory.read_bytes(at, &mut size);
     let size = f32::from_le_bytes(size) * scale;
     system.memory.write_bytes(at, &size.to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// a touch of the top screen's pause menu touches the bottom screen
+    /// where the same thing is, by the edges too, and nothing beside what
+    /// went to them.
+    #[test]
+    fn pause_menu_touches_follow_the_edges() {
+        let mut aim_mouse = AimMouse { pause_drawn: Some(10), ..AimMouse::default() };
+        // the main page drawn by the edges, Resume, Retreat, Options, Remove Display
+        aim_mouse.edges_drawn = Some(10);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 60.0, 83.0), Some((60.0, 83.0)));
+        assert_eq!(aim_mouse.pause_menu_touch(11, 330.0, 83.0), Some((250.0, 83.0)));
+        assert_eq!(aim_mouse.pause_menu_touch(11, 200.0, 134.0), Some((160.0, 134.0)));
+        assert_eq!(aim_mouse.pause_menu_touch(11, 340.0, 222.0), Some((260.0, 222.0)));
+        // between Resume and Retreat, and left of Remove Display
+        assert_eq!(aim_mouse.pause_menu_touch(11, 200.0, 83.0), None);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 250.0, 222.0), None);
+        // a page of Options, all of it in the middle
+        assert_eq!(aim_mouse.pause_menu_touch(20, 60.0, 83.0), Some((20.0, 83.0)));
+        assert_eq!(aim_mouse.pause_menu_touch(20, 20.0, 83.0), None);
+    }
 }

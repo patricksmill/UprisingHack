@@ -93,6 +93,7 @@ pub fn run(linked: Option<Linked>) {
         mouse_down: false,
         tilting_from: None,
         aim_captured: false,
+        released_for_pause: false,
         aim_sensitivity: std::env::var("ZAKURO_AIM_SENSITIVITY").ok().and_then(|value| value.parse().ok()).unwrap_or(0.5),
         cursor: (0.0, 0.0),
         last_title_update: Instant::now(),
@@ -374,6 +375,9 @@ struct App {
     /// bottom screen is held touched in its middle and the left button
     /// fires.
     aim_captured: bool,
+    /// the mouse was let go for the pause menu on the top screen, and is
+    /// held again once it is gone.
+    released_for_pause: bool,
     /// reticle pixels a count of the mouse moves it, ZAKURO_AIM_SENSITIVITY.
     aim_sensitivity: f32,
     cursor: (f32, f32),
@@ -534,6 +538,7 @@ impl ApplicationHandler for App {
             // keys let go while another window has the keyboard never come
             WindowEvent::Focused(false) => {
                 self.fast_forward_key = false;
+                self.released_for_pause = false;
                 self.set_aim_captured(false);
                 self.keyboard.release();
             }
@@ -696,7 +701,9 @@ impl App {
             let portrait_scale = std::env::var("ZAKURO_PORTRAIT_SCALE").ok().and_then(|value| value.parse().ok()).unwrap_or(0.5);
             // and the hearts, item box and power icon, ZAKURO_MIRROR_BOTTOM=0 leaves them below
             let mirror_bottom = std::env::var("ZAKURO_MIRROR_BOTTOM").map_or(true, |value| value != "0");
-            system.aim_mouse = Some(zakuro_core::aim_mouse::AimMouse::new(hud_scale, narration_on_top, portrait_scale, mirror_bottom));
+            // and the pause menu, where the mouse touches it, ZAKURO_PAUSE_TOP=0 leaves it below
+            let pause_on_top = std::env::var("ZAKURO_PAUSE_TOP").map_or(true, |value| value != "0");
+            system.aim_mouse = Some(zakuro_core::aim_mouse::AimMouse::new(hud_scale, narration_on_top, portrait_scale, mirror_bottom, pause_on_top));
             // at 60 FPS the game has half a 3DS's time for each frame, which
             // its busiest scenes need more than: ZAKURO_OVERCLOCK times the
             // instructions in the same time, 1 as the console
@@ -785,10 +792,12 @@ impl App {
         if pressed && !event.repeat {
             match code {
                 KeyCode::F6 if self.game.as_ref().is_some_and(|game| game.system.aim_mouse.is_some()) => {
+                    self.released_for_pause = false;
                     self.set_aim_captured(!self.aim_captured);
                     return;
                 }
                 KeyCode::Escape if self.game.is_some() => {
+                    self.released_for_pause = false;
                     self.set_aim_captured(false);
                     self.menus.menu_open = !self.menus.menu_open;
                     self.keyboard.release();
@@ -870,6 +879,29 @@ impl App {
         log::info!("mouse aiming {}", if captured { "on, F6 lets go" } else { "off" });
     }
 
+    /// whether Kid Icarus: Uprising shows its pause menu on the top screen.
+    fn pause_menu_shown(&self) -> bool {
+        self.game.as_ref().is_some_and(|game| {
+            game.system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.pause_menu_shown(game.system.frames))
+        })
+    }
+
+    /// lets the mouse go while the pause menu is on the top screen, for
+    /// touching it there, and holds it again once the menu is gone, when it
+    /// was let go for it.
+    fn follow_pause_menu(&mut self) {
+        let shown = self.pause_menu_shown();
+        if shown && self.aim_captured {
+            self.set_aim_captured(false);
+            self.released_for_pause = true;
+        } else if !shown && self.released_for_pause {
+            self.released_for_pause = false;
+            // the click that closed it is not still touching
+            self.mouse_down = false;
+            self.set_aim_captured(true);
+        }
+    }
+
     /// whether the pointer is busy with something other than the game.
     fn pointer_taken(&self, consumed: bool) -> bool {
         consumed || self.game.is_none() || self.menus.menu_open || self.gui.as_ref().is_some_and(Gui::wants_pointer)
@@ -879,10 +911,18 @@ impl App {
     fn touch(&mut self) {
         let Some(window) = &self.window else { return };
         let size = window.inner_size();
-        let (_, bottom) = layout(size.width, size.height, self.layout.screens(), self.top_shape.width(), self.settings.integer_scale);
-        // with the top screen alone there is nothing to touch
+        let (top, bottom) = layout(size.width, size.height, self.layout.screens(), self.top_shape.width(), self.settings.integer_scale);
+        // with the top screen alone there is nothing to touch, but for the
+        // pause menu drawn there
         let Some(bottom) = bottom else {
-            self.keyboard.touch(None);
+            let touched = top.filter(|_| self.mouse_down && self.pause_menu_shown()).and_then(|top| {
+                let game = self.game.as_ref()?;
+                let x = (self.cursor.0 - top.x) / top.width * 400.0;
+                let y = (self.cursor.1 - top.y) / top.height * 240.0;
+                let (x, y) = game.system.aim_mouse.as_ref()?.pause_menu_touch(game.system.frames, x, y)?;
+                Some((x as u16, y as u16))
+            });
+            self.keyboard.touch(touched);
             return;
         };
         let x = self.cursor.0 - bottom.x;
@@ -1290,6 +1330,7 @@ impl App {
             let start = Instant::now();
             self.emulate();
             self.spent.emulating.add(start.elapsed());
+            self.follow_pause_menu();
         } else if let Some(audio) = &self.audio {
             // the sound stops with the game, which is not falling behind
             audio.hold();
