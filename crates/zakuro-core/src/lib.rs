@@ -1,6 +1,7 @@
 //! the emulated console, CPU, memory, HLE kernel, HLE services and GPU, and
 //! the loop that drives them.
 
+pub mod aim_mouse;
 pub mod camera;
 pub mod cheats;
 pub mod enhancements;
@@ -188,6 +189,8 @@ pub struct System {
     pub room: Option<room::Link>,
     /// errors the title reported through err:f, newest last.
     pub fatal_errors: Vec<String>,
+    /// mouse aiming for Kid Icarus: Uprising, when the frontend turned it on.
+    pub aim_mouse: Option<aim_mouse::AimMouse>,
     /// undefined instructions we have seen, so the log stays readable.
     undefined_seen: BTreeMap<u32, u32>,
     /// branches into unmapped memory, keyed by target.
@@ -283,6 +286,7 @@ impl System {
             camera: None,
             room: None,
             fatal_errors: Vec::new(),
+            aim_mouse: None,
             undefined_seen: BTreeMap::new(),
             prefetch_aborts: BTreeMap::new(),
             history: [0; HISTORY_LENGTH],
@@ -455,6 +459,10 @@ impl System {
             return StepOutcome::Ran;
         }
 
+        if self.aim_mouse.is_some() {
+            aim_mouse::apply(self, pc);
+        }
+
         self.history[self.history_index] = pc | self.cpu.cpsr.thumb as u32;
         self.history_index = (self.history_index + 1) % HISTORY_LENGTH;
 
@@ -571,7 +579,7 @@ impl System {
         if let Some(deadline) = deadline {
             limit = limit.min(deadline);
         }
-        let budget = limit.saturating_sub(self.cpu.cycles).max(1);
+        let budget = limit.saturating_sub(self.cpu.cycles).max(1) * self.cpu.overclock as u64;
         // a read of the CPU from where the GPU drew has that come down
         // first, with nothing else holding the GPU until the run is over
         let gpu = &mut self.gpu as *mut Gpu as *mut ();

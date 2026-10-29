@@ -29,6 +29,9 @@ pub struct Library {
     /// picks. a jump through a register looks its target up, which is a
     /// search through every function otherwise.
     found: Box<[Found]>,
+    /// the executable's functions the host asked the interpreter to run,
+    /// which stay so whenever the code is checked again.
+    interpreted: Vec<u32>,
 }
 
 /// a slot of Library::found, an address and the code found for it.
@@ -159,7 +162,7 @@ impl Library {
     }
 
     fn new(code: recomp_abi::Library) -> Library {
-        Library { code, fallbacks: Cell::new(0), found: Library::nothing_found() }
+        Library { code, fallbacks: Cell::new(0), found: Library::nothing_found(), interpreted: Vec::new() }
     }
 
     /// every slot of found empty, an address no code starts at in each.
@@ -212,8 +215,22 @@ impl Library {
     /// game does, so that the interpreter runs them. how many there are.
     pub fn check(&mut self, memory: &mut Memory) -> usize {
         let stale = self.code.check(0, 0, |address, bytes| memory.read_bytes(address, bytes));
+        for &start in &self.interpreted {
+            self.code.interpret(0, start);
+        }
         self.found = Library::nothing_found();
         stale
+    }
+
+    /// has the interpreter run the executable's function that starts at
+    /// start, for a host that has to stop inside it. whether there is one.
+    pub fn interpret(&mut self, start: u32) -> bool {
+        if !self.code.interpret(0, start) {
+            return false;
+        }
+        self.interpreted.push(start);
+        self.found = Library::nothing_found();
+        true
     }
 
     /// tells the code of the module called name where the title loaded it,
@@ -296,7 +313,7 @@ impl Library {
         let ran = budget.saturating_sub(ctx.budget.max(0) as u64);
         // the interpreter counted the instructions it ran for the code, which
         // the budget already has
-        machine.cpu.cycles = cycles + ran;
+        machine.cpu.cycles = cycles + ran / machine.cpu.overclock.max(1) as u64;
         (ran, stop)
     }
 }

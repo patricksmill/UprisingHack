@@ -15,6 +15,8 @@ pub struct Keyboard {
     /// the C-stick's, the same way.
     c_stick: [bool; 4],
     touch: Option<(u16, u16)>,
+    /// buttons the mouse's buttons hold while it aims.
+    mouse_buttons: PadState,
     /// how the mouse tilts the console, see InputState::tilt.
     tilt: [f32; 2],
 }
@@ -35,7 +37,13 @@ impl Keyboard {
         self.circle = [false; 4];
         self.c_stick = [false; 4];
         self.touch = None;
+        self.mouse_buttons = PadState::default();
         self.tilt = [0.0; 2];
+    }
+
+    /// holds or lets go of a button for a mouse button.
+    pub fn mouse_button(&mut self, button: PadState, pressed: bool) {
+        self.mouse_buttons.set(button, pressed);
     }
 
     fn button_for(&self, key: KeyCode) -> Option<PadState> {
@@ -94,7 +102,7 @@ impl Keyboard {
         let [up, down, left, right] = self.circle;
         let [c_up, c_down, c_left, c_right] = self.c_stick;
         InputState {
-            buttons: self.buttons,
+            buttons: self.buttons | self.mouse_buttons,
             circle_x: axis(right, left),
             circle_y: axis(up, down),
             c_stick_x: axis(c_right, c_left),

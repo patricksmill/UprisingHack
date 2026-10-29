@@ -20,10 +20,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use zakuro_common::Screen;
 use zakuro_core::{loader, Config, FrameOutcome, System};
@@ -92,6 +92,8 @@ pub fn run(linked: Option<Linked>) {
         audio: None,
         mouse_down: false,
         tilting_from: None,
+        aim_captured: false,
+        aim_sensitivity: std::env::var("ZAKURO_AIM_SENSITIVITY").ok().and_then(|value| value.parse().ok()).unwrap_or(0.5),
         cursor: (0.0, 0.0),
         last_title_update: Instant::now(),
         next_frame: Instant::now(),
@@ -367,6 +369,13 @@ struct App {
     /// where the pointer was when the right button went down, which tilts
     /// the console while held.
     tilting_from: Option<(f32, f32)>,
+    /// the mouse aims in Kid Icarus: Uprising, F6 turns it on and off: the
+    /// pointer is held in the window, its movement moves the reticle, the
+    /// bottom screen is held touched in its middle and the left button
+    /// fires.
+    aim_captured: bool,
+    /// reticle pixels a count of the mouse moves it, ZAKURO_AIM_SENSITIVITY.
+    aim_sensitivity: f32,
     cursor: (f32, f32),
     last_title_update: Instant,
     /// when the next frame is due. frames run to a schedule rather than one
@@ -525,6 +534,7 @@ impl ApplicationHandler for App {
             // keys let go while another window has the keyboard never come
             WindowEvent::Focused(false) => {
                 self.fast_forward_key = false;
+                self.set_aim_captured(false);
                 self.keyboard.release();
             }
             WindowEvent::Resized(size) => {
@@ -533,6 +543,12 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => self.key(event, consumed),
+            WindowEvent::MouseInput { state, button, .. } if self.aim_captured => {
+                if button == MouseButton::Left {
+                    self.keyboard.mouse_button(zakuro_core::services::hid::PadState::L, state == ElementState::Pressed);
+                }
+            }
+            WindowEvent::CursorMoved { .. } if self.aim_captured => {}
             WindowEvent::MouseInput { state, button, .. } => {
                 if button == MouseButton::Left {
                     self.mouse_down = state == ElementState::Pressed && !self.pointer_taken(consumed);
@@ -551,6 +567,15 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => self.step(event_loop),
             _ => {}
+        }
+    }
+
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let (true, DeviceEvent::MouseMotion { delta }) = (self.aim_captured, event) {
+            let sensitivity = self.aim_sensitivity;
+            if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                aim_mouse.add(delta.0 as f32 * sensitivity, delta.1 as f32 * sensitivity);
+            }
         }
     }
 
@@ -652,7 +677,26 @@ impl App {
             }
             None => None,
         };
-        let system = loader::load(path, config).map_err(|error| format!("could not open {}, {error}", path.display()))?;
+        let mut system = loader::load(path, config).map_err(|error| format!("could not open {}, {error}", path.display()))?;
+        // the mouse aims through stops the interpreter makes, which the
+        // recompiled code doesn't: the functions they are in are left to it
+        if system.title.as_ref().is_some_and(|title| title.program_id() == zakuro_core::aim_mouse::PROGRAM_ID) {
+            if let Some(library) = &mut system.recompiled {
+                if !zakuro_core::aim_mouse::FUNCTIONS.iter().all(|&start| library.interpret(start)) {
+                    log::warn!("the recompiled code lacks a function mouse aiming stops in, interpreting all of it");
+                    system.recompiled = None;
+                }
+            }
+            // the HUD made for a small screen, drawn smaller on a big one,
+            // ZAKURO_HUD_SCALE, 1 as the game draws it
+            let hud_scale = std::env::var("ZAKURO_HUD_SCALE").ok().and_then(|value| value.parse().ok()).unwrap_or(0.7);
+            system.aim_mouse = Some(zakuro_core::aim_mouse::AimMouse { hud_scale, ..Default::default() });
+            // at 60 FPS the game has half a 3DS's time for each frame, which
+            // its busiest scenes need more than: ZAKURO_OVERCLOCK times the
+            // instructions in the same time, 1 as the console
+            system.cpu.overclock = std::env::var("ZAKURO_OVERCLOCK").ok().and_then(|value| value.parse().ok()).unwrap_or(2).max(1);
+            log::info!("mouse aiming available, F6 captures the mouse, HUD drawn at {hud_scale}, CPU at {}x", system.cpu.overclock);
+        }
         let outdated = system.recompiled.as_ref().is_some_and(|code| code.outdated());
         // the settings ask for the 3D on the GPU, but Vulkan didn't start:
         // only the log said so, while the game ran slowly
@@ -734,7 +778,12 @@ impl App {
         }
         if pressed && !event.repeat {
             match code {
+                KeyCode::F6 if self.game.as_ref().is_some_and(|game| game.system.aim_mouse.is_some()) => {
+                    self.set_aim_captured(!self.aim_captured);
+                    return;
+                }
                 KeyCode::Escape if self.game.is_some() => {
+                    self.set_aim_captured(false);
                     self.menus.menu_open = !self.menus.menu_open;
                     self.keyboard.release();
                     return;
@@ -784,6 +833,35 @@ impl App {
                 self.keyboard.release();
             }
         }
+    }
+
+    /// holds the pointer for aiming or lets it go back to touching.
+    fn set_aim_captured(&mut self, captured: bool) {
+        if captured == self.aim_captured {
+            return;
+        }
+        let Some(window) = &self.window else { return };
+        if captured {
+            if window.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined)).is_err() {
+                log::warn!("could not hold the pointer in the window");
+                return;
+            }
+            window.set_cursor_visible(false);
+            // held still, the touch moves nothing, but the game keeps the
+            // reticle where the mouse put it instead of easing it back
+            self.keyboard.touch(Some((160, 120)));
+        } else {
+            let _ = window.set_cursor_grab(CursorGrabMode::None);
+            window.set_cursor_visible(true);
+            self.keyboard.touch(None);
+            self.keyboard.mouse_button(zakuro_core::services::hid::PadState::L, false);
+        }
+        self.aim_captured = captured;
+        if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+            aim_mouse.pending = [0.0; 2];
+            aim_mouse.captured = captured;
+        }
+        log::info!("mouse aiming {}", if captured { "on, F6 lets go" } else { "off" });
     }
 
     /// whether the pointer is busy with something other than the game.

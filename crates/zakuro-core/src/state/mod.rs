@@ -187,7 +187,9 @@ impl System {
             store.copy_from_slice(memory);
         }
         self.memory.load_map(saved.map)?;
+        let overclock = self.cpu.overclock;
         self.cpu = saved.cpu;
+        self.cpu.overclock = overclock;
         self.kernel = saved.kernel;
         let user_dir = std::mem::take(&mut self.services.fs.user_dir);
         self.services = saved.services;

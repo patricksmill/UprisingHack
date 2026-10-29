@@ -79,6 +79,18 @@ pub struct Cpu {
 
     /// free-running instruction counter, used for scheduling.
     pub cycles: u64,
+    /// instructions run for each cycle counted, 1 as the console runs
+    /// them, more to give a game that misses its frames more time in each.
+    /// a setting rather than state, saved states leave it out.
+    #[serde(skip, default = "one")]
+    pub overclock: u32,
+    /// instructions run toward the next cycle while overclocked.
+    #[serde(skip)]
+    spare: u32,
+}
+
+fn one() -> u32 {
+    1
 }
 
 impl Default for Cpu {
@@ -118,6 +130,8 @@ impl Cpu {
             branched: false,
             halted: false,
             cycles: 0,
+            overclock: 1,
+            spare: 0,
         }
     }
 
@@ -309,7 +323,11 @@ impl Cpu {
     /// compiler's choice flips with unrelated changes to its callers.
     #[inline(always)]
     pub fn step<B: Bus>(&mut self, bus: &mut B) -> Option<Exit> {
-        self.cycles += 1;
+        self.spare += 1;
+        if self.spare >= self.overclock {
+            self.spare = 0;
+            self.cycles += 1;
+        }
         if self.cpsr.thumb {
             let addr = self.regs[PC];
             let opcode = bus.fetch16(addr) as u32;

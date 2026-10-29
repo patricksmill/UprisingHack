@@ -55,3 +55,7 @@ lto = "thin"
 codegen-units = 4
 panic = "unwind"
 debug = 1
+
+# the interpreter told to run single functions, for mouse aiming
+[patch."https://github.com/fearkov/3dsrecomp"]
+recomp-abi = { path = "../3dsrecomp/abi" }
