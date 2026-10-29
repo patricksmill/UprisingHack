@@ -13,7 +13,16 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 /// the places below, which the interpreter has to run for it to stop at
 /// them: every function whose code takes one in runs in it, the rest of the
 /// game stays recompiled.
-pub const PLACES: [u32; 5] = [AFTER_AIM_DELTA, BEFORE_CAMERA_TURN, SPRITE_FLUSH, RETICLE_SIZE, TOP_UI_AFTER_HUD];
+pub const PLACES: [u32; 8] = [
+    AFTER_AIM_DELTA,
+    BEFORE_CAMERA_TURN,
+    SPRITE_FLUSH,
+    RETICLE_DRAW,
+    TOP_UI_AFTER_HUD,
+    MIRRORED[0].site,
+    MIRRORED[1].site,
+    MIRRORED[2].site,
+];
 
 /// where 0x006D269C goes on after 0x00B12218 summed the aim delta, which it
 /// left at sp+8 as reticle pixels a second, with the aim object in r4 and
@@ -61,10 +70,46 @@ const PORTRAITS: u32 = 0xC3C;
 /// less it, and not at all once it is 1 (0x00A182C4).
 const BOTTOM_FADE: u32 = 0x2454;
 
+/// a bottom screen element drawn on the top screen too: the call the bottom
+/// pass makes to draw it, which the top pass makes again with what the
+/// bottom pass gave it, and where its sprites go.
+struct Mirrored {
+    /// the call's bl, in the bottom screen's background drawing (0x00A17F70),
+    /// with the bottom UI in r0, the 2D context in r1 and floats in s0..s2.
+    site: u32,
+    /// the bottom screen's corner the element is drawn by.
+    from: [f32; 2],
+    /// the top screen's corner it goes by, and how far down from it in HUD
+    /// pixels, the height of what is above it there.
+    to: [f32; 2],
+    below: f32,
+    /// where its sprite flushes come back to that draw something left off
+    /// the top screen.
+    hidden: &'static [u32],
+}
+
+/// the chapter title and hearts, under the score; the item box and power
+/// icon, under the health bar. the chapter title is left off.
+const MIRRORED: [Mirrored; 3] = [
+    Mirrored { site: 0x00A181CC, from: [320.0, 0.0], to: [400.0, 0.0], below: 48.0, hidden: &[0x00A192E4] },
+    Mirrored { site: 0x00A18400, from: [0.0, 194.0], to: [0.0, 0.0], below: 44.0, hidden: &[] },
+    Mirrored { site: 0x00A18430, from: [0.0, 194.0], to: [0.0, 0.0], below: 44.0, hidden: &[] },
+];
+
+/// what a mirrored element's call was given in the bottom pass, made again
+/// in the next frame's top pass.
+#[derive(Clone, Copy)]
+struct Recorded {
+    target: u32,
+    regs: [u32; 4],
+    floats: [u32; 8],
+}
+
 /// what the game's code is drawing on the top screen for us.
 #[derive(Clone, Copy, PartialEq)]
 enum Drawing {
     Portraits,
+    Mirrored(usize),
     Narration,
 }
 
@@ -79,9 +124,11 @@ struct Saved {
     moved: Option<(u32, [u8; 8])>,
 }
 
-/// where placing the reticle, 0x007C4854, has worked out the size to draw
-/// it at, in s17, its base size over its depth, and is about to keep it.
-const RETICLE_SIZE: u32 = 0x007C4BD0;
+/// where placing the reticle, 0x007C4854, hands each of its two parts the
+/// size and place to draw it at: r1 points at them, the size first, r4
+/// counts the parts. the size it keeps (reticle+0x5C) goes on into what the
+/// reticle takes in, so only this copy is made smaller.
+const RETICLE_DRAW: u32 = 0x007C4DC0;
 
 pub struct AimMouse {
     /// reticle pixels moved since the game last took them.
@@ -101,20 +148,27 @@ pub struct AimMouse {
     /// the CPU while the game draws the portraits or the narration on the
     /// top screen.
     saved: Option<Saved>,
+    /// whether the bottom screen's hearts, item box and power icon are drawn
+    /// on the top screen too.
+    pub mirror_bottom: bool,
+    /// the mirrored elements' calls from the last bottom pass, by MIRRORED's
+    /// order.
+    recorded: [Option<Recorded>; 3],
 }
 
 impl Default for AimMouse {
     fn default() -> AimMouse {
-        AimMouse { pending: [0.0; 2], captured: false, hud_scale: 1.0, narration_on_top: false, portrait_scale: 0.0, context: None, saved: None }
+        AimMouse { pending: [0.0; 2], captured: false, hud_scale: 1.0, narration_on_top: false, portrait_scale: 0.0, context: None, saved: None, mirror_bottom: false, recorded: [None; 3] }
     }
 }
 
 impl AimMouse {
     /// for the game, drawing the HUD at hud_scale, the narration on the top
-    /// screen too when narration_on_top, and the portraits there at
-    /// portrait_scale, 0 for not.
-    pub fn new(hud_scale: f32, narration_on_top: bool, portrait_scale: f32) -> AimMouse {
-        AimMouse { hud_scale, narration_on_top, portrait_scale, ..AimMouse::default() }
+    /// screen too when narration_on_top, the portraits there at
+    /// portrait_scale, 0 for not, and the hearts, item box and power icon
+    /// there when mirror_bottom.
+    pub fn new(hud_scale: f32, narration_on_top: bool, portrait_scale: f32, mirror_bottom: bool) -> AimMouse {
+        AimMouse { hud_scale, narration_on_top, portrait_scale, mirror_bottom, ..AimMouse::default() }
     }
 
     pub fn add(&mut self, dx: f32, dy: f32) {
@@ -139,8 +193,9 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
             }
             shrink_hud(system);
         }
-        RETICLE_SIZE => shrink_reticle(system),
+        RETICLE_DRAW => shrink_reticle(system),
         TOP_UI_AFTER_HUD => top_screen_extras(system),
+        _ if MIRRORED.iter().any(|mirrored| mirrored.site == pc) => record(system, pc),
         _ => {}
     }
 }
@@ -202,14 +257,62 @@ fn top_screen_extras(system: &mut System) {
         if let Some((message, position)) = back.moved {
             system.memory.write_bytes(message + 0x14, &position);
         }
-        if back.drawing == Drawing::Portraits {
+        let next = match back.drawing {
+            Drawing::Portraits => 0,
+            Drawing::Mirrored(index) => index + 1,
+            Drawing::Narration => return,
+        };
+        if !start_mirrored(system, next) {
             start_narration(system);
         }
         return;
     }
-    if !start_portraits(system) {
+    if !start_portraits(system) && !start_mirrored(system, 0) {
         start_narration(system);
     }
+}
+
+/// keeps what the bottom pass gives a mirrored element's call, for the top
+/// pass to make it again.
+fn record(system: &mut System, site: u32) {
+    let Some(index) = MIRRORED.iter().position(|mirrored| mirrored.site == site) else { return };
+    let mut word = [0u8; 4];
+    system.memory.read_bytes(site, &mut word);
+    let word = u32::from_le_bytes(word);
+    // a bl: its target is 8 past it and the offset in words
+    if word >> 24 & 0x0F != 0x0B {
+        return;
+    }
+    let offset = ((word << 8) as i32 >> 6) as u32;
+    let target = site.wrapping_add(8).wrapping_add(offset);
+    let cpu = &system.cpu;
+    let recorded = Recorded {
+        target,
+        regs: [cpu.regs[0], cpu.regs[1], cpu.regs[2], cpu.regs[3]],
+        floats: cpu.vfp.regs[..8].try_into().unwrap(),
+    };
+    if let Some(aim_mouse) = &mut system.aim_mouse {
+        aim_mouse.recorded[index] = Some(recorded);
+    }
+}
+
+/// starts drawing the first mirrored element from index on that the last
+/// bottom pass drew, whether there was one. each is drawn once: the bottom
+/// pass records it again when it draws it again.
+fn start_mirrored(system: &mut System, from: usize) -> bool {
+    let Some(aim_mouse) = &mut system.aim_mouse else { return false };
+    if !aim_mouse.mirror_bottom {
+        return false;
+    }
+    for index in from..MIRRORED.len() {
+        let Some(recorded) = aim_mouse.recorded[index].take() else { continue };
+        call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::Mirrored(index), None);
+        system.cpu.regs[2] = recorded.regs[2];
+        system.cpu.regs[3] = recorded.regs[3];
+        system.cpu.vfp.regs[..8].copy_from_slice(&recorded.floats);
+        return true;
+    }
+    false
 }
 
 /// has the game's code run function as if called from here with r0 and r1,
@@ -305,6 +408,29 @@ fn set(quads: &mut [u8], at: usize, value: f32) {
     quads[at..at + 4].copy_from_slice(&value.to_le_bytes());
 }
 
+/// puts a mirrored element's sprites, drawn for the bottom screen, by its
+/// corner of the top screen, at the HUD's scale, below what is there; those
+/// it leaves off go far off the screen.
+fn place_mirrored(system: &mut System, mirrored: &Mirrored) {
+    let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.hud_scale);
+    let hide = mirrored.hidden.contains(&system.cpu.regs[14]);
+    let Some((at, mut quads)) = flushed_quads(system) else { return };
+    let down = if mirrored.to[1] == 0.0 { mirrored.below * scale } else { -mirrored.below * scale };
+    for corner in (0..quads.len()).step_by(0x18) {
+        let (x, y) = if hide {
+            (-10000.0, -10000.0)
+        } else {
+            (
+                mirrored.to[0] + (get(&quads, corner) - mirrored.from[0]) * scale,
+                mirrored.to[1] + down + (get(&quads, corner + 4) - mirrored.from[1]) * scale,
+            )
+        };
+        set(&mut quads, corner, x);
+        set(&mut quads, corner + 4, y);
+    }
+    system.memory.write_bytes(at, &quads);
+}
+
 /// puts the portraits, drawn for the bottom screen, in the top screen's
 /// bottom corners, smaller: a speaker on the left half of the bottom screen
 /// in the bottom left corner, one on the right in the bottom right.
@@ -343,9 +469,10 @@ fn top_hud(system: &System, caller: u32) -> bool {
 /// draw, scaled together toward the edge or corner they sit by, or their
 /// own middle when they are by none, like a marker on an enemy.
 fn shrink_hud(system: &mut System) {
-    if drawing(system) == Some(Drawing::Portraits) {
-        place_portraits(system);
-        return;
+    match drawing(system) {
+        Some(Drawing::Portraits) => return place_portraits(system),
+        Some(Drawing::Mirrored(index)) => return place_mirrored(system, &MIRRORED[index]),
+        _ => {}
     }
     let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.hud_scale);
     if scale == 1.0 || !top_hud(system, system.cpu.regs[14]) {
@@ -402,9 +529,16 @@ fn shrink_hud(system: &mut System) {
     system.memory.write_bytes(end - count * 0x60, &quads);
 }
 
-/// draws the reticle at the HUD's scale.
+/// draws the reticle at the HUD's scale: its parts' size, made smaller once
+/// before the first is drawn.
 fn shrink_reticle(system: &mut System) {
     let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.hud_scale);
-    let size = &mut system.cpu.vfp.regs[17];
-    *size = (f32::from_bits(*size) * scale).to_bits();
+    if scale == 1.0 || system.cpu.regs[4] != 0 {
+        return;
+    }
+    let at = system.cpu.regs[1];
+    let mut size = [0u8; 4];
+    system.memory.read_bytes(at, &mut size);
+    let size = f32::from_le_bytes(size) * scale;
+    system.memory.write_bytes(at, &size.to_le_bytes());
 }
