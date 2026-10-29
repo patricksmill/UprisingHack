@@ -88,6 +88,12 @@ impl Default for AimMouse {
 }
 
 impl AimMouse {
+    /// for the game, drawing the HUD at hud_scale and the narration on the
+    /// top screen too when narration_on_top.
+    pub fn new(hud_scale: f32, narration_on_top: bool) -> AimMouse {
+        AimMouse { hud_scale, narration_on_top, ..AimMouse::default() }
+    }
+
     pub fn add(&mut self, dx: f32, dy: f32) {
         self.pending[0] += dx;
         self.pending[1] += dy;
