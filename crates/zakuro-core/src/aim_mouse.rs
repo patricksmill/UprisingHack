@@ -83,6 +83,8 @@ struct Mirrored {
     /// pixels, the height of what is above it there.
     to: [f32; 2],
     below: f32,
+    /// its size against the rest of the HUD.
+    size: f32,
     /// where its sprite flushes come back to that draw something left off
     /// the top screen.
     hidden: &'static [u32],
@@ -91,9 +93,9 @@ struct Mirrored {
 /// the chapter title and hearts, under the score; the item box and power
 /// icon, under the health bar. the chapter title is left off.
 const MIRRORED: [Mirrored; 3] = [
-    Mirrored { site: 0x00A181CC, from: [320.0, 0.0], to: [400.0, 0.0], below: 48.0, hidden: &[0x00A192E4] },
-    Mirrored { site: 0x00A18400, from: [0.0, 194.0], to: [0.0, 0.0], below: 44.0, hidden: &[] },
-    Mirrored { site: 0x00A18430, from: [0.0, 194.0], to: [0.0, 0.0], below: 44.0, hidden: &[] },
+    Mirrored { site: 0x00A181CC, from: [320.0, 0.0], to: [400.0, 0.0], below: 40.0, size: 1.0, hidden: &[0x00A192E4] },
+    Mirrored { site: 0x00A18400, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, hidden: &[] },
+    Mirrored { site: 0x00A18430, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, hidden: &[] },
 ];
 
 /// what a mirrored element's call was given in the bottom pass, made again
@@ -416,6 +418,7 @@ fn place_mirrored(system: &mut System, mirrored: &Mirrored) {
     let hide = mirrored.hidden.contains(&system.cpu.regs[14]);
     let Some((at, mut quads)) = flushed_quads(system) else { return };
     let down = if mirrored.to[1] == 0.0 { mirrored.below * scale } else { -mirrored.below * scale };
+    let scale = scale * mirrored.size;
     for corner in (0..quads.len()).step_by(0x18) {
         let (x, y) = if hide {
             (-10000.0, -10000.0)
