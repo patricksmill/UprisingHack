@@ -15,10 +15,12 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 /// game stays recompiled. one place a function does, the pause menu's top
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another.
-pub const PLACES: [u32; 11] = [
+pub const PLACES: [u32; 13] = [
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
     SPRITE_FLUSH,
+    PROJECTION,
+    PASS_BEGIN,
     RETICLE_DRAW,
     TOP_UI_AFTER_HUD,
     PAUSE_MENU[0].site,
@@ -45,6 +47,23 @@ const BEFORE_CAMERA_TURN: u32 = 0x006D2ED4;
 /// [batch+0x3C] - [batch+0x40], 0x60 bytes each, four corners of 0x18 bytes
 /// with x and y first, in pixels of the screen drawn to.
 const SPRITE_FLUSH: u32 = 0x0092F408;
+
+/// a camera's projection, 0x003901C4(camera), built from the lens at
+/// camera+4 the first time and kept at camera+0x6C while bit 2 of camera+8
+/// stays set. the 3D, the culling and the aim's ray all take it.
+const PROJECTION: u32 = 0x003901C4;
+
+/// the lenses that make a perspective one, their vtable, with the aspect,
+/// width over height, at lens+0x14 (5:3 in battle), the vertical field
+/// of view at +0x10 (45 degrees).
+const PERSPECTIVE_LENS: u32 = 0x00D20080;
+const LENS_FOVY: u32 = 0x10;
+const LENS_ASPECT: u32 = 0x14;
+
+/// a 2D context starting a pass, 0x0092E4F8(context, screen): 0 the top
+/// screen, 1 the bottom one. the context is the sprite batch the pass's
+/// flushes get.
+const PASS_BEGIN: u32 = 0x0092E4F8;
 
 /// in the top screen's battle UI pass, 0x0060D39C, just after it drew the
 /// health bar: the narration is drawn there too.
@@ -259,6 +278,18 @@ pub struct AimMouse {
     /// and the last one Resume, Retreat or Remove Display was drawn by the
     /// top screen's edges in.
     edges_drawn: Option<u64>,
+    /// how many times wider than the console's 5:3 the top screen shows,
+    /// 1 for its own shape: the view is that much wider and the top
+    /// screen's 2D that much narrower, so it shows the right shape stretched.
+    pub widen: f32,
+    /// the 2D contexts seen starting a pass, and the screen each draws.
+    screens: Vec<(u32, u32)>,
+    /// the lenses widened: where, the aspect the game gave each and the one
+    /// written over it.
+    lenses: Vec<(u32, f32, f32)>,
+    /// tan of half the view's width at the aspect the game gave, 0.69 in
+    /// battle.
+    half_width: f32,
 }
 
 impl Default for AimMouse {
@@ -277,6 +308,10 @@ impl Default for AimMouse {
             pause: [None; 15],
             pause_drawn: None,
             edges_drawn: None,
+            widen: 1.0,
+            screens: Vec::new(),
+            lenses: Vec::new(),
+            half_width: (std::f32::consts::FRAC_PI_8).tan() * 5.0 / 3.0,
         }
     }
 }
@@ -310,21 +345,25 @@ impl AimMouse {
     pub fn pause_menu_touch(&self, frame: u64, x: f32, y: f32) -> Option<(f32, f32)> {
         let edges = self.edges_drawn.is_some_and(|drawn| frame <= drawn + 3);
         let right = 2.0 * PAUSE_MENU_OFFSET;
+        // where it would be with the top screen its own shape, by the left
+        // edge, the right one or the middle, see place_pause_menu
+        let k = self.widen;
+        let (by_left, by_right, middle) = (x * k, 400.0 - (400.0 - x) * k, 200.0 + (x - 200.0) * k);
         let x = if edges && PAUSE_BUTTON_ROWS.contains(&y) {
-            if x < RESUME_RIGHT {
-                x
-            } else if x >= RETREAT_LEFT + right {
-                x - right
+            if by_left < RESUME_RIGHT {
+                by_left
+            } else if by_right >= RETREAT_LEFT + right {
+                by_right - right
             } else {
                 return None;
             }
-        } else if edges && y >= REMOVE_DISPLAY_CORNER[1] && x >= REMOVE_DISPLAY_CORNER[0] + PAUSE_MENU_OFFSET {
-            if x < REMOVE_DISPLAY_CORNER[0] + right {
+        } else if edges && y >= REMOVE_DISPLAY_CORNER[1] && by_right >= REMOVE_DISPLAY_CORNER[0] + PAUSE_MENU_OFFSET {
+            if by_right < REMOVE_DISPLAY_CORNER[0] + right {
                 return None;
             }
-            x - right
+            by_right - right
         } else {
-            x - PAUSE_MENU_OFFSET
+            middle - PAUSE_MENU_OFFSET
         };
         ((0.0..320.0).contains(&x) && (0.0..240.0).contains(&y)).then_some((x, y))
     }
@@ -337,6 +376,16 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
     match pc {
         AFTER_AIM_DELTA => add_delta(system),
         BEFORE_CAMERA_TURN => close_box(system),
+        PROJECTION => widen_view(system),
+        PASS_BEGIN => {
+            let (context, screen) = (system.cpu.regs[0], system.cpu.regs[1]);
+            if let Some(aim_mouse) = &mut system.aim_mouse {
+                match aim_mouse.screens.iter_mut().find(|(seen, _)| *seen == context) {
+                    Some(seen) => seen.1 = screen,
+                    None => aim_mouse.screens.push((context, screen)),
+                }
+            }
+        }
         SPRITE_FLUSH => {
             if system.cpu.regs[14] == SCORE_FLUSH_CALLER {
                 let context = system.cpu.regs[0];
@@ -377,6 +426,62 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
     }
 }
 
+fn read_word(system: &mut System, at: u32) -> u32 {
+    let mut word = [0u8; 4];
+    system.memory.read_bytes(at, &mut word);
+    u32::from_le_bytes(word)
+}
+
+/// makes the view widen times wider, before a camera's projection is
+/// taken: its perspective lens gets the aspect the game gave it times
+/// widen, and the projection is built again whenever that changes.
+fn widen_view(system: &mut System) {
+    let camera = system.cpu.regs[0];
+    let lens = read_word(system, camera + 4);
+    if lens == 0 || read_word(system, lens) != PERSPECTIVE_LENS {
+        return;
+    }
+    let aspect = f32::from_bits(read_word(system, lens + LENS_ASPECT));
+    let fovy = f32::from_bits(read_word(system, lens + LENS_FOVY));
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    // an aspect other than the one written last is the game's own
+    let kept = aim_mouse.lenses.iter().position(|&(at, ..)| at == lens);
+    let given = match kept.map(|index| aim_mouse.lenses[index]) {
+        Some((_, given, written)) if written == aspect => given,
+        _ => aspect,
+    };
+    if !(given.is_finite() && given > 0.0) {
+        return;
+    }
+    let wanted = given * aim_mouse.widen;
+    let half_width = (fovy * 0.5).tan() * given;
+    if half_width.is_finite() && half_width > 0.0 {
+        aim_mouse.half_width = half_width;
+    }
+    match kept {
+        Some(index) => aim_mouse.lenses[index] = (lens, given, wanted),
+        None => aim_mouse.lenses.push((lens, given, wanted)),
+    }
+    if wanted != aspect {
+        system.memory.write_bytes(lens + LENS_ASPECT, &wanted.to_le_bytes());
+        let flags = read_word(system, camera + 8) & !4;
+        system.memory.write_bytes(camera + 8, &flags.to_le_bytes());
+    }
+}
+
+/// how many times narrower the sprite batch about to be flushed is drawn,
+/// so it shows the right shape on a top screen widen times wider: widen for
+/// a context drawing the top screen, 1 for the bottom or one not seen
+/// starting a pass.
+fn widening(system: &System) -> f32 {
+    let Some(aim_mouse) = &system.aim_mouse else { return 1.0 };
+    let batch = system.cpu.regs[0];
+    match aim_mouse.screens.iter().find(|&&(context, _)| context == batch) {
+        Some(&(_, 0)) => aim_mouse.widen,
+        _ => 1.0,
+    }
+}
+
 /// on the ground, shrinks the box to its middle point, so that any movement
 /// of the reticle is past it and turns the camera.
 fn close_box(system: &mut System) {
@@ -404,9 +509,20 @@ fn close_box(system: &mut System) {
 fn add_delta(system: &mut System) {
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
     let [dx, dy] = std::mem::take(&mut aim_mouse.pending);
+    let (widen, half_width) = (aim_mouse.widen, aim_mouse.half_width);
     let aim = system.cpu.regs[4];
     let mut remote = [0u8];
     system.memory.read_bytes(aim + 0xD5, &mut remote);
+    // on a wider top screen the mouse moves as far: in the air the reticle
+    // as far across the window, on the ground the camera by as many degrees,
+    // where the game turns by the reticle's share of the view's width
+    let mut ground = [0u8];
+    system.memory.read_bytes(aim + 0x81, &mut ground);
+    let dx = match (widen == 1.0, ground[0] != 0) {
+        (true, _) => dx,
+        (false, true) => dx * half_width.atan() / (half_width * widen).atan(),
+        (false, false) => dx / widen,
+    };
     let dt = f32::from_bits(system.cpu.vfp.regs[16]);
     if remote[0] != 0 || dt <= 0.0 {
         return;
@@ -508,8 +624,10 @@ fn top_screen_pause_menu(system: &mut System, place: u32) {
     if let Some(mut matrices) = recorded.matrices {
         // the projection's second row turns the bottom screen's 320 pixels
         // into its width, the top's middle 320 of 400 is that much less
+        // and narrower about the middle on a wider one
+        let widen = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.widen);
         for word in &mut matrices[4..8] {
-            *word = (f32::from_bits(*word) * 320.0 / 400.0).to_bits();
+            *word = (f32::from_bits(*word) * 320.0 / 400.0 / widen).to_bits();
         }
         // below the stack the call starts with, put back after it
         let at = system.cpu.regs[13] - 0x70;
@@ -636,7 +754,7 @@ fn set(quads: &mut [u8], at: usize, value: f32) {
 /// puts a mirrored element's sprites, drawn for the bottom screen, by its
 /// corner of the top screen, at the HUD's scale, below what is there; those
 /// it leaves off go far off the screen.
-fn place_mirrored(system: &mut System, mirrored: &Mirrored) {
+fn place_mirrored(system: &mut System, mirrored: &Mirrored, widen: f32) {
     let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.hud_scale);
     let hide = mirrored.hidden.contains(&system.cpu.regs[14]);
     let Some((at, mut quads)) = flushed_quads(system) else { return };
@@ -653,7 +771,7 @@ fn place_mirrored(system: &mut System, mirrored: &Mirrored) {
                 (-10000.0, -10000.0)
             } else {
                 (
-                    mirrored.to[0] + (get(&quads, corner) - mirrored.from[0]) * scale,
+                    mirrored.to[0] + (get(&quads, corner) - mirrored.from[0]) * scale / widen,
                     mirrored.to[1] + down + (get(&quads, corner + 4) + moved - mirrored.from[1]) * scale,
                 )
             };
@@ -670,7 +788,7 @@ fn place_mirrored(system: &mut System, mirrored: &Mirrored) {
 /// the dimming and the band behind Options, spans the top screen, and
 /// Resume, Retreat and Remove Display go by its edges as they are by the
 /// bottom screen's.
-fn place_pause_menu(system: &mut System) {
+fn place_pause_menu(system: &mut System, widen: f32) {
     let caller = system.cpu.regs[14];
     let (buttons, corner) = (PAUSE_BUTTONS.contains(&caller), REMOVE_DISPLAY.contains(&caller));
     let Some((at, mut quads)) = flushed_quads(system) else { return };
@@ -685,9 +803,17 @@ fn place_pause_menu(system: &mut System) {
             (true, false) => 0.0,
             (true, true) => 2.0 * PAUSE_MENU_OFFSET,
         };
+        // and narrower on a wider top screen, toward the edge it is by or
+        // the middle
+        let anchor = match (buttons || corner, by_right) {
+            (false, _) => 200.0,
+            (true, false) => 0.0,
+            (true, true) => 400.0,
+        };
         for corner in (quad..quad + 0x60).step_by(0x18) {
             let x = get(&quads, corner);
-            set(&mut quads, corner, if across { x * 400.0 / 320.0 } else { x + offset });
+            let x = if across { x * 400.0 / 320.0 } else { anchor + (x + offset - anchor) / widen };
+            set(&mut quads, corner, x);
         }
     }
     system.memory.write_bytes(at, &quads);
@@ -702,7 +828,7 @@ fn place_pause_menu(system: &mut System) {
 /// puts the portraits, drawn for the bottom screen, in the top screen's
 /// bottom corners, smaller: a speaker on the left half of the bottom screen
 /// in the bottom left corner, one on the right in the bottom right.
-fn place_portraits(system: &mut System) {
+fn place_portraits(system: &mut System, widen: f32) {
     let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.portrait_scale);
     let Some((at, mut quads)) = flushed_quads(system) else { return };
     for quad in (0..quads.len()).step_by(0x60) {
@@ -713,7 +839,7 @@ fn place_portraits(system: &mut System) {
         // the bottom screen's edge the speaker is by, and the top screen's
         let (from, to) = if middle < 160.0 { (0.0, 0.0) } else { (320.0, 400.0) };
         for corner in (quad..quad + 0x60).step_by(0x18) {
-            let x = to + (get(&quads, corner) - from) * scale;
+            let x = to + (get(&quads, corner) - from) * scale / widen;
             let y = 240.0 + (get(&quads, corner + 4) - 240.0) * scale;
             set(&mut quads, corner, x);
             set(&mut quads, corner + 4, y);
@@ -737,14 +863,17 @@ fn top_hud(system: &System, caller: u32) -> bool {
 /// draw, scaled together toward the edge or corner they sit by, or their
 /// own middle when they are by none, like a marker on an enemy.
 fn shrink_hud(system: &mut System) {
+    let widen = widening(system);
     match drawing(system) {
-        Some(Drawing::Portraits) => return place_portraits(system),
-        Some(Drawing::Mirrored(index)) => return place_mirrored(system, &MIRRORED[index]),
-        Some(Drawing::PauseMenu(_)) => return place_pause_menu(system),
+        Some(Drawing::Portraits) => return place_portraits(system, widen),
+        Some(Drawing::Mirrored(index)) => return place_mirrored(system, &MIRRORED[index], widen),
+        Some(Drawing::PauseMenu(_)) => return place_pause_menu(system, widen),
         _ => {}
     }
-    let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.hud_scale);
-    if scale == 1.0 || !top_hud(system, system.cpu.regs[14]) {
+    // the rest of the top screen's 2D only narrower, on a wider one
+    let hud = top_hud(system, system.cpu.regs[14]);
+    let scale = if hud { system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.hud_scale) } else { 1.0 };
+    if scale == 1.0 && widen == 1.0 {
         return;
     }
     let batch = system.cpu.regs[0];
@@ -771,9 +900,26 @@ fn shrink_hud(system: &mut System) {
         }
     }
     // the whole screen, a fade or a flash, stays as it is, the narration's
-    // line, as wide as it may be, doesn't
+    // line, as wide as it may be, doesn't. sprites spread over it, markers
+    // on enemies say, each get narrower about their own middle
     let narration = drawing(system) == Some(Drawing::Narration);
     if !narration && (max[0] - min[0] > 300.0 || max[1] - min[1] > 200.0) {
+        if widen == 1.0 {
+            return;
+        }
+        for quad in (0..quads.len()).step_by(0x60) {
+            let xs = (0..4).map(|corner| get(&quads, quad + corner * 0x18));
+            let (left, right) = xs.fold((f32::MAX, f32::MIN), |(left, right), x| (left.min(x), right.max(x)));
+            if right - left >= 390.0 {
+                continue;
+            }
+            let middle = (left + right) * 0.5;
+            for corner in (quad..quad + 0x60).step_by(0x18) {
+                let x = get(&quads, corner);
+                set(&mut quads, corner, middle + (x - middle) / widen);
+            }
+        }
+        system.memory.write_bytes(end - count * 0x60, &quads);
         return;
     }
     let anchor = |min: f32, max: f32, size: f32| {
@@ -788,10 +934,11 @@ fn shrink_hud(system: &mut System) {
     // the narration's line shrinks toward the middle of the bottom edge,
     // where it is put
     let anchor = if narration { [200.0, 240.0] } else { [anchor(min[0], max[0], 400.0), anchor(min[1], max[1], 240.0)] };
+    let scales = [scale / widen, scale];
     for at in corners {
         for axis in 0..2 {
             let value = get(&quads, at + axis * 4);
-            let scaled = anchor[axis] + (value - anchor[axis]) * scale;
+            let scaled = anchor[axis] + (value - anchor[axis]) * scales[axis];
             quads[at + axis * 4..at + axis * 4 + 4].copy_from_slice(&scaled.to_le_bytes());
         }
     }
@@ -834,5 +981,23 @@ mod tests {
         // a page of Options, all of it in the middle
         assert_eq!(aim_mouse.pause_menu_touch(20, 60.0, 83.0), Some((20.0, 83.0)));
         assert_eq!(aim_mouse.pause_menu_touch(20, 20.0, 83.0), None);
+    }
+
+    /// on a top screen 1.4 times wider, what is by an edge is that much
+    /// narrower toward it, the rest toward the middle, and a touch finds it
+    /// there.
+    #[test]
+    fn pause_menu_touches_follow_a_wider_top_screen() {
+        let mut aim_mouse = AimMouse { pause_drawn: Some(10), edges_drawn: Some(10), widen: 1.4, ..AimMouse::default() };
+        let near = |touch: Option<(f32, f32)>, x: f32| touch.is_some_and(|(at, _)| (at - x).abs() < 0.01);
+        // Resume's 70 by the left edge drawn at 50, Retreat's 330 at 350
+        assert!(near(aim_mouse.pause_menu_touch(11, 50.0, 83.0), 70.0));
+        assert!(near(aim_mouse.pause_menu_touch(11, 350.0, 83.0), 250.0));
+        // Options' middle stays in the middle
+        assert!(near(aim_mouse.pause_menu_touch(11, 200.0, 134.0), 160.0));
+        // and the gap between Resume and Retreat grew
+        assert_eq!(aim_mouse.pause_menu_touch(11, 120.0, 83.0), None);
+        aim_mouse.widen = 1.0;
+        assert!(near(aim_mouse.pause_menu_touch(11, 120.0, 83.0), 120.0));
     }
 }

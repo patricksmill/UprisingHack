@@ -108,23 +108,27 @@ pub enum TopShape {
     Console,
     Wide16x9,
     Wide21x9,
+    /// the window's shape, with the top screen alone, see App::top_width.
+    Fit,
 }
 
 impl TopShape {
-    pub const ALL: [TopShape; 3] = [TopShape::Console, TopShape::Wide16x9, TopShape::Wide21x9];
+    pub const ALL: [TopShape; 4] = [TopShape::Console, TopShape::Wide16x9, TopShape::Wide21x9, TopShape::Fit];
 
     pub fn name(self) -> &'static str {
         match self {
             TopShape::Console => "The console's, 5:3",
             TopShape::Wide16x9 => "16:9",
             TopShape::Wide21x9 => "21:9",
+            TopShape::Fit => "The window's, with the top screen alone",
         }
     }
 
-    /// the top screen's width at its height of 240.
+    /// the top screen's width at its height of 240, the console's for one
+    /// that fits the window when the window is sized to the screens.
     pub fn width(self) -> f32 {
         match self {
-            TopShape::Console => 400.0,
+            TopShape::Console | TopShape::Fit => 400.0,
             TopShape::Wide16x9 => 240.0 * 16.0 / 9.0,
             TopShape::Wide21x9 => 560.0,
         }

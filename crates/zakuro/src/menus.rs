@@ -714,7 +714,7 @@ impl Menus {
                     }
                 })
                 .response
-                .on_hover_text("Shows the top screen wider than the console's. Games still draw it at the console's shape, so only turn this on with a widescreen code for the game, which draws a wider scene to match.");
+                .on_hover_text("Shows the top screen wider than the console's. Games still draw it at the console's shape, so only turn this on with a widescreen code for the game, which draws a wider scene to match. Kid Icarus: Uprising draws a wider view by itself. The window's shape follows the window, with the top screen alone, up to 32:9.");
                 egui::ComboBox::from_label("3D").selected_text(settings.stereo.name()).show_ui(ui, |ui| {
                     for stereo in Stereo3d::ALL {
                         ui.selectable_value(&mut settings.stereo, stereo, stereo.name());

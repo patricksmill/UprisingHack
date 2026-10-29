@@ -500,7 +500,7 @@ impl ApplicationHandler for App {
             Ok((window, mut backend)) => {
                 log::info!("presenting with the {} backend", backend.name());
                 backend.set_layout(self.layout.screens());
-                backend.set_top_width(self.settings.top_shape.width());
+                backend.set_top_width(self.top_width());
                 backend.set_scaling(self.settings.filter.screens(), self.settings.integer_scale);
                 backend.set_stereo(self.settings.stereo());
                 self.gui = Some(Gui::new(&window));
@@ -543,8 +543,10 @@ impl ApplicationHandler for App {
                 self.keyboard.release();
             }
             WindowEvent::Resized(size) => {
+                let top_width = self.top_width();
                 if let Some(backend) = &mut self.backend {
                     backend.resize(size.width, size.height);
+                    backend.set_top_width(top_width);
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => self.key(event, consumed),
@@ -911,7 +913,7 @@ impl App {
     fn touch(&mut self) {
         let Some(window) = &self.window else { return };
         let size = window.inner_size();
-        let (top, bottom) = layout(size.width, size.height, self.layout.screens(), self.top_shape.width(), self.settings.integer_scale);
+        let (top, bottom) = layout(size.width, size.height, self.layout.screens(), self.top_width(), self.settings.integer_scale);
         // with the top screen alone there is nothing to touch, but for the
         // pause menu drawn there
         let Some(bottom) = bottom else {
@@ -1025,7 +1027,6 @@ impl App {
     /// the window to them.
     fn apply_layout(&mut self) {
         if let Some(backend) = &mut self.backend {
-            backend.set_top_width(self.settings.top_shape.width());
             backend.set_scaling(self.settings.filter.screens(), self.settings.integer_scale);
             backend.set_stereo(self.settings.stereo());
         }
@@ -1047,6 +1048,24 @@ impl App {
                 _ => {}
             }
         }
+        let top_width = self.top_width();
+        if let Some(backend) = &mut self.backend {
+            backend.set_top_width(top_width);
+        }
+    }
+
+    /// the top screen's width at its height of 240: the shape chosen, or
+    /// with the top screen alone fitting the window, the window's, from the
+    /// console's 5:3 to 32:9.
+    fn top_width(&self) -> f32 {
+        if self.top_shape != settings::TopShape::Fit {
+            return self.top_shape.width();
+        }
+        let Some(size) = self.window.as_ref().map(|window| window.inner_size()) else { return 400.0 };
+        if self.layout != Screens::TopOnly || size.width == 0 || size.height == 0 {
+            return 400.0;
+        }
+        (240.0 * size.width as f32 / size.height as f32).clamp(400.0, 240.0 * 32.0 / 9.0)
     }
 
     /// the window size that fits the screens at the chosen scale.
@@ -1395,7 +1414,12 @@ impl App {
 
     /// runs one frame of the game.
     fn emulate(&mut self) {
+        let top_width = self.top_width();
         let Some(game) = &mut self.game else { return };
+        // Kid Icarus: Uprising draws a view as wide as the top screen shows
+        if let Some(aim_mouse) = &mut game.system.aim_mouse {
+            aim_mouse.widen = top_width / 400.0;
+        }
         let input = match &mut game.replay {
             Some(replay) => replay.input(game.frame),
             None => self.gamepads.apply(self.keyboard.state()),
