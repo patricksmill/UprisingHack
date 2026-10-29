@@ -85,21 +85,21 @@ struct Mirrored {
     below: f32,
     /// its size against the rest of the HUD.
     size: f32,
-    /// two rows swapped, bottom screen pixels: quads centred above the first
-    /// go down by the second, the rest up by the third.
-    swap_rows: Option<[f32; 3]>,
+    /// a top row left off, bottom screen pixels: quads centred above the
+    /// first go far off the screen, the rest up by the second, into its place.
+    drop_top_row: Option<[f32; 2]>,
     /// where its sprite flushes come back to that draw something left off
     /// the top screen.
     hidden: &'static [u32],
 }
 
-/// the chapter title and hearts, under the score, with the hearts held on
-/// the top row and the intensity and the chapter's hearts below it; the item
-/// box and power icon, under the health bar. the chapter title is left off.
+/// the hearts held, under the score, without the chapter title or the row
+/// with the intensity and the chapter's hearts above them, which stay on the
+/// bottom screen; the item box and power icon, under the health bar.
 const MIRRORED: [Mirrored; 3] = [
-    Mirrored { site: 0x00A181CC, from: [320.0, 0.0], to: [400.0, 0.0], below: 40.0, size: 1.0, swap_rows: Some([24.0, 23.0, 16.0]), hidden: &[0x00A192E4] },
-    Mirrored { site: 0x00A18400, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, swap_rows: None, hidden: &[] },
-    Mirrored { site: 0x00A18430, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, swap_rows: None, hidden: &[] },
+    Mirrored { site: 0x00A181CC, from: [320.0, 0.0], to: [400.0, 0.0], below: 40.0, size: 1.0, drop_top_row: Some([24.0, 16.0]), hidden: &[0x00A192E4] },
+    Mirrored { site: 0x00A18400, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, drop_top_row: None, hidden: &[] },
+    Mirrored { site: 0x00A18430, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, drop_top_row: None, hidden: &[] },
 ];
 
 /// what a mirrored element's call was given in the bottom pass, made again
@@ -425,12 +425,12 @@ fn place_mirrored(system: &mut System, mirrored: &Mirrored) {
     let scale = scale * mirrored.size;
     for quad in (0..quads.len()).step_by(0x60) {
         let middle = (0..4).map(|corner| get(&quads, quad + corner * 0x18 + 4)).sum::<f32>() / 4.0;
-        let moved = match mirrored.swap_rows {
-            Some([split, down, up]) => if middle < split { down } else { -up },
-            None => 0.0,
+        let (dropped, moved) = match mirrored.drop_top_row {
+            Some([split, up]) => (middle < split, -up),
+            None => (false, 0.0),
         };
         for corner in (quad..quad + 0x60).step_by(0x18) {
-            let (x, y) = if hide {
+            let (x, y) = if hide || dropped {
                 (-10000.0, -10000.0)
             } else {
                 (
