@@ -16,7 +16,7 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 19] = [
+pub const PLACES: [u32; 21] = [
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
     SPRITE_FLUSH,
@@ -36,7 +36,15 @@ pub const PLACES: [u32; 19] = [
     PAUSE_OPTION_FOUND,
     OPTIONS_OPTION_FOUND,
     DIALOG_INPUT,
+    CAULDRON[0],
+    CAULDRON[1],
 ];
+
+/// the Fiend's Cauldron's pot (a task, vtable 0x00CF9AEC), the update it
+/// runs each frame while the bar is shown, then while it pours after Move
+/// Out. it runs on that screen alone, not on the chapter select before it,
+/// the next screen or in a battle.
+const CAULDRON: [u32; 2] = [0x00251624, 0x00251C40];
 
 /// where 0x006D269C goes on after 0x00B12218 summed the aim delta, which it
 /// left at sp+8 as reticle pixels a second, with the aim object in r4 and
@@ -394,6 +402,10 @@ pub struct AimMouse {
     /// the frame the top screen's battle UI was last drawn in, which it is
     /// in every frame of a battle and in no menu's.
     battle_drawn: Option<u64>,
+    /// the frame the Fiend's Cauldron was last shown in, and whether its pot
+    /// was pouring then.
+    cauldron_drawn: Option<u64>,
+    cauldron_pouring: bool,
     /// the frame the power key was pressed in, for the battle UI's next
     /// update to use the current power, unless that is long after.
     power_requested: Option<u64>,
@@ -446,6 +458,8 @@ impl Default for AimMouse {
             pause_drawn: None,
             edges_drawn: None,
             battle_drawn: None,
+            cauldron_drawn: None,
+            cauldron_pouring: false,
             power_requested: None,
             menu_hover: false,
             pointer: None,
@@ -495,6 +509,17 @@ impl AimMouse {
     /// pause_menu_shown.
     pub fn in_battle(&self, frame: u64) -> bool {
         self.battle_drawn.is_some_and(|drawn| frame <= drawn + 3) && !self.pause_menu_shown(frame)
+    }
+
+    /// whether the Fiend's Cauldron is shown, frame as for pause_menu_shown.
+    pub fn cauldron_shown(&self, frame: u64) -> bool {
+        self.cauldron_drawn.is_some_and(|drawn| frame <= drawn + 3)
+    }
+
+    /// whether the Fiend's Cauldron's pot pours, after Move Out, the bar
+    /// gone and the pan lifted, frame as for pause_menu_shown.
+    pub fn cauldron_pouring(&self, frame: u64) -> bool {
+        self.cauldron_shown(frame) && self.cauldron_pouring
     }
 
     /// uses the current power, as touching its box does, in the battle UI's
@@ -575,6 +600,13 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
             }
         }
         DIALOG_INPUT => hover_dialog(system),
+        _ if CAULDRON.contains(&pc) => {
+            let frame = system.frames;
+            if let Some(aim_mouse) = &mut system.aim_mouse {
+                aim_mouse.cauldron_drawn = Some(frame);
+                aim_mouse.cauldron_pouring = pc == CAULDRON[1];
+            }
+        }
         DIALOG_CURSOR_SOUND => {
             if system.aim_mouse.as_mut().is_some_and(|aim_mouse| std::mem::take(&mut aim_mouse.dialog_cleared)) {
                 system.cpu.regs[5] = 0;
