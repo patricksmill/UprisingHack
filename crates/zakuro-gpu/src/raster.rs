@@ -2452,7 +2452,13 @@ fn rasterize<M: GpuMemory>(registers: &[u32], memory: &mut M, resources: &mut Re
     #[cfg(feature = "vulkan")]
     if let Some(hardware) = resources.hardware.as_mut() {
         for (unit, drawn) in drawn.iter_mut().enumerate() {
-            *drawn = drawn_texture(registers, memory, unit)
+            *drawn = drawn_texture(registers, memory, unit);
+            if let Some(texture) = drawn {
+                if let Err(error) = hardware.alias_texture(memory, texture) {
+                    log::error!("the GPU could not copy a texture drawn at another width, {error}");
+                }
+            }
+            *drawn = (*drawn)
                 .filter(|texture| hardware.holds(texture) || hardware.holds_unchanged(memory, texture));
             if let Some(texture) = drawn {
                 past[unit] = !hardware.covers(texture);

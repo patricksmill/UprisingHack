@@ -4390,6 +4390,24 @@ impl Hardware {
             .max_by_key(|&(i, row)| (row + texture.height <= self.surfaces[i].height, newest(&self.surfaces[i], (row, row + texture.height))))
     }
 
+    /// a texture of rows of tiles the GPU drew at another width gets a
+    /// surface of its own width, its tiles copied on the GPU, which draw
+    /// then copies as it does any surface drawn into. Kid Icarus: Uprising
+    /// draws its frame 256 wide and reads it 240 wide for its glow. when
+    /// the copy cannot be made the surface comes from memory as before.
+    pub(crate) fn alias_texture<M: GpuMemory>(&mut self, memory: &mut M, texture: &DrawnTexture) -> Result<(), String> {
+        let kind = Kind::Color(texture.format);
+        if !self.alias_copies || texture.format != ColorFormat::Rgba8 || texture.width % 8 != 0 || texture.height % 8 != 0 {
+            return Ok(());
+        }
+        let len = texture.width * texture.height * kind.bytes();
+        let other = |s: &Surface| s.kind == kind && s.tiled && s.width != texture.width && s.dirty_overlaps(texture.addr, len);
+        if self.holds(texture) || !self.surfaces.iter().any(other) {
+            return Ok(());
+        }
+        self.surface(memory, texture.addr, (texture.width, texture.height), kind, true).map(|_| ())
+    }
+
     /// whether the surface a texture is rows of holds all of its rows.
     pub(crate) fn covers(&self, texture: &DrawnTexture) -> bool {
         self.texture_source(texture).is_some_and(|(index, row)| row + texture.height <= self.surfaces[index].height)
