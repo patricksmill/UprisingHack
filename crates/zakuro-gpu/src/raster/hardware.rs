@@ -137,6 +137,8 @@ pub(super) struct Draw<'a> {
     /// whether the fog is on, and its table.
     pub(super) fog: bool,
     pub(super) fog_table: &'a fog::Table,
+    /// the draw covers all of its buffer and keeps nothing of it.
+    pub(super) replaces: bool,
 }
 
 /// where something is staged in the ring, and its bytes.
@@ -3736,6 +3738,15 @@ impl Hardware {
             _ => height,
         };
         let raise = (height - draw.height) as i32;
+        // memory other surfaces drew into the buffer over goes to it, the
+        // draw leaves none of what they hold
+        if draw.replaces && !self.twins && raise == 0 && rows == (0, draw.height) {
+            let (addr, len) = (draw.target, draw.width * draw.height * Kind::Color(draw.format).bytes());
+            let mine = |s: &Surface| s.addr == addr && s.width == draw.width && s.height == draw.height && s.kind == Kind::Color(draw.format) && s.tiled;
+            for s in self.surfaces.iter_mut().filter(|s| !mine(s) && s.dirty_overlaps(addr, len)) {
+                s.relinquish(addr, len);
+            }
+        }
         // a flush looking one of them up drops what the other had checked
         let (color, depth) = loop {
             let size = (draw.width, height);

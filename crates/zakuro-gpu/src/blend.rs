@@ -131,6 +131,19 @@ pub struct Blend {
 }
 
 impl Blend {
+    /// whether the result depends on what the buffer held: a min or max,
+    /// a destination factor other than zero, or a source factor that reads
+    /// the destination.
+    pub fn reads_dest(&self) -> bool {
+        let reads = |f: Factor| matches!(f, Factor::DestColor | Factor::OneMinusDestColor | Factor::DestAlpha
+            | Factor::OneMinusDestAlpha | Factor::SourceAlphaSaturate);
+        [self.color_equation, self.alpha_equation].iter().any(|e| matches!(e, Equation::Min | Equation::Max))
+            || !matches!(self.color_dest, Factor::Zero)
+            || !matches!(self.alpha_dest, Factor::Zero)
+            || reads(self.color_source)
+            || reads(self.alpha_source)
+    }
+
     /// reads the blend configuration, or None when the output merger is
     /// in logic-op mode rather than blending.
     pub fn read(registers: &[u32]) -> Option<Blend> {
@@ -272,6 +285,17 @@ mod tests {
         let out = blend.apply([1.0, 0.0, 0.0, 0.25], [0.0, 0.0, 1.0, 1.0]);
         assert!((out[0] - 0.25).abs() < 1e-5, "red {}", out[0]);
         assert!((out[2] - 0.75).abs() < 1e-5, "blue {}", out[2]);
+    }
+
+    /// source at one and destination at zero replaces what was there, any
+    /// destination factor or a min reads it.
+    #[test]
+    fn only_a_destination_factor_of_zero_ignores_the_buffer() {
+        assert!(!Blend::read(&registers(0x0101_0000)).unwrap().reads_dest());
+        assert!(!Blend::read(&registers(0x0606_0000)).unwrap().reads_dest());
+        assert!(Blend::read(&registers(0x7676_0000)).unwrap().reads_dest());
+        assert!(Blend::read(&registers(0x0141_0000)).unwrap().reads_dest());
+        assert!(Blend::read(&registers(0x0101_0003)).unwrap().reads_dest());
     }
 
     /// additive, source and destination both at factor one.

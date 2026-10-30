@@ -720,6 +720,60 @@ impl LastSemantics {
     }
 }
 
+#[cfg(feature = "vulkan")]
+impl DrawState<'_> {
+    /// whether what the draw writes leaves nothing of what the buffer held,
+    /// every channel written, nothing blended, combined or tested.
+    fn keeps_nothing(&self) -> bool {
+        self.target.write.iter().all(|&w| w)
+            && self.blend.is_none_or(|blend| !blend.reads_dest())
+            && self.logic_op.is_none()
+            && self.alpha_test.is_none()
+            && self.depth_stencil.is_none()
+    }
+}
+
+/// whether two triangles, none of it clipped or culled, cover all of the
+/// buffer: every vertex a corner of a rectangle over it, the two split along
+/// one of its diagonals.
+#[cfg(feature = "vulkan")]
+fn covers_buffer(
+    shaded: &[Vertex],
+    triangles: &[(usize, usize, usize)],
+    viewport: (f32, f32, f32, f32),
+    cull_mode: u32,
+    target: &ColorTarget,
+) -> bool {
+    if triangles.len() != 2 || !shaded.iter().all(inside) {
+        return false;
+    }
+    let Some(screen) = shaded.iter().map(|v| to_screen(v, viewport)).collect::<Option<Vec<Screen>>>() else { return false };
+    let (x0, x1) = screen.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+    let (y0, y1) = screen.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+    if x0 > 0.0 || y0 > 0.0 || x1 < target.buffer_width as f32 || y1 < target.buffer_height as f32 {
+        return false;
+    }
+    let corner = |p: &Screen| match (p.x == x0 || p.x == x1, p.y == y0 || p.y == y1) {
+        (true, true) => Some(usize::from(p.x == x1) | usize::from(p.y == y1) << 1),
+        _ => None,
+    };
+    let mut left_out = Vec::new();
+    for &(a, b, c) in triangles {
+        let (p, q, r) = (&screen[a], &screen[b], &screen[c]);
+        let counter_clockwise = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x) > 0.0;
+        if cull_mode != 0 && counter_clockwise == (cull_mode == 1) {
+            return false;
+        }
+        let (Some(i), Some(j), Some(k)) = (corner(p), corner(q), corner(r)) else { return false };
+        if i == j || j == k || i == k {
+            return false;
+        }
+        left_out.push(6 - i - j - k);
+    }
+    // each covers the half away from the corner it leaves out
+    left_out[0] ^ left_out[1] == 3
+}
+
 /// vertices a draw needs before shading them is worth splitting over
 /// threads, fewer cost more in handing them out than the threads save, on
 /// a laptop's four cores most of all.
@@ -1808,7 +1862,7 @@ struct DrawState<'a> {
 #[cfg(feature = "vulkan")]
 impl DrawState<'_> {
     /// the draw as the GPU takes it.
-    fn hardware<'a>(&'a self, registers: &'a [u32], geometry: hardware::Geometry<'a>) -> hardware::Draw<'a> {
+    fn hardware<'a>(&'a self, registers: &'a [u32], geometry: hardware::Geometry<'a>, replaces: bool) -> hardware::Draw<'a> {
         let target = &self.target;
         hardware::Draw {
             registers,
@@ -1827,6 +1881,7 @@ impl DrawState<'_> {
             proctex_tables: self.proctex_tables,
             fog: self.fog.is_some(),
             fog_table: self.fog_table,
+            replaces,
         }
     }
 }
@@ -2198,7 +2253,9 @@ pub fn draw<M: GpuMemory>(
     // the GPU decodes the arrays itself when it shades the draw, from the
     // first vertex the draw uses to the last
     #[cfg(feature = "vulkan")]
-    if resources.hardware.as_ref().is_some_and(|hardware| hardware.shades()) && registers[REG_GEOSTAGE_CONFIG] & 0x3 != 2 {
+    // a draw of a few vertices has them decoded here, which tells whether
+    // it covers its buffer, see rasterize
+    if vertex_count > 6 && resources.hardware.as_ref().is_some_and(|hardware| hardware.shades()) && registers[REG_GEOSTAGE_CONFIG] & 0x3 != 2 {
         let (first, span) = if indexed {
             // over the index buffer's own bytes or halfwords, which the
             // vector units compare many at a time, they have no unsigned
@@ -2520,6 +2577,21 @@ fn rasterize<M: GpuMemory>(registers: &[u32], memory: &mut M, resources: &mut Re
     // wound clockwise and 2 counter-clockwise, as seen with y pointing up.
     let cull_mode = registers[REG_FACE_CULLING] & 0x3;
 
+    // a small draw over all of its buffer that keeps nothing of it lets
+    // what other buffers over the same memory drew go without coming down,
+    // its vertices shaded here only to tell
+    #[cfg(feature = "vulkan")]
+    let replaces = match &vertices {
+        Vertices::Unshaded { vertex_shader, geometry_shader, inputs, order }
+            if vertex_count <= 6 && registers[REG_GEOSTAGE_CONFIG] & 0x3 != 2 && state.keeps_nothing() =>
+        {
+            let (shaded, order) = process_vertices(registers, vertex_shader, geometry_shader, inputs, *order);
+            let at = |i: usize| order.map_or(i, |order| order[i]);
+            let triangles: Vec<_> = assemble(topology, vertex_count).into_iter().map(|(a, b, c)| (at(a), at(b), at(c))).collect();
+            covers_buffer(&shaded, &triangles, viewport, cull_mode, &state.target)
+        }
+        _ => false,
+    };
     // the GPU runs the vertex shader itself, unless a geometry shader
     // comes after it
     #[cfg(feature = "vulkan")]
@@ -2544,7 +2616,7 @@ fn rasterize<M: GpuMemory>(registers: &[u32], memory: &mut M, resources: &mut Re
                 viewport,
                 cull: cull_mode,
             };
-            let drawn = hardware.draw(memory, &state.hardware(registers, hardware::Geometry::Shaded(&shading)));
+            let drawn = hardware.draw(memory, &state.hardware(registers, hardware::Geometry::Shaded(&shading), replaces));
             let triangles = (indices.len() / 3) as u32;
             resources.triangles = assembled;
             match drawn {
@@ -2627,7 +2699,7 @@ fn rasterize<M: GpuMemory>(registers: &[u32], memory: &mut M, resources: &mut Re
         // tiles are whole in any buffer a title really draws into
         if target.buffer_width.is_multiple_of(8) && target.buffer_height.is_multiple_of(8) {
             let geometry = hardware::Geometry::Placed { vertices: &placed, indices: &indices };
-            match hardware.draw(memory, &state.hardware(registers, geometry)) {
+            match hardware.draw(memory, &state.hardware(registers, geometry, replaces)) {
                 Ok(()) => return Some(triangle_count as u32),
                 Err(error) => log::error!("the GPU could not draw, {error}, drawing in software"),
             }
@@ -5620,4 +5692,32 @@ mod tests {
         assert!(between == halfway, "the picture in between");
         assert!(own != between);
     }
+
+    /// two triangles split along a diagonal over the whole buffer cover it,
+    /// two sharing an edge, or a smaller quad, or a culled one do not.
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn a_quad_corner_to_corner_covers_its_buffer() {
+        let target = ColorTarget {
+            addr: 0, left: 0, bottom: 0, right: 128, top: 256, buffer_width: 128, buffer_height: 256,
+            format: ColorFormat::Rgba8, write: [true; 4],
+        };
+        let corner = |x: f32, y: f32| Vertex {
+            clip: [x, y, -0.5, 1.0],
+            color: RED,
+            texcoords: [[0.0; 2]; 3],
+            quaternion: [0.0, 0.0, 0.0, 1.0],
+            view: [0.0; 3],
+        };
+        let viewport = (0.0, 0.0, 128.0, 256.0);
+        let quad = [corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)];
+        assert!(covers_buffer(&quad, &[(0, 1, 2), (0, 2, 3)], viewport, 0, &target));
+        assert!(covers_buffer(&quad, &[(1, 2, 3), (3, 0, 1)], viewport, 0, &target));
+        assert!(!covers_buffer(&quad, &[(0, 1, 2), (0, 1, 3)], viewport, 0, &target));
+        assert!(!covers_buffer(&quad, &[(0, 1, 2)], viewport, 0, &target));
+        assert!(!covers_buffer(&quad, &[(0, 1, 2), (0, 2, 3)], viewport, 1, &target));
+        let small = quad.map(|v| Vertex { clip: [v.clip[0] * 0.5, v.clip[1], v.clip[2], v.clip[3]], ..v });
+        assert!(!covers_buffer(&small, &[(0, 1, 2), (0, 2, 3)], viewport, 0, &target));
+    }
+
 }
