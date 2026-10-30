@@ -155,6 +155,32 @@ struct Pacing {
     shown: u64,
 }
 
+/// Optional host wall times. GPU waits inside a path are included in it.
+#[derive(Default)]
+pub struct HostTimings {
+    pub compiled: HostSpan,
+    pub interpreted: HostSpan,
+    pub hooks: HostSpan,
+    pub audio: HostSpan,
+    pub frame: HostSpan,
+    /// Nested inside system calls; do not add this to the other spans.
+    pub gpu_commands: HostSpan,
+    pub syscalls: BTreeMap<u32, HostSpan>,
+}
+
+#[derive(Default)]
+pub struct HostSpan {
+    pub calls: u64,
+    pub elapsed: std::time::Duration,
+}
+
+impl HostSpan {
+    fn record(&mut self, start: std::time::Instant) {
+        self.calls += 1;
+        self.elapsed += start.elapsed();
+    }
+}
+
 pub struct System {
     pub cpu: Cpu,
     pub memory: Memory,
@@ -211,6 +237,7 @@ pub struct System {
 
     /// sampling profiler, counts how often each thread was found at each PC.
     pub profile: Option<BTreeMap<(ThreadId, u32), u64>>,
+    pub host_timings: Option<HostTimings>,
     /// steps since the profiler last looked.
     profile_skip: u32,
 
@@ -297,6 +324,7 @@ impl System {
             next_audio_frame: CYCLES_PER_AUDIO_FRAME,
             next_preempt: PREEMPT_INTERVAL,
             profile: None,
+            host_timings: None,
             profile_skip: 0,
             idle,
             recompiled: None,
@@ -460,7 +488,11 @@ impl System {
         }
 
         if self.aim_mouse.is_some() {
+            let start = self.host_timings.as_ref().map(|_| std::time::Instant::now());
             aim_mouse::apply(self, pc);
+            if let (Some(timing), Some(start)) = (&mut self.host_timings, start) {
+                timing.hooks.record(start);
+            }
         }
 
         self.history[self.history_index] = pc | self.cpu.cpsr.thumb as u32;
@@ -499,7 +531,11 @@ impl System {
                 // SAFETY: the GPU stays where it is, and nothing but the CPU's
                 // reads and writes follow the pointer, until the step is over
                 unsafe { self.memory.set_gpu_sync(memory::GpuSync { gpu, linear_base, sync: sync_for_cpu, sync_write: sync_for_cpu_write }) };
+                let start = self.host_timings.as_ref().map(|_| std::time::Instant::now());
                 let exit = self.cpu.step(&mut self.memory);
+                if let (Some(timing), Some(start)) = (&mut self.host_timings, start) {
+                    timing.interpreted.record(start);
+                }
                 self.memory.clear_gpu_sync();
                 exit
             }
@@ -509,7 +545,13 @@ impl System {
         }
         match exit {
             None => {}
-            Some(Exit::Supervisor(number)) => kernel::svc::dispatch(self, number),
+            Some(Exit::Supervisor(number)) => {
+                let start = self.host_timings.as_ref().map(|_| std::time::Instant::now());
+                kernel::svc::dispatch(self, number);
+                if let (Some(timing), Some(start)) = (&mut self.host_timings, start) {
+                    timing.syscalls.entry(number).or_default().record(start);
+                }
+            }
             Some(Exit::Undefined { pc, opcode }) => {
                 let count = self.undefined_seen.entry(pc).or_insert(0);
                 *count += 1;
@@ -586,7 +628,11 @@ impl System {
         let linear_base = self.kernel.linear_base;
         // SAFETY: as in step, until the run is over
         unsafe { self.memory.set_gpu_sync(memory::GpuSync { gpu, linear_base, sync: sync_for_cpu, sync_write: sync_for_cpu_write }) };
+        let start = self.host_timings.as_ref().map(|_| std::time::Instant::now());
         let (ran, stop) = library.run(&mut self.cpu, &mut self.memory, budget);
+        if let (Some(timing), Some(start)) = (&mut self.host_timings, start) {
+            timing.compiled.record(start);
+        }
         self.memory.clear_gpu_sync();
         self.recompiled_instructions += ran;
         if event.is_some_and(|tick| self.cpu.cycles >= tick) {
@@ -702,6 +748,7 @@ impl System {
 
     /// everything that happens between frames, vertical blank, input, clock.
     fn end_frame(&mut self) {
+        let start = self.host_timings.as_ref().map(|_| std::time::Instant::now());
         self.idle_interrupted(false);
         self.frames += 1;
         if self.frames.is_multiple_of(hints::SAVE_EVERY) {
@@ -735,7 +782,9 @@ impl System {
         // both LCDs finish scanning out, in that order.
         services::gsp::signal_interrupt(self, services::gsp::InterruptId::Pdc0);
         services::gsp::signal_interrupt(self, services::gsp::InterruptId::Pdc1);
-
+        if let (Some(timing), Some(start)) = (&mut self.host_timings, start) {
+            timing.frame.record(start);
+        }
     }
 
     /// frame interpolation at a refresh. while a title sets a new picture
@@ -794,6 +843,7 @@ impl System {
     /// the DSP finishing an audio frame, it plays its voices one frame on and
     /// interrupts the title, whose sound library does one update per interrupt.
     fn audio_frame(&mut self) {
+        let start = self.host_timings.as_ref().map(|_| std::time::Instant::now());
         self.idle_interrupted(false);
         // the whole opening froze until this ran every 4.9 ms. goddamn audio timing
         if self.services.dsp.running {
@@ -807,6 +857,9 @@ impl System {
         services::cam::tick(self);
         services::uds::tick(self);
         services::dlp::tick(self);
+        if let (Some(timing), Some(start)) = (&mut self.host_timings, start) {
+            timing.audio.record(start);
+        }
     }
 
     /// the stereo samples the console played since the last call, at
@@ -856,6 +909,7 @@ impl System {
     }
 
     pub fn submit_command_list(&mut self, paddr: u32, size: u32) {
+        let start = self.host_timings.as_ref().map(|_| std::time::Instant::now());
         let linear_base = self.kernel.linear_base;
         let mut guest = GuestMemory {
             linear_base,
@@ -863,6 +917,9 @@ impl System {
         };
         self.gpu
             .process_command_list(&mut guest, self.renderer.as_mut(), paddr, size);
+        if let (Some(timing), Some(start)) = (&mut self.host_timings, start) {
+            timing.gpu_commands.record(start);
+        }
     }
 
     /// makes guest memory hold what the host GPU drew over a range, before

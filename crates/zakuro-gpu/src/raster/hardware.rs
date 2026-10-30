@@ -315,6 +315,9 @@ struct Surface {
     /// the rows drawn into since guest memory last got the image, rows of
     /// memory from the buffer's start, whole rows of tiles.
     dirty: Option<(u32, u32)>,
+    /// byte ranges whose latest contents belong to another GPU surface.
+    /// Unlike rows, these can end halfway through a row of tiles.
+    excluded: Vec<(u32, u32)>,
     /// the rows of those whose reads the CPU was told to ask for first.
     guarded: Option<(u32, u32)>,
     /// and those its writes have to wait for, see guard_writes.
@@ -425,16 +428,38 @@ impl Surface {
     /// another's, and only rows really drawn matter.
     fn dirty_overlaps(&self, addr: u32, len: u32) -> bool {
         self.dirty.is_some_and(|(start, end)| {
-            let (from, to) = (self.addr + start * self.row_bytes(), self.addr + end * self.row_bytes());
-            let overlaps = |from: u32, to: u32| from < to && addr < to && from < addr + len;
-            match self.stale {
-                // what a fill wrote over since is memory's
-                Some((stale_from, stale_to)) => {
-                    overlaps(from, to.min(self.addr + stale_from)) || overlaps(from.max(self.addr + stale_to), to)
-                }
-                None => overlaps(from, to),
+            let from = (self.addr as u64 + u64::from(start * self.row_bytes())).max(addr as u64);
+            let to = (self.addr as u64 + u64::from(end * self.row_bytes())).min(addr as u64 + len as u64);
+            if from >= to {
+                return false;
             }
+            let (mut from, to) = ((from - self.addr as u64) as u32, (to - self.addr as u64) as u32);
+            // Skip excluded spans covering the start; any first byte left
+            // between them belongs to this image. Spans need not be sorted.
+            while from < to {
+                match self.excluded.iter().copied().chain(self.stale).find(|&(a, b)| a <= from && from < b) {
+                    Some((_, end)) => from = end,
+                    None => return true,
+                }
+            }
+            false
         })
+    }
+
+    /// another image took responsibility for these bytes reaching memory.
+    fn relinquish(&mut self, addr: u32, len: u32) {
+        let from = addr.max(self.addr) - self.addr;
+        let to = ((addr as u64 + len as u64).min(self.addr as u64 + self.size() as u64) - self.addr as u64) as u32;
+        if from < to {
+            self.excluded.push((from, to));
+        }
+        if !self.dirty_overlaps(self.addr, self.size()) {
+            self.dirty = None;
+            self.excluded.clear();
+            self.guarded = None;
+            self.write_guarded = None;
+        }
+        self.checked = false;
     }
 
     /// a fill wrote over some of the bytes it drew, which are memory's now,
@@ -464,6 +489,11 @@ impl Surface {
             Some((from, to)) => (from.min(rows.0), to.max(rows.1)),
             None => rows,
         });
+        let (from, to) = (rows.0 * self.row_bytes(), rows.1 * self.row_bytes());
+        if !self.excluded.is_empty() {
+            self.excluded = self.excluded.iter().flat_map(|&(a, b)| [(a, b.min(from)), (a.max(to), b)])
+                .filter(|&(a, b)| a < b).collect();
+        }
         self.replaced();
     }
 
@@ -620,7 +650,7 @@ const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// first, then the taller, which titles draw a shorter buffer into the start
 /// of. drawn in other rows, it may have older ones there.
 fn newest(surface: &Surface, (start, end): (u32, u32)) -> (bool, u32) {
-    (surface.dirty.is_some_and(|(from, to)| from < end && start < to), surface.height)
+    (surface.dirty_overlaps(surface.addr + start * surface.row_bytes(), end.saturating_sub(start) * surface.row_bytes()), surface.height)
 }
 
 /// the rows of memory of a tiled surface a fill covers, when it covers some
@@ -656,6 +686,48 @@ fn pixel_offset(tiled: bool, x: u32, y: u32, width: u32, bpp: u32) -> usize {
     } else {
         ((y * width + x) * bpp) as usize
     }
+}
+
+/// RGBA8 tiles have the same byte layout at different framebuffer widths.
+/// Copy horizontal runs of tiles, splitting at either image's row boundary.
+fn alias_regions(source: &Surface, target: &Surface) -> Option<Vec<vk::ImageCopy>> {
+    let rgba = Kind::Color(ColorFormat::Rgba8);
+    let aligned = |s: &Surface| s.tiled && s.width > 0 && s.height > 0 && s.width.is_multiple_of(8) && s.height.is_multiple_of(8);
+    if source.kind != rgba || target.kind != rgba || !aligned(source) || !aligned(target)
+        || !source.addr.abs_diff(target.addr).is_multiple_of(256)
+        || source.stale.is_some() || target.stale.is_some() || source.cleared.is_some() || target.cleared.is_some()
+        || source.excluded.iter().any(|&(a, b)| !a.is_multiple_of(256) || !b.is_multiple_of(256))
+    {
+        return None;
+    }
+    let (first, last) = source.dirty?;
+    let from = (source.addr as u64 + u64::from(first * source.row_bytes())).max(target.addr as u64);
+    let to = (source.addr as u64 + u64::from(last * source.row_bytes())).min(target.addr as u64 + target.size() as u64);
+    let layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1);
+    let mut regions: Vec<vk::ImageCopy> = Vec::new();
+    for at in (from..to).step_by(256) {
+        if !source.dirty_overlaps(at as u32, 256) {
+            continue;
+        }
+        // Two writers for the same bytes require the existing memory merge.
+        if target.dirty_overlaps(at as u32, 256) {
+            return None;
+        }
+        let offset = |s: &Surface| {
+            let tile = ((at - s.addr as u64) / 256) as u32;
+            vk::Offset3D { x: ((tile % (s.width / 8)) * 8) as i32, y: (s.height - (tile / (s.width / 8) + 1) * 8) as i32, z: 0 }
+        };
+        let (src, dst) = (offset(source), offset(target));
+        if let Some(last) = regions.last_mut().filter(|r| r.src_offset.y == src.y && r.dst_offset.y == dst.y
+            && r.src_offset.x + r.extent.width as i32 == src.x && r.dst_offset.x + r.extent.width as i32 == dst.x)
+        {
+            last.extent.width += 8;
+        } else {
+            regions.push(vk::ImageCopy::default().src_subresource(layers).dst_subresource(layers)
+                .src_offset(src).dst_offset(dst).extent(vk::Extent3D { width: 8, height: 8, depth: 1 }));
+        }
+    }
+    (!regions.is_empty()).then_some(regions)
 }
 
 /// a screen's newest picture turned upright into an image that a presenter
@@ -734,6 +806,26 @@ struct Timing {
     /// milliseconds the host waited for the GPU and how many times, for a
     /// batch to record the next in, then for what it needed done.
     waited: [(f64, u32); 2],
+    readbacks: HashMap<&'static str, ReadbackTiming>,
+    overlaps: HashMap<String, OverlapTiming>,
+    store_ms: f64,
+}
+
+#[derive(Default)]
+struct OverlapTiming {
+    calls: u64,
+    copied: u64,
+    ms: f64,
+    downloaded: u64,
+}
+
+#[derive(Default)]
+struct ReadbackTiming {
+    calls: u64,
+    ms: f64,
+    downloaded: u64,
+    dirty: u64,
+    buffers: std::collections::BTreeMap<u32, u64>,
 }
 
 /// what the host waited for the GPU for.
@@ -1486,6 +1578,8 @@ pub struct Hardware {
     name: String,
     /// how many times the console's resolution surfaces are drawn at.
     scale: u32,
+    /// disable the alias copy path for comparisons with the CPU round trip.
+    alias_copies: bool,
     /// what depth buffers are drawn into, DEPTH_FORMAT, or where the GPU
     /// can't, FLOAT_DEPTH_FORMAT.
     depth_format: vk::Format,
@@ -1721,6 +1815,7 @@ impl Hardware {
                 batch: 0,
                 name,
                 scale: 1,
+                alias_copies: std::env::var("ZAKURO_GPU_ALIAS_COPY").as_deref() != Ok("0"),
                 depth_format,
                 blits,
                 depth_blits,
@@ -1737,6 +1832,9 @@ impl Hardware {
                         statistics: statistics.then(HashMap::new),
                         counts: [0; 4],
                         waited: [(0.0, 0); 2],
+                        readbacks: HashMap::new(),
+                        overlaps: HashMap::new(),
+                        store_ms: 0.0,
                     }),
                 barriers: 0,
                 unfenced: true,
@@ -2104,6 +2202,25 @@ impl Hardware {
                 timing.renderings,
                 timing.draws
             );
+            let mut readbacks: Vec<_> = timing.readbacks.drain().collect();
+            readbacks.sort_by(|a, b| b.1.ms.total_cmp(&a.1.ms));
+            for (reason, readback) in readbacks {
+                let buffers: Vec<_> = readback.buffers.iter().map(|(addr, calls)| format!("0x{addr:08X}:{calls}")).collect();
+                log::info!(
+                    target: "zakuro_gpu::times",
+                    "readback {reason}: {} calls, {:.1} ms host wall time, {:.2} MiB new downloads, {:.2} MiB guest dirty data, buffers address:count {}",
+                    readback.calls, readback.ms, readback.downloaded as f64 / 1048576.0,
+                    readback.dirty as f64 / 1048576.0, buffers.join(", ")
+                );
+            }
+            log::info!(target: "zakuro_gpu::times", "readback CPU conversion and guest stores: {:.1} ms (nested in readback times)", timing.store_ms);
+            timing.store_ms = 0.0;
+            let mut overlaps: Vec<_> = timing.overlaps.drain().collect();
+            overlaps.sort_by(|a, b| b.1.downloaded.cmp(&a.1.downloaded).then_with(|| b.1.ms.total_cmp(&a.1.ms)));
+            for (transition, overlap) in overlaps.into_iter().take(20) {
+                log::info!(target: "zakuro_gpu::times", "surface overlap {transition}: {} calls ({} GPU copies), {:.1} ms host, {:.2} MiB new downloads",
+                    overlap.calls, overlap.copied, overlap.ms, overlap.downloaded as f64 / 1048576.0);
+            }
             timing.waited = [(0.0, 0); 2];
             timing.totals = [0.0; WORK_NAMES.len()];
             timing.batches = 0;
@@ -2355,6 +2472,7 @@ impl Hardware {
                     pixel: None,
                     checked: false,
                     dirty: None,
+                    excluded: Vec::new(),
                     guarded: None,
                     write_guarded: None,
                     cleared: None,
@@ -2379,13 +2497,42 @@ impl Hardware {
         // memory before this one reads it, where this one is used
         let size = self.surfaces[index].size();
         let row = self.surfaces[index].row_bytes();
+        // A tiled draw can read any pixel of each tile row it touches;
+        // aliases of another width can end in the middle of that row.
+        let rows = rows.map(|(start, end)| if tiled { (start / 8 * 8, end.div_ceil(8).saturating_mul(8).min(height)) } else { (start, end) });
         let (from, to) = rows.map_or((addr, size), |(start, end)| (addr + start * row, (end - start) * row));
         let others: Vec<usize> = (0..self.surfaces.len())
             .filter(|&i| i != index && self.surfaces[i].dirty_overlaps(from, to))
             .collect();
         if !others.is_empty() {
-            self.write_back(memory, others)?;
-            self.begin()?;
+            let measured = self.timing.as_ref().map(|_| {
+                let describe = |s: &Surface| format!("0x{:08X} {}x{} {:?} {} dirty={:?} excluded={:?} stale={:?} cleared={:?}",
+                    s.addr, s.width, s.height, s.kind, if s.tiled { "tiled" } else { "linear" }, s.dirty, s.excluded, s.stale, s.cleared);
+                let sources: Vec<_> = others.iter().map(|&i| describe(&self.surfaces[i])).collect();
+                let key = format!("{} -> {} rows={rows:?}", sources.join(" + "), describe(&self.surfaces[index]));
+                let downloaded: u64 = others.iter().map(|&i| {
+                    let s = &self.surfaces[i];
+                    let n = if self.scale > 1 && s.native.is_none() && matches!(s.kind, Kind::Depth(_)) { self.scale } else { 1 };
+                    let bytes = if matches!(s.kind, Kind::Depth(_)) { 5 } else { 4 };
+                    if s.captured().is_some() { 0 } else { u64::from(s.width) * u64::from(s.height) * u64::from(n * n) * bytes }
+                }).sum();
+                (key, std::time::Instant::now(), downloaded)
+            });
+            let copied = self.alias_copies && others.len() == 1 && self.copy_alias(memory, others[0], index)?;
+            if !copied {
+                self.write_back(memory, others, "overlapping surfaces")?;
+                self.begin()?;
+            }
+            if let (Some(timing), Some((key, start, downloaded))) = (&mut self.timing, measured) {
+                let overlap = timing.overlaps.entry(key).or_default();
+                overlap.calls += 1;
+                overlap.copied += u64::from(copied);
+                overlap.ms += start.elapsed().as_secs_f64() * 1000.0;
+                overlap.downloaded += if copied { 0 } else { downloaded };
+            }
+            if copied {
+                return Ok(index);
+            }
         }
         // into the last lookup's buffer, a surface's worth of bytes allocated
         // for each costs more than reading them. compared in place where
@@ -2405,7 +2552,7 @@ impl Hardware {
                 // memory changed beside rows the GPU drew and it lacks, which
                 // an upload alone would lose. they come down first, along
                 // with what changed
-                self.write_back(memory, vec![index])?;
+                self.write_back(memory, vec![index], "changed guest memory")?;
                 self.begin()?;
                 memory.read(addr, &mut bytes);
             }
@@ -2415,6 +2562,72 @@ impl Hardware {
         self.scratch = bytes;
         self.surfaces[index].checked = true;
         Ok(index)
+    }
+
+    /// Resolve one compatible alias without making guest memory current.
+    /// shortcut: mixed formats, multiple sources and interpolation use the
+    /// CPU path; extend this only when the overlap profile warrants it.
+    fn copy_alias<M: GpuMemory>(&mut self, memory: &mut M, source: usize, target: usize) -> Result<bool, String> {
+        if self.twins {
+            return Ok(false);
+        }
+        let Some(regions) = alias_regions(&self.surfaces[source], &self.surfaces[target]) else { return Ok(false) };
+        let (addr, size, height) = {
+            let s = &self.surfaces[target];
+            (s.addr, s.size(), s.height)
+        };
+        // The destination's untouched bytes must come from memory or its
+        // own dirty image, never from a third writer.
+        if (0..self.surfaces.len()).any(|i| i != source && i != target && self.surfaces[i].dirty_overlaps(addr, size)) {
+            return Ok(false);
+        }
+        let unchanged = |s: &Surface, memory: &mut M| memory.slice(s.addr, s.size() as usize)
+            .is_some_and(|now| s.shadows(0..s.size() as usize, now));
+        if !unchanged(&self.surfaces[source], memory) {
+            return Ok(false);
+        }
+        let matches = unchanged(&self.surfaces[target], memory);
+        if !matches && self.surfaces[target].dirty.is_some() {
+            return Ok(false);
+        }
+        self.begin()?;
+        if !matches {
+            let mut bytes = std::mem::take(&mut self.scratch);
+            bytes.resize(size as usize, 0);
+            memory.read(addr, &mut bytes);
+            self.upload(target, &bytes)?;
+            self.surfaces[target].keep(&bytes);
+            self.scratch = bytes;
+        }
+        self.end_rendering();
+        self.mark(Work::Copy, false);
+        self.barrier();
+        // Match the existing round trip's nearest native-resolution sample,
+        // including its loss of subpixel detail, before reusing the bytes.
+        if self.scale > 1 {
+            self.blit(source, false);
+            self.blit(target, false);
+            self.barrier();
+        }
+        let image = |s: &Surface| s.native.as_ref().unwrap_or(&s.image).image;
+        // SAFETY: RGBA8 images made for transfers, in GENERAL, with every
+        // copied tile inside both images and no image shared between them.
+        unsafe {
+            self.device.cmd_copy_image(self.commands, image(&self.surfaces[source]), vk::ImageLayout::GENERAL,
+                image(&self.surfaces[target]), vk::ImageLayout::GENERAL, &regions);
+        }
+        self.unfenced = true;
+        if self.scale > 1 {
+            self.barrier();
+            self.blit(target, true);
+        }
+        self.uploads = true;
+        self.surfaces[source].relinquish(addr, size);
+        self.surfaces[target].changed();
+        self.surfaces[target].guard_writes(memory);
+        self.overdrawn(target, (0, height), None);
+        self.surfaces[target].checked = true;
+        Ok(true)
     }
 
     /// the GPU drew rows of a surface, which other surfaces over the same
@@ -3018,6 +3231,7 @@ impl Hardware {
                     if left.is_none() {
                         // nothing it drew is left to come down around them
                         surface.stale = None;
+                        surface.excluded.clear();
                     }
                     if left.is_some() {
                         surface.cleared = Some(surface.cleared.map_or(rows, |(from, to)| (from.min(rows.0), to.max(rows.1))));
@@ -3045,6 +3259,7 @@ impl Hardware {
                 surface.shadow.clear();
                 surface.pixel = None;
                 surface.dirty = None;
+                surface.excluded.clear();
                 surface.guarded = None;
                 surface.write_guarded = None;
                 surface.cleared = None;
@@ -3097,6 +3312,7 @@ impl Hardware {
             surface.untwin();
             surface.keep_pixel(&pixel);
             surface.dirty = None;
+            surface.excluded.clear();
             surface.guarded = None;
             surface.write_guarded = None;
             surface.cleared = None;
@@ -3111,7 +3327,7 @@ impl Hardware {
     /// something reads it.
     pub(crate) fn prepare_read<M: GpuMemory>(&mut self, memory: &mut M, addr: u32, len: u32) -> Result<(), String> {
         if self.surfaces.iter().any(|s| s.dirty_overlaps(addr, len)) {
-            self.sync(memory, addr, len)?;
+            self.sync_where(memory, addr, len, "texture read", |_| true)?;
         }
         Ok(())
     }
@@ -3135,7 +3351,7 @@ impl Hardware {
         // frame, which it clears whole before drawing into it again
         let written: Vec<usize> = partial.into_iter().filter(|&i| !self.surfaces[i].supersede(addr, len)).collect();
         if !written.is_empty() {
-            self.write_back(memory, written)?;
+            self.write_back(memory, written, "partial fill")?;
         }
         Ok(())
     }
@@ -3944,7 +4160,7 @@ impl Hardware {
     /// guest memory.
     pub(crate) fn flush<M: GpuMemory>(&mut self, memory: &mut M) -> Result<(), String> {
         let dirty = (0..self.surfaces.len()).filter(|&i| self.surfaces[i].dirty.is_some()).collect();
-        self.write_back(memory, dirty)?;
+        self.write_back(memory, dirty, "full flush")?;
         self.submit()?;
         self.wait()
     }
@@ -3958,6 +4174,7 @@ impl Hardware {
             surface.shadow.clear();
             surface.pixel = None;
             surface.dirty = None;
+            surface.excluded.clear();
             surface.guarded = None;
             surface.write_guarded = None;
             surface.cleared = None;
@@ -3971,14 +4188,14 @@ impl Hardware {
     /// is about to read or write, what the GPU drew there comes down, and
     /// the next draw looks at the memory again.
     pub(crate) fn sync<M: GpuMemory>(&mut self, memory: &mut M, addr: u32, len: u32) -> Result<(), String> {
-        self.sync_where(memory, addr, len, |_| true)
+        self.sync_where(memory, addr, len, "memory sync", |_| true)
     }
 
     /// the same over the depth buffers alone, for the CPU reading where a
     /// depth buffer was drawn. the color buffers there it reads as memory
     /// holds them, see draw, even over memory a depth buffer had before.
     pub(crate) fn sync_depth<M: GpuMemory>(&mut self, memory: &mut M, addr: u32, len: u32) -> Result<(), String> {
-        self.sync_where(memory, addr, len, |surface| matches!(surface.kind, Kind::Depth(_)))
+        self.sync_where(memory, addr, len, "CPU depth read", |surface| matches!(surface.kind, Kind::Depth(_)))
     }
 
     fn sync_where<M: GpuMemory>(
@@ -3986,12 +4203,13 @@ impl Hardware {
         memory: &mut M,
         addr: u32,
         len: u32,
+        reason: &'static str,
         kept: impl Fn(&Surface) -> bool,
     ) -> Result<(), String> {
         let overlapping: Vec<usize> =
             (0..self.surfaces.len()).filter(|&i| kept(&self.surfaces[i]) && self.surfaces[i].overlaps(addr, len)).collect();
         let dirty: Vec<usize> = overlapping.iter().copied().filter(|&i| self.surfaces[i].dirty_overlaps(addr, len)).collect();
-        self.write_back(memory, dirty)?;
+        self.write_back(memory, dirty, reason)?;
         for i in overlapping {
             self.surfaces[i].checked = false;
         }
@@ -4195,7 +4413,8 @@ impl Hardware {
         // nor where a fill wrote over what it drew
         let row_bytes = surface.row_bytes();
         let stale = surface.stale.is_some_and(|(from, to)| from < (row + texture.height) * row_bytes && row * row_bytes < to);
-        surface.dirty.is_some() && !changed && !stale
+        let aliased = surface.excluded.iter().any(|&(from, to)| from < (row + texture.height) * row_bytes && row * row_bytes < to);
+        surface.dirty.is_some() && !changed && !stale && !aliased
     }
 
     /// whether a texture is rows of a color surface guest memory got back
@@ -5066,7 +5285,24 @@ impl Hardware {
     /// writes the given surfaces back to guest memory, from their captures
     /// when those still hold them, else running the batch and reading them
     /// back.
-    fn write_back<M: GpuMemory>(&mut self, memory: &mut M, dirty: Vec<usize>) -> Result<(), String> {
+    fn write_back<M: GpuMemory>(&mut self, memory: &mut M, dirty: Vec<usize>, reason: &'static str) -> Result<(), String> {
+        let measured = (self.timing.is_some() && !dirty.is_empty()).then(|| {
+            let buffers: Vec<_> = dirty.iter().map(|&i| self.surfaces[i].addr).collect();
+            let mut downloaded = 0;
+            let mut guest_dirty = 0;
+            for &i in &dirty {
+                let s = &self.surfaces[i];
+                if s.captured().is_none() {
+                    let n = if self.scale > 1 && s.native.is_none() && matches!(s.kind, Kind::Depth(_)) { self.scale } else { 1 };
+                    let bytes = if matches!(s.kind, Kind::Depth(_)) { 5 } else { 4 };
+                    downloaded += u64::from(s.width) * u64::from(s.height) * u64::from(n) * u64::from(n) * bytes;
+                }
+                if let Some((first, last)) = s.dirty {
+                    guest_dirty += u64::from(last - first) * u64::from(s.row_bytes());
+                }
+            }
+            (std::time::Instant::now(), buffers, downloaded, guest_dirty)
+        });
         self.mark(Work::Download, false);
         let (captured, others): (Vec<usize>, Vec<usize>) =
             dirty.into_iter().partition(|&i| self.surfaces[i].captured().is_some());
@@ -5089,6 +5325,16 @@ impl Hardware {
             // writes it again before this returns
             let data = unsafe { std::slice::from_raw_parts(buffer.mapped, buffer.size as usize) };
             self.store(memory, i, data);
+        }
+        if let (Some(timing), Some((start, buffers, downloaded, dirty))) = (&mut self.timing, measured) {
+            let readback = timing.readbacks.entry(reason).or_default();
+            readback.calls += 1;
+            readback.ms += start.elapsed().as_secs_f64() * 1000.0;
+            readback.downloaded += downloaded;
+            readback.dirty += dirty;
+            for addr in buffers {
+                *readback.buffers.entry(addr).or_default() += 1;
+            }
         }
         Ok(())
     }
@@ -5196,6 +5442,7 @@ impl Hardware {
 
     /// writes what the GPU read back of a surface to guest memory.
     fn store<M: GpuMemory>(&mut self, memory: &mut M, index: usize, data: &[u8]) {
+        let start = self.timing.as_ref().map(|_| std::time::Instant::now());
         // the drawing goes over some rows of a shadow a pixel stood in for
         self.surfaces[index].shadow();
         let s = &self.surfaces[index];
@@ -5259,7 +5506,7 @@ impl Hardware {
             }
         }
         // and the bytes a fill wrote over since are memory's whatever they hold
-        if let Some((from, to)) = s.stale {
+        for (from, to) in s.excluded.iter().copied().chain(s.stale) {
             let (from, to) = ((from as usize).max(rows.start), (to as usize).min(rows.end));
             if from < to {
                 let mut now = vec![0u8; to - from];
@@ -5280,6 +5527,7 @@ impl Hardware {
             surface.shadow = bytes;
         }
         surface.dirty = None;
+        surface.excluded.clear();
         surface.guarded = None;
         surface.write_guarded = None;
         surface.cleared = None;
@@ -5289,6 +5537,9 @@ impl Hardware {
             surface.shadow.clear();
             surface.pixel = None;
             surface.checked = false;
+        }
+        if let (Some(timing), Some(start)) = (&mut self.timing, start) {
+            timing.store_ms += start.elapsed().as_secs_f64() * 1000.0;
         }
     }
 }
@@ -5674,6 +5925,227 @@ fn pick(instance: &ash::Instance) -> Result<(vk::PhysicalDevice, u32), String> {
 mod tests {
     use super::*;
 
+    fn test_surface(addr: u32, width: u32, height: u32, kind: Kind) -> Surface {
+        let nothing = Image { image: vk::Image::null(), memory: vk::DeviceMemory::null(), view: vk::ImageView::null() };
+        Surface {
+            image: nothing,
+            addr,
+            width,
+            height,
+            kind,
+            tiled: true,
+            shadow: Vec::new(),
+            pixel: None,
+            checked: false,
+            dirty: None,
+            excluded: Vec::new(),
+            guarded: None,
+            write_guarded: None,
+            cleared: None,
+            stale: None,
+            capture: None,
+            native: None,
+            screen: None,
+            upright: None,
+            generation: 0,
+            twin: None,
+            twinned: false,
+            twin_generation: 0,
+            twin_upright: None,
+        }
+    }
+
+    #[test]
+    fn tile_aliases_preserve_byte_addresses_and_have_one_writer() {
+        let rgba = Kind::Color(ColorFormat::Rgba8);
+        for (width, height, other_width, other_height, offset) in [(256, 512, 240, 320, 0), (32, 48, 24, 24, 256)] {
+            let mut source = test_surface(0x1000, width, height, rgba);
+            let mut target = test_surface(0x1000 + offset, other_width, other_height, rgba);
+            source.drew((8, height));
+            let regions = alias_regions(&source, &target).unwrap();
+            let mut copied = vec![false; (target.size() / 256) as usize];
+            for r in &regions {
+                for y in 0..r.extent.height {
+                    for x in 0..r.extent.width {
+                        let (sx, sy) = (r.src_offset.x as u32 + x, source.height - 1 - (r.src_offset.y as u32 + y));
+                        let (tx, ty) = (r.dst_offset.x as u32 + x, target.height - 1 - (r.dst_offset.y as u32 + y));
+                        let a = source.addr + morton_offset(sx, sy, source.width, 4);
+                        let b = target.addr + morton_offset(tx, ty, target.width, 4);
+                        assert_eq!(a, b, "a tile copy must preserve the guest byte address");
+                        copied[((b - target.addr) / 256) as usize] = true;
+                    }
+                }
+            }
+            for (tile, &copied) in copied.iter().enumerate() {
+                assert_eq!(copied, source.dirty_overlaps(target.addr + tile as u32 * 256, 256));
+            }
+            source.relinquish(target.addr, target.size());
+            target.changed();
+            for at in (source.addr..source.addr + source.size()).step_by(256) {
+                assert!(!(source.dirty_overlaps(at, 256) && target.dirty_overlaps(at, 256)), "two owners at {at:X}");
+            }
+            assert!(alias_regions(&target, &source).is_some(), "the return copy preserves the source's remaining rows");
+            target.relinquish(source.addr, source.size());
+            source.changed();
+            assert!(source.excluded.is_empty());
+            assert!(target.dirty.is_none());
+        }
+        let mut source = test_surface(0, 32, 48, rgba);
+        let mut target = test_surface(0, 24, 24, rgba);
+        source.changed();
+        for kind in [Kind::Depth(4), Kind::Color(ColorFormat::Rgb8), Kind::Color(ColorFormat::Rgb565)] {
+            target.kind = kind;
+            assert!(alias_regions(&source, &target).is_none());
+        }
+        target.kind = rgba;
+        target.addr = 4;
+        assert!(alias_regions(&source, &target).is_none());
+        target.addr = 0;
+        target.changed();
+        assert!(alias_regions(&source, &target).is_none(), "ambiguous writers");
+        target.dirty = None;
+        source.stale = Some((0, 4));
+        assert!(alias_regions(&source, &target).is_none(), "partial fills");
+        source.stale = None;
+        source.excluded = vec![(0, 1)];
+        assert!(alias_regions(&source, &target).is_none(), "partial tiles");
+        source.excluded = vec![(0, 512), (256, 1024)];
+        assert!(!source.dirty_overlaps(0, 1024));
+        assert!(source.dirty_overlaps(1023, 2));
+        source.drew((0, 8));
+        assert!(source.excluded.is_empty(), "a new draw reclaims the bytes");
+    }
+
+    struct AliasMemory {
+        bytes: Vec<u8>,
+        stores: usize,
+        guards: usize,
+    }
+
+    impl GpuMemory for AliasMemory {
+        fn read(&mut self, addr: u32, out: &mut [u8]) {
+            out.copy_from_slice(&self.bytes[addr as usize..addr as usize + out.len()]);
+        }
+        fn write(&mut self, addr: u32, bytes: &[u8]) {
+            self.bytes[addr as usize..addr as usize + bytes.len()].copy_from_slice(bytes);
+            self.stores += 1;
+        }
+        fn slice(&mut self, addr: u32, len: usize) -> Option<&[u8]> {
+            self.bytes.get(addr as usize..addr as usize + len)
+        }
+        fn guard_writes(&mut self, _addr: u32, _len: u32) {
+            self.guards += 1;
+        }
+    }
+
+    #[test]
+    fn gpu_aliases_match_readback_across_partial_writes_fills_and_cpu_reads() {
+        let device = match own_device() {
+            Ok(device) => device,
+            Err(error) => {
+                eprintln!("skipping GPU alias checks: {error}");
+                return;
+            }
+        };
+        let device = Arc::new(device);
+        let rgba = Kind::Color(ColorFormat::Rgba8);
+        for scale in [1, 3] {
+            for enabled in [false, true] {
+                for read_tail in [false, true] {
+                    let mut hardware = Hardware::with_device(device.clone(), false, None).unwrap();
+                    assert_eq!(hardware.set_scale(scale), scale);
+                    hardware.alias_copies = enabled;
+                    eprintln!("alias checks on {}, scale {scale}, enabled {enabled}, CPU tail read {read_tail}", hardware.name);
+                    let mut memory = AliasMemory { bytes: (0..8192).map(|i| (i * 37 + i / 64) as u8).collect(), stores: 0, guards: 0 };
+                    let mut expected = memory.bytes.clone();
+                    hardware.begin().unwrap();
+                    let a = hardware.surface(&mut memory, 256, (32, 48), rgba, true).unwrap();
+                    let b = hardware.surface(&mut memory, 256, (24, 24), rgba, true).unwrap();
+                    let third = hardware.surface(&mut memory, 256, (8, 8), rgba, true).unwrap();
+                    // A draw changes the large surface after the smaller views
+                    // have been cached. Guest memory deliberately remains old.
+                    for y in 8..48 {
+                        for x in 0..32 {
+                            let at = 256 + morton_offset(x, y, 32, 4) as usize;
+                            expected[at..at + 4].copy_from_slice(&[x as u8, y as u8, (x + y) as u8, 255]);
+                        }
+                    }
+                    hardware.upload(a, &expected[256..256 + 32 * 48 * 4]).unwrap();
+                    hardware.surfaces[a].drew((8, 48));
+                    hardware.surfaces[a].guard_writes(&mut memory);
+                    hardware.overdrawn(a, (8, 48), None);
+                    let generation = hardware.surfaces[b].generation;
+                    hardware.twins = true;
+                    assert!(!hardware.copy_alias(&mut memory, a, b).unwrap(), "interpolation falls back");
+                    hardware.twins = false;
+                    memory.bytes[256 + 1024] ^= 1;
+                    assert!(!hardware.copy_alias(&mut memory, a, b).unwrap(), "CPU writes fall back");
+                    memory.bytes[256 + 1024] ^= 1;
+                    hardware.surfaces[third].dirty = Some((0, 8));
+                    assert!(!hardware.copy_alias(&mut memory, a, b).unwrap(), "third writer in untouched destination bytes");
+                    hardware.surfaces[third].dirty = None;
+                    assert_eq!(hardware.surface(&mut memory, 256, (24, 24), rgba, true).unwrap(), b);
+                    assert!(hardware.surfaces[b].generation > generation);
+                    assert_eq!(memory.stores, usize::from(!enabled), "a GPU alias must not write guest memory");
+                    assert_eq!(hardware.surfaces[a].dirty_overlaps(256 + 2304, 256), enabled, "the tail keeps its owner");
+                    // Read the large view's tail first. Its writeback must leave
+                    // the smaller view's bytes alone even though dirty rows span them.
+                    if read_tail {
+                        hardware.sync(&mut memory, 256 + 2304, 6144 - 2304).unwrap();
+                        assert_eq!(&memory.bytes[256 + 2304..256 + 6144], &expected[256 + 2304..256 + 6144]);
+                    }
+                    for y in 16..24 {
+                        for x in 0..24 {
+                            let at = 256 + morton_offset(x, y, 24, 4) as usize;
+                            expected[at..at + 4].copy_from_slice(&[7, x as u8, y as u8, 255]);
+                        }
+                    }
+                    hardware.begin().unwrap();
+                    hardware.upload(b, &expected[256..256 + 2304]).unwrap();
+                    hardware.surfaces[b].drew((16, 24));
+                    hardware.surfaces[b].guard_writes(&mut memory);
+                    hardware.overdrawn(b, (16, 24), None);
+                    // The scissor's linear row span misses B's last tile, but
+                    // pixels in that tile are read by this draw's load operation.
+                    hardware.surface_rows(&mut memory, 256, (32, 48), rgba, true, Some((20, 22))).unwrap();
+                    hardware.surfaces[a].drew((20, 22));
+                    hardware.overdrawn(a, (20, 22), None);
+                    hardware.sync(&mut memory, 256, 6144).unwrap();
+                    assert_eq!(memory.bytes, expected, "scale {scale}, GPU aliases {enabled}");
+                    assert!(memory.guards > 0);
+                    // Fill across the byte boundary between two live GPU owners.
+                    hardware.begin().unwrap();
+                    hardware.clear_rows(a, (0, 48), &[9, 8, 7, 255]).unwrap();
+                    hardware.surfaces[a].changed();
+                    hardware.overdrawn(a, (0, 48), None);
+                    expected[256..256 + 6144].copy_from_slice(&[9, 8, 7, 255].repeat(1536));
+                    hardware.surface(&mut memory, 256, (24, 24), rgba, true).unwrap();
+                    hardware.before_fill(&mut memory, 256 + 2048, 512, 4).unwrap();
+                    let fill = [4, 3, 2, 1].repeat(128);
+                    memory.write(256 + 2048, &fill);
+                    hardware.filled(256 + 2048, &fill).unwrap();
+                    expected[256 + 2048..256 + 2560].copy_from_slice(&fill);
+                    hardware.flush(&mut memory).unwrap();
+                    assert_eq!(memory.bytes, expected, "fill across live owners");
+                    // A CPU write and a partial fill must survive the next draw
+                    // and readback, including bytes written equal to the old shadow.
+                    memory.bytes[272..276].copy_from_slice(&[1, 2, 3, 4]);
+                    expected[272..276].copy_from_slice(&[1, 2, 3, 4]);
+                    hardware.begin().unwrap();
+                    hardware.surface(&mut memory, 256, (32, 48), rgba, true).unwrap();
+                    hardware.surfaces[a].drew((0, 8));
+                    hardware.before_fill(&mut memory, 512, 512, 4).unwrap();
+                    let fill = [9, 8, 7, 6].repeat(128);
+                    memory.write(512, &fill);
+                    hardware.filled(512, &fill).unwrap();
+                    expected[512..1024].copy_from_slice(&fill);
+                    hardware.sync(&mut memory, 256, 6144).unwrap();
+                    assert_eq!(memory.bytes, expected, "partial fill at scale {scale}, GPU aliases {enabled}");
+                }
+            }
+        }
+    }
+
     /// a block gathered with the words of the last one staged is read from
     /// where that went, any other is staged anew, and nothing is read from
     /// a batch handed over.
@@ -5715,32 +6187,7 @@ mod tests {
         let kinds = [Kind::Color(ColorFormat::Rgba8), Kind::Color(ColorFormat::Rgb8), Kind::Color(ColorFormat::Rgb565), Kind::Depth(2), Kind::Depth(3), Kind::Depth(4)];
         for kind in kinds {
             let (width, height) = (16, 24);
-            let nothing = Image { image: vk::Image::null(), memory: vk::DeviceMemory::null(), view: vk::ImageView::null() };
-            let mut surface = Surface {
-                image: nothing,
-                addr: 0,
-                width,
-                height,
-                kind,
-                tiled: true,
-                shadow: Vec::new(),
-                pixel: None,
-                checked: false,
-                dirty: None,
-                guarded: None,
-                write_guarded: None,
-                cleared: None,
-                stale: None,
-                capture: None,
-                native: None,
-                screen: None,
-                upright: None,
-                generation: 0,
-                twin: None,
-                twinned: false,
-                twin_generation: 0,
-                twin_upright: None,
-            };
+            let mut surface = test_surface(0, width, height, kind);
             let (size, bpp, row) = (surface.size() as usize, kind.bytes() as usize, surface.row_bytes() as usize);
             // the bytes the shadow stands for, none before the first upload
             let mut bytes: Option<Vec<u8>> = None;
