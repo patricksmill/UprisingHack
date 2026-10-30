@@ -2604,25 +2604,19 @@ impl Hardware {
         self.end_rendering();
         self.mark(Work::Copy, false);
         self.barrier();
-        // Match the existing round trip's nearest native-resolution sample,
-        // including its loss of subpixel detail, before reusing the bytes.
-        if self.scale > 1 {
-            self.blit(source, false);
-            self.blit(target, false);
-            self.barrier();
-        }
-        let image = |s: &Surface| s.native.as_ref().unwrap_or(&s.image).image;
+        // Tiles move whole, so at a scale each is a block of scale times
+        // its pixels, and the copy keeps the scaled detail.
+        let n = self.scale;
+        let scaled = |o: vk::Offset3D| vk::Offset3D { x: o.x * n as i32, y: o.y * n as i32, z: 0 };
+        let regions: Vec<vk::ImageCopy> = regions.into_iter().map(|r| r.src_offset(scaled(r.src_offset)).dst_offset(scaled(r.dst_offset))
+            .extent(vk::Extent3D { width: r.extent.width * n, height: r.extent.height * n, depth: 1 })).collect();
         // SAFETY: RGBA8 images made for transfers, in GENERAL, with every
         // copied tile inside both images and no image shared between them.
         unsafe {
-            self.device.cmd_copy_image(self.commands, image(&self.surfaces[source]), vk::ImageLayout::GENERAL,
-                image(&self.surfaces[target]), vk::ImageLayout::GENERAL, &regions);
+            self.device.cmd_copy_image(self.commands, self.surfaces[source].image.image, vk::ImageLayout::GENERAL,
+                self.surfaces[target].image.image, vk::ImageLayout::GENERAL, &regions);
         }
         self.unfenced = true;
-        if self.scale > 1 {
-            self.barrier();
-            self.blit(target, true);
-        }
         self.uploads = true;
         self.surfaces[source].relinquish(addr, size);
         self.surfaces[target].changed();
