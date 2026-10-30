@@ -707,7 +707,11 @@ impl App {
             let pause_on_top = std::env::var("ZAKURO_PAUSE_TOP").map_or(true, |value| value != "0");
             // and its options lit by the mouse over them, as on a PC, ZAKURO_MENU_HOVER=0 as a stylus
             let menu_hover = std::env::var("ZAKURO_MENU_HOVER").map_or(true, |value| value != "0");
-            system.aim_mouse = Some(zakuro_core::aim_mouse::AimMouse::new(hud_scale, narration_on_top, portrait_scale, mirror_bottom, pause_on_top, menu_hover));
+            let mut aim_mouse = zakuro_core::aim_mouse::AimMouse::new(hud_scale, narration_on_top, portrait_scale, mirror_bottom, pause_on_top, menu_hover);
+            // and the Fiend's Cauldron's two screens on the top screen, where
+            // the mouse touches them, ZAKURO_CAULDRON_TOP=0 leaves them as they are
+            aim_mouse.cauldron_on_top = std::env::var("ZAKURO_CAULDRON_TOP").map_or(true, |value| value != "0");
+            system.aim_mouse = Some(aim_mouse);
             // at 60 FPS the game has half a 3DS's time for each frame, which
             // its busiest scenes need more than: ZAKURO_OVERCLOCK times the
             // instructions in the same time, 1 as the console
@@ -896,10 +900,12 @@ impl App {
         log::info!("mouse aiming {}", if captured { "on, F6 lets go" } else { "off" });
     }
 
-    /// whether Kid Icarus: Uprising shows its pause menu on the top screen.
+    /// whether Kid Icarus: Uprising shows its pause menu, or the Fiend's
+    /// Cauldron, on the top screen, for the mouse to touch there.
     fn pause_menu_shown(&self) -> bool {
         self.game.as_ref().is_some_and(|game| {
-            game.system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.pause_menu_shown(game.system.frames))
+            let frames = game.system.frames;
+            game.system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.pause_menu_shown(frames) || aim_mouse.cauldron_on_top_shown(frames))
         })
     }
 
@@ -938,12 +944,18 @@ impl App {
                 ((0.0..320.0).contains(&x) && (0.0..240.0).contains(&y)).then_some((x, y))
             }
             // with the top screen alone there is nothing to touch, but for
-            // the pause menu drawn there
+            // the pause menu or the Fiend's Cauldron drawn there
             None => top.filter(|_| self.pause_menu_shown()).and_then(|top| {
-                let game = self.game.as_ref()?;
                 let x = (self.cursor.0 - top.x) / top.width * 400.0;
                 let y = (self.cursor.1 - top.y) / top.height * 240.0;
-                game.system.aim_mouse.as_ref()?.pause_menu_touch(game.system.frames, x, y)
+                let pressed = self.mouse_down;
+                let game = self.game.as_mut()?;
+                let frames = game.system.frames;
+                let aim_mouse = game.system.aim_mouse.as_mut()?;
+                match aim_mouse.pause_menu_shown(frames) {
+                    true => aim_mouse.pause_menu_touch(frames, x, y),
+                    false => aim_mouse.cauldron_touch(frames, x, y, pressed),
+                }
             }),
         };
         let pointer = pointer.filter(|_| !self.pointer_taken(false));

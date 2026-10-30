@@ -16,7 +16,7 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 21] = [
+pub const PLACES: [u32; 28] = [
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
     SPRITE_FLUSH,
@@ -38,6 +38,13 @@ pub const PLACES: [u32; 21] = [
     DIALOG_INPUT,
     CAULDRON[0],
     CAULDRON[1],
+    CAULDRON_CURSOR_KEYS_DONE,
+    TOP_SCENE_3D,
+    TOP_TEXT,
+    TOP_TEXT_DRAWN,
+    TOP_SCENE_DRAWN,
+    BOTTOM_SCENE_DRAW,
+    BOTTOM_SCENE_3D_DRAWN,
 ];
 
 /// the Fiend's Cauldron's pot (a task, vtable 0x00CF9AEC), the update it
@@ -45,6 +52,126 @@ pub const PLACES: [u32; 21] = [
 /// Out. it runs on that screen alone, not on the chapter select before it,
 /// the next screen or in a battle.
 const CAULDRON: [u32; 2] = [0x00251624, 0x00251C40];
+
+/// the Fiend's Cauldron's cursor, the dial, Move Out or Back lit for the
+/// keys to use, a task (vtable 0x00CEE170). its update, 0x0027B100, goes
+/// on at 0x0027BBA0 once it has handled the keys, the cursor in r4. what
+/// is lit is named at +0xD8, a hash then a string. an arrow key lights
+/// another by 0x003062F0(cursor, name), then 0x00305D44(cursor, 1), which
+/// moves the light and plays the cursor's sound, then setting bit 0x10 of
+/// +0x191: a name is a hash, then a string, a pointer to its characters
+/// and room for 0x20 of them.
+const CAULDRON_CURSOR_KEYS_DONE: u32 = 0x0027BBA0;
+const CAULDRON_CURSOR: u32 = 0x00CEE170;
+const CAULDRON_CURSOR_LIT: u32 = 0xD8;
+const SET_CAULDRON_CURSOR: u32 = 0x003062F0;
+const CAULDRON_CURSOR_MOVED: u32 = 0x00305D44;
+const CAULDRON_CURSOR_FLAGS: u32 = 0x191;
+/// the names, and their hashes, of the dial, Move Out and Back.
+const CAULDRON_CURSOR_NAMES: [(&str, u32); 3] = [("Level_Bar", 0x53D3_F0F1), ("GO", 0xCD94_A288), ("return", 0x928B_EAA4)];
+
+/// a scene's top screen drawing (0x0072A034, vtable 0x00CEF1A0), the
+/// drawing in r4, its scene at +0x40 and its viewport at +0x44, x, y,
+/// width and height in pixels: about to set the viewport and the top
+/// camera (0x00727804), which go on to the top's 2D too, then draw the
+/// scene's 3D (0x00727C24) when its layers 0xB to 0xD have models in them,
+/// and just after that, which drew it into both eyes' buffers, the left
+/// one's last.
+const TOP_SCENE_3D: u32 = 0x0072A07C;
+const TOP_SCENE_DRAWN: u32 = 0x0072A09C;
+const TOP_LAYER: u32 = 0xB;
+
+/// in the top's 3D (0x00727C24), which goes through the layers from 0xB
+/// drawing each one's models, then its text (0x00718120, the layer in r1,
+/// r0 the text's manager): the call for the text, and just after it. the
+/// Fiend's Cauldron's hint is layer 0xB's.
+const TOP_TEXT: u32 = 0x00727F10;
+const TOP_TEXT_DRAWN: u32 = 0x00727F14;
+
+/// a scene's bottom screen drawing, 0x007C8ECC(drawing), and its vtable.
+/// with the scene at +0x40 and the viewport at +0x44 as for the top's, it
+/// sets the viewport, the camera +0x54 says (1, the bottom's), and when
+/// +0x5D is set draws four of the scene's layers, BOTTOM_LAYERS, then the
+/// bottom screen's 2D. everything on the Fiend's Cauldron's bottom screen
+/// is in those layers, as models, so it can be drawn on the top screen
+/// too, wherever the viewport puts it.
+const BOTTOM_SCENE_DRAW: u32 = 0x007C8ECC;
+const BOTTOM_SCENE: u32 = 0x00CF6D6C;
+/// where it is done with the layers, about to draw the 2D, and where it
+/// returns from, past that.
+const BOTTOM_SCENE_3D_DRAWN: u32 = 0x007C91C4;
+const BOTTOM_SCENE_RETURN: u32 = 0x007C9220;
+
+/// a scene's layers, 0x28 bytes each from the pointer at scene+0xEC, each
+/// with its models' list at +4: a pointer to them at +0x18, past them at
+/// +0x1C. a model's +8 is its CGFX model (CMDL), named by the offset at
+/// +0xC from there.
+const SCENE_LAYERS: u32 = 0xEC;
+const LAYER_SIZE: u32 = 0x28;
+const BOTTOM_LAYERS: std::ops::Range<u32> = 0xF..0x13;
+
+/// the Fiend's Cauldron's models left off the top screen: the bottom
+/// screen's background.
+const CAULDRON_LEFT_OFF: [&str; 1] = ["MenBetHeartBt0010"];
+
+/// the pot's task's value on the bar, the intensity, a float, and where
+/// on the bottom screen the dial points for 0 and how far it goes for
+/// each 1, the box around it under the bar from its arrow's tip, and how
+/// wide and high that is.
+const CAULDRON_VALUE: u32 = 0x6C;
+const DIAL_ZERO: f32 = 33.0;
+const DIAL_STEP: f32 = 28.3;
+const DIAL_TOP: f32 = 30.0;
+const DIAL_SIZE: [f32; 2] = [54.0, 54.0];
+/// where on the bottom screen a press of the dial drawn on the top screen
+/// goes, down the screen: the dial's middle.
+const DIAL_GRAB: f32 = 60.0;
+/// Move Out on the bottom screen, x, y, width and height: its place has
+/// room around it for it to grow when lit, and only this is touched.
+const MOVE_OUT_BUTTON: [f32; 4] = [55.0, 182.0, 210.0, 58.0];
+
+/// where the top picture's intensity panel's middle is for 0 and how far
+/// it goes for each 1, in top screen pixels: it slides with the value.
+const PANEL_ZERO: f32 = 64.0;
+const PANEL_STEP: f32 = 30.0;
+
+/// its models drawn in places of their own: the bar's, the bar with the
+/// dial on it, the "Try This?" tag and the crown marking the intensity
+/// tried last, Back's and Move Out's. the rest, the pot, the pan and the
+/// hearts bet, go in a fourth.
+const CAULDRON_PARTS: [&[&str]; 3] = [&["MenBetHeartBt0002", "MenBetHeartBt0005", "MenBetHeartBt0006"], &["MenBetHeartBt9999"], &["MenBetHeartBt0000"]];
+
+/// the top screen's picture, a model, and its background, two of its mesh
+/// nodes: the dark frame around the board and the hearts' box, with a
+/// hole where the board shows, and the shading over it. the board is one
+/// of a strip of them, the one for each intensity, which the frame hides
+/// the rest of.
+const TOP_PICTURE: &str = "MenBetheartUp0000";
+const TOP_BACKGROUND: [&str; 2] = ["polySurface45", "polySurface51"];
+/// and its intensity's panel, the name and the number, another node,
+/// drawn in a place of its own.
+const TOP_PANEL: &str = "polySurface47";
+
+/// the top's scene drawing's own parts, called again for the panel: the
+/// viewport and the camera, then the 3D, the drawing in r0 and the scene
+/// in r1.
+const TOP_SCENE_SETUP: u32 = 0x00727804;
+const TOP_SCENE_3D_DRAW: u32 = 0x00727C24;
+
+/// a model's mesh nodes' visibility as drawn, 8 bytes each from the
+/// pointer at +0x17C, whether it shows at +4. its CGFX model's dictionary
+/// of them, at +0xD0 from there, has them in the same order.
+const MODEL_NODES: u32 = 0x17C;
+
+/// a scene's cameras, pointers from +0xC8, by screen. a camera's
+/// projection is kept at +0x6C while bit 2 of +8 is set, turned for the
+/// screen, see cropped_projection.
+const SCENE_CAMERAS: u32 = 0xC8;
+
+/// sets the GPU's viewport, 0x0012BC68(vsync manager, x, y, width, height
+/// on the stack), and where the manager is kept.
+const SET_VIEWPORT: u32 = 0x0012BC68;
+const VSYNC_MANAGER: u32 = 0x00D63824;
 
 /// where 0x006D269C goes on after 0x00B12218 summed the aim delta, which it
 /// left at sp+8 as reticle pixels a second, with the aim object in r4 and
@@ -247,6 +374,14 @@ enum Drawing {
     Mirrored(usize),
     Narration,
     PauseMenu(usize),
+    /// the Fiend's Cauldron's top picture's panel, its setup then its 3D,
+    /// then the bottom screen, its bar, the bar's dial, Back, then the rest.
+    Cauldron(usize),
+    /// the Fiend's Cauldron's cursor, lit where the mouse went as an arrow
+    /// key would: set, then moved.
+    CauldronCursor(usize),
+    /// the viewport, set for what is drawn from the place on.
+    Viewport(u32),
 }
 
 impl Drawing {
@@ -254,20 +389,23 @@ impl Drawing {
     fn place(self) -> u32 {
         match self {
             Drawing::PauseMenu(index) => PAUSE_MENU[index].place,
+            Drawing::Cauldron(_) => TOP_SCENE_DRAWN,
+            Drawing::CauldronCursor(_) => CAULDRON_CURSOR_KEYS_DONE,
+            Drawing::Viewport(place) => place,
             _ => TOP_UI_AFTER_HUD,
         }
     }
 }
 
 /// what the CPU held where the call was made in the game's place, put back
-/// when the call returns there, and the narration's position while it is
-/// moved.
+/// when the call returns there, and the memory changed for the call, where
+/// and what it held, put back too.
 struct Saved {
     regs: [u32; 16],
     cpsr: zakuro_cpu::psr::Psr,
     vfp: [u32; 32],
     drawing: Drawing,
-    moved: Option<(u32, [u8; 8])>,
+    moved: Vec<(u32, Vec<u8>)>,
 }
 
 /// where placing the reticle, 0x007C4854, hands each of its two parts the
@@ -365,6 +503,71 @@ struct Hovering {
     found: bool,
 }
 
+/// where the Fiend's Cauldron's two screens go on the top screen, each
+/// screen's backgrounds left off: the top's picture, the bottom's bar, its
+/// Back button, and the rest of the bottom over them. the top's hint is
+/// drawn as before.
+#[derive(Clone, Copy)]
+pub struct CauldronLayout {
+    pub top: CauldronPlace,
+    /// the top picture's intensity panel, drawn on its own over the bar,
+    /// sliding along it with the dial as it slides under the picture: from's
+    /// x is where it has slid to under the picture and to's where over the
+    /// bar, both set each frame.
+    pub panel: CauldronPlace,
+    pub bar: CauldronPlace,
+    /// the bar's dial, under the bar, drawn on its own at this size against
+    /// the bar's, its arrow still at the bar's value.
+    pub dial: f32,
+    pub back: CauldronPlace,
+    pub move_out: CauldronPlace,
+    pub rest: CauldronPlace,
+}
+
+impl CauldronLayout {
+    /// the layout for a top screen width pixels wide as shown, 240 high:
+    /// the top's picture and under it the panel, the bar, its dial and Back
+    /// on the left, the pot over Move Out on the right, made for 16:9 and
+    /// smaller on a narrower screen.
+    pub fn fitting(width: f32) -> CauldronLayout {
+        const WIDTH: f32 = 427.0;
+        let scale = (width / WIDTH).min(1.0);
+        // right is by the right edge, down by the bottom
+        let place = |to: [f32; 4], from: [f32; 4], right: bool, down: bool| {
+            let x = to[0] * scale + if right { width - WIDTH * scale } else { 0.0 };
+            let y = to[1] * scale + if down { 240.0 * (1.0 - scale) } else { 0.0 };
+            CauldronPlace { from, to: [x, y, to[2] * scale, to[3] * scale] }
+        };
+        CauldronLayout {
+            top: place([16.0, 24.0, 258.0, 172.0], [36.0, 22.0, 328.0, 218.0], false, false),
+            panel: place([0.0, 148.0, 91.0, 49.0], [0.0, 176.0, 140.0, 76.0], false, true),
+            bar: place([40.0, 197.0, 220.0, 23.0], [14.0, 0.0, 312.0, 32.0], false, true),
+            dial: 0.55,
+            back: place([9.0, 207.0, 33.0, 30.0], [6.0, 202.0, 42.0, 38.0], false, true),
+            move_out: place([244.9, 192.9, 171.1, 47.5], [16.0, 160.0, 288.0, 80.0], true, true),
+            rest: place([188.0, 47.0, 237.4, 178.1], [0.0, 0.0, 320.0, 240.0], true, true),
+        }
+    }
+}
+
+impl CauldronPlace {
+    /// where a box of from's screen, x, y, width and height, shows.
+    fn to_box(&self, part: [f32; 4]) -> [f32; 4] {
+        let (scale_x, scale_y) = (self.to[2] / self.from[2], self.to[3] / self.from[3]);
+        [self.to[0] + (part[0] - self.from[0]) * scale_x, self.to[1] + (part[1] - self.from[1]) * scale_y, part[2] * scale_x, part[3] * scale_y]
+    }
+}
+
+/// a part of a screen, from, shown in a box of the top screen, to: x, y
+/// from the top left, width and height, in the screen's pixels, the top's
+/// 400 by 240 and the bottom's 320 by 240, and to in top screen pixels as
+/// shown, 400 by 240 times widen.
+#[derive(Clone, Copy)]
+pub struct CauldronPlace {
+    pub from: [f32; 4],
+    pub to: [f32; 4],
+}
+
 pub struct AimMouse {
     /// reticle pixels moved since the game last took them.
     pub pending: [f32; 2],
@@ -406,6 +609,34 @@ pub struct AimMouse {
     /// was pouring then.
     cauldron_drawn: Option<u64>,
     cauldron_pouring: bool,
+    /// the pot's task, which those updates are for.
+    cauldron_task: Option<u32>,
+    /// whether the Fiend's Cauldron's bottom screen is drawn on the top
+    /// screen too, and where each screen's picture goes there, when not
+    /// CauldronLayout::fitting the top screen.
+    pub cauldron_on_top: bool,
+    pub cauldron_layout: Option<CauldronLayout>,
+    /// where the bar's dial was last drawn, which moves with its value.
+    cauldron_dial: Option<CauldronPlace>,
+    /// the part of it a press of the mouse began in, which it stays with
+    /// until let go, a drag going on past it.
+    touched_part: Option<usize>,
+    /// the part the mouse was last over, and the cursor's name to light
+    /// for it, once, when it went there.
+    hovered_part: Option<usize>,
+    cursor_wanted: Option<usize>,
+    /// the bottom screen's scene drawing the last bottom pass made.
+    bottom_scene: Option<u32>,
+    /// the top screen's viewport while the top's picture is drawn smaller,
+    /// put back before its 2D, and the one it is drawn in.
+    top_viewport: Option<([u8; 16], [u8; 16])>,
+    /// what was changed in memory for the top's picture, put back after
+    /// its 3D.
+    top_moved: Vec<(u32, Vec<u8>)>,
+    /// the top camera's projection while it shows a part of the picture,
+    /// where it is kept, and the game's and the one that shows that part:
+    /// the text's place on the screen comes from it, so it gets the game's.
+    top_projection: Option<(u32, [u8; 64], [u8; 64])>,
     /// the frame the power key was pressed in, for the battle UI's next
     /// update to use the current power, unless that is long after.
     power_requested: Option<u64>,
@@ -460,6 +691,17 @@ impl Default for AimMouse {
             battle_drawn: None,
             cauldron_drawn: None,
             cauldron_pouring: false,
+            cauldron_task: None,
+            cauldron_on_top: false,
+            cauldron_layout: None,
+            cauldron_dial: None,
+            touched_part: None,
+            hovered_part: None,
+            cursor_wanted: None,
+            bottom_scene: None,
+            top_viewport: None,
+            top_moved: Vec::new(),
+            top_projection: None,
             power_requested: None,
             menu_hover: false,
             pointer: None,
@@ -514,6 +756,54 @@ impl AimMouse {
     /// whether the Fiend's Cauldron is shown, frame as for pause_menu_shown.
     pub fn cauldron_shown(&self, frame: u64) -> bool {
         self.cauldron_drawn.is_some_and(|drawn| frame <= drawn + 3)
+    }
+
+    /// the Fiend's Cauldron's layout on the top screen, none when it is not
+    /// drawn there.
+    fn cauldron_layout(&self) -> Option<CauldronLayout> {
+        self.cauldron_on_top.then(|| self.cauldron_layout.unwrap_or_else(|| CauldronLayout::fitting(400.0 * self.widen)))
+    }
+
+    /// whether the Fiend's Cauldron is shown on the top screen, frame as
+    /// for pause_menu_shown.
+    pub fn cauldron_on_top_shown(&self, frame: u64) -> bool {
+        self.cauldron_on_top && self.cauldron_shown(frame)
+    }
+
+    /// the bottom screen pixel a touch of the top screen's pixel x, y
+    /// touches while the Fiend's Cauldron is shown there, x of the top
+    /// screen's 400 as for pause_menu_touch, frame as for
+    /// pause_menu_shown: in the box of the part drawn there, or while
+    /// pressed, the part the press began in. a press of the dial goes
+    /// along the bar, where it is the dial's. none off them.
+    pub fn cauldron_touch(&mut self, frame: u64, x: f32, y: f32, pressed: bool) -> Option<(f32, f32)> {
+        let layout = self.cauldron_layout().filter(|_| self.cauldron_shown(frame))?;
+        let x = x * self.widen;
+        // by the order they are drawn over each other, the dial first
+        let parts = [self.cauldron_dial, Some(layout.bar), Some(layout.back), Some(layout.move_out), Some(layout.rest)];
+        let button = layout.move_out.to_box(MOVE_OUT_BUTTON);
+        let inside = |place: &CauldronPlace| {
+            let [left, top, width, height] = if place.from == layout.move_out.from { button } else { place.to };
+            (left..left + width).contains(&x) && (top..top + height).contains(&y)
+        };
+        let over = parts.iter().position(|place| place.as_ref().is_some_and(inside));
+        if over != self.hovered_part {
+            // the dial, the bar, Back and Move Out light the cursor's
+            // names in turn
+            self.cursor_wanted = over.and_then(|part| [Some(0), Some(0), Some(2), Some(1), None][part]);
+            self.hovered_part = over;
+        }
+        let part = match self.touched_part.filter(|_| pressed) {
+            Some(part) => part,
+            None => over?,
+        };
+        self.touched_part = pressed.then_some(part);
+        let place = if part == 0 { layout.bar } else { parts[part]? };
+        let [left, top, width, height] = place.to;
+        let [from_x, from_y, from_width, from_height] = place.from;
+        let bottom_x = from_x + (x - left) * from_width / width;
+        let bottom_y = if part == 0 { DIAL_GRAB } else { from_y + (y - top) * from_height / height };
+        Some((bottom_x.clamp(0.0, 319.0), bottom_y.clamp(0.0, 239.0)))
     }
 
     /// whether the Fiend's Cauldron's pot pours, after Move Out, the bar
@@ -600,10 +890,24 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
             }
         }
         DIALOG_INPUT => hover_dialog(system),
+        TOP_SCENE_3D => top_scene_viewport(system),
+        CAULDRON_CURSOR_KEYS_DONE => light_cauldron_cursor(system),
+        TOP_TEXT | TOP_TEXT_DRAWN => top_text_viewport(system, pc),
+        TOP_SCENE_DRAWN => top_screen_cauldron(system),
+        BOTTOM_SCENE_DRAW => {
+            if !matches!(drawing(system), Some(Drawing::Cauldron(_))) {
+                let scene = system.cpu.regs[0];
+                if let Some(aim_mouse) = &mut system.aim_mouse {
+                    aim_mouse.bottom_scene = Some(scene);
+                }
+            }
+        }
+        BOTTOM_SCENE_3D_DRAWN => cauldron_drawn(system),
         _ if CAULDRON.contains(&pc) => {
-            let frame = system.frames;
+            let (frame, task) = (system.frames, system.cpu.regs[0]);
             if let Some(aim_mouse) = &mut system.aim_mouse {
                 aim_mouse.cauldron_drawn = Some(frame);
+                aim_mouse.cauldron_task = Some(task);
                 aim_mouse.cauldron_pouring = pc == CAULDRON[1];
             }
         }
@@ -912,13 +1216,11 @@ fn top_screen_extras(system: &mut System) {
         system.cpu.regs = back.regs;
         system.cpu.cpsr = back.cpsr;
         system.cpu.vfp.regs = back.vfp;
-        if let Some((message, position)) = back.moved {
-            system.memory.write_bytes(message + 0x14, &position);
-        }
+        put_back(system, &back.moved);
         let next = match back.drawing {
             Drawing::Portraits => 0,
             Drawing::Mirrored(index) => index + 1,
-            Drawing::Narration | Drawing::PauseMenu(_) => return,
+            Drawing::Narration | Drawing::PauseMenu(_) | Drawing::Cauldron(_) | Drawing::CauldronCursor(_) | Drawing::Viewport(_) => return,
         };
         if !start_mirrored(system, next) {
             start_narration(system);
@@ -982,7 +1284,7 @@ fn top_screen_pause_menu(system: &mut System, place: u32) {
     };
     let Some(recorded) = aim_mouse.pause[index].take() else { return };
     aim_mouse.pause_drawn = Some(system.frames);
-    call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::PauseMenu(index), None);
+    call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::PauseMenu(index), Vec::new());
     system.cpu.regs[2] = recorded.regs[2];
     system.cpu.regs[3] = recorded.regs[3];
     system.cpu.vfp.regs[..8].copy_from_slice(&recorded.floats);
@@ -1004,6 +1306,434 @@ fn top_screen_pause_menu(system: &mut System, place: u32) {
     }
 }
 
+/// draws the Fiend's Cauldron's bottom screen on the top screen as well,
+/// over the top's 3D and under its 2D: the bottom's scene drawing the last
+/// bottom pass made, called here for its bar, the bar's dial, Back and then
+/// the rest, each in its place, the background left off, and stopped once its layers are
+/// drawn (see cauldron_drawn). back here after each, everything is put
+/// back, as it is for the top's picture first.
+fn top_screen_cauldron(system: &mut System) {
+    let top = system.cpu.regs[4];
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    let next = match aim_mouse.saved.take_if(|saved| matches!(saved.drawing, Drawing::Cauldron(_))) {
+        Some(back) => {
+            system.cpu.regs = back.regs;
+            system.cpu.cpsr = back.cpsr;
+            system.cpu.vfp.regs = back.vfp;
+            let Drawing::Cauldron(part) = back.drawing else { return };
+            if part == 0 {
+                // the panel's viewport and camera are set: its 3D, with
+                // the same changes
+                let scene = read_word(system, top + 0x40);
+                call_here(system, TOP_SCENE_3D_DRAW, top, scene, Drawing::Cauldron(1), back.moved);
+                return;
+            }
+            put_back(system, &back.moved);
+            part + 1
+        }
+        None => {
+            let top_moved = std::mem::take(&mut aim_mouse.top_moved);
+            let top_projection = aim_mouse.top_projection.take();
+            if let Some((viewport, _)) = aim_mouse.top_viewport.take() {
+                system.memory.write_bytes(top + 0x44, &viewport);
+            }
+            put_back(system, &top_moved);
+            if let Some((at, projection, _)) = top_projection {
+                system.memory.write_bytes(at, &projection);
+            }
+            0
+        }
+    };
+    let Some((layout, bottom)) = cauldron_scenes(system, top) else { return };
+    if next == 0 {
+        // the panel, its part of the top screen around where it has slid
+        let mut panel = layout.panel;
+        let Some(value) = cauldron_value(system) else { return };
+        panel.from[0] = PANEL_ZERO + value * PANEL_STEP - panel.from[2] * 0.5;
+        let [bar_x, _, bar_width, _] = layout.bar.to;
+        panel.to[0] = bar_x + (DIAL_ZERO + value * DIAL_STEP - layout.bar.from[0]) * bar_width / layout.bar.from[2] - panel.to[2] * 0.5;
+        top_panel(system, top, panel);
+        return;
+    }
+    // each place, and the group of CAULDRON_PARTS it has
+    let dial = dial_place(system, layout);
+    if let Some(aim_mouse) = &mut system.aim_mouse {
+        aim_mouse.cauldron_dial = Some(dial);
+    }
+    let Some(&(place, group)) = [(layout.bar, 0), (dial, 0), (layout.back, 1), (layout.move_out, 2), (layout.rest, 3)].get(next - 2) else {
+        return;
+    };
+    let scene = read_word(system, top + 0x40);
+    let viewport = viewport_bytes(system, top, place.to);
+    let mut moved = Vec::new();
+    change(system, &mut moved, bottom + 0x44, &viewport);
+    // no dialog over it, the bottom pass draws those. it sets the scene's
+    // camera and screen and its renderer's +0x58, which the top's 2D may
+    // look at after
+    change(system, &mut moved, bottom + 0x60, &[0; 4]);
+    let renderer = read_word(system, scene + 4);
+    for (at, len) in [(scene + 0xF4, 8), (renderer + 0x58, 4)] {
+        let mut bytes = vec![0u8; len];
+        system.memory.read_bytes(at, &mut bytes);
+        moved.push((at, bytes));
+    }
+    // the part of the bottom screen shown
+    let screen = read_word(system, bottom + 0x58);
+    let camera = read_word(system, scene + SCENE_CAMERAS + screen * 4);
+    if let Some((matrix, part)) = cropped_projection(system, camera, place.from, [320.0, 240.0], false) {
+        moved.push((camera + 0x6C, matrix.to_vec()));
+        system.memory.write_bytes(camera + 0x6C, &part);
+    }
+    let layers = read_word(system, scene + SCENE_LAYERS);
+    for layer in BOTTOM_LAYERS {
+        let list = read_word(system, layers + layer * LAYER_SIZE + 4);
+        if list == 0 {
+            continue;
+        }
+        let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
+        if end < start || end - start > 0x400 {
+            continue;
+        }
+        let models: Vec<u32> = (start..end).step_by(4).map(|at| read_word(system, at)).collect();
+        let kept: Vec<u32> = models
+            .iter()
+            .copied()
+            .filter(|&model| {
+                let name = model_name(system, model);
+                let part = CAULDRON_PARTS.iter().position(|part| part.contains(&name.as_str())).unwrap_or(CAULDRON_PARTS.len());
+                part == group && !CAULDRON_LEFT_OFF.contains(&name.as_str())
+            })
+            .collect();
+        if kept.len() < models.len() {
+            let bytes: Vec<u8> = kept.iter().flat_map(|model| model.to_le_bytes()).collect();
+            change(system, &mut moved, start, &bytes);
+            change(system, &mut moved, list + 0x1C, &(start + bytes.len() as u32).to_le_bytes());
+        }
+    }
+    call_here(system, BOTTOM_SCENE_DRAW, bottom, 0, Drawing::Cauldron(next), moved);
+}
+
+/// once the Fiend's Cauldron's cursor's update, r4, has handled the keys,
+/// lights what the mouse went over, as an arrow key does there: the game's
+/// own setting of it, with the name below the stack, then its moving of
+/// the light, back here after each.
+fn light_cauldron_cursor(system: &mut System) {
+    let frame = system.frames;
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    if let Some(back) = aim_mouse.saved.take_if(|saved| matches!(saved.drawing, Drawing::CauldronCursor(_))) {
+        system.cpu.regs = back.regs;
+        system.cpu.cpsr = back.cpsr;
+        system.cpu.vfp.regs = back.vfp;
+        if back.drawing == Drawing::CauldronCursor(0) {
+            let cursor = system.cpu.regs[4];
+            let flags = read_word(system, cursor + CAULDRON_CURSOR_FLAGS) as u8 | 0x10;
+            system.memory.write_bytes(cursor + CAULDRON_CURSOR_FLAGS, &[flags]);
+            call_here(system, CAULDRON_CURSOR_MOVED, cursor, 1, Drawing::CauldronCursor(1), Vec::new());
+        }
+        return;
+    }
+    if !aim_mouse.cauldron_on_top_shown(frame) || aim_mouse.saved.is_some() {
+        return;
+    }
+    let Some(wanted) = aim_mouse.cursor_wanted.take() else { return };
+    let cursor = system.cpu.regs[4];
+    if read_word(system, cursor) != CAULDRON_CURSOR {
+        return;
+    }
+    let (name, hash) = CAULDRON_CURSOR_NAMES[wanted];
+    if read_word(system, cursor + CAULDRON_CURSOR_LIT) == hash {
+        return;
+    }
+    call_here(system, SET_CAULDRON_CURSOR, cursor, 0, Drawing::CauldronCursor(0), Vec::new());
+    let at = (system.cpu.regs[13] - 0x40) & !7;
+    let mut record = [0u8; 0x2C];
+    record[..4].copy_from_slice(&hash.to_le_bytes());
+    record[4..8].copy_from_slice(&(at + 0xC).to_le_bytes());
+    record[8..12].copy_from_slice(&0x20u32.to_le_bytes());
+    record[12..12 + name.len()].copy_from_slice(name.as_bytes());
+    system.memory.write_bytes(at, &record);
+    system.cpu.regs[1] = at;
+    system.cpu.regs[2] = 0;
+    system.cpu.regs[3] = 0;
+    system.cpu.regs[13] = at;
+}
+
+/// the value on the Fiend's Cauldron's bar, the intensity, from the pot's
+/// task.
+fn cauldron_value(system: &mut System) -> Option<f32> {
+    let task = system.aim_mouse.as_ref()?.cauldron_task?;
+    let value = f32::from_bits(read_word(system, task + CAULDRON_VALUE));
+    (0.0..=10.0).contains(&value).then_some(value)
+}
+
+/// where the bar's dial goes: the part of the bottom screen around it, at
+/// the value the pot's task has, its arrow's tip at the top, in a box
+/// dial times the bar's size with that tip on the bar's lower edge. none
+/// with no value.
+fn dial_place(system: &mut System, layout: CauldronLayout) -> CauldronPlace {
+    let none = CauldronPlace { from: [0.0, 0.0, 1.0, 1.0], to: [0.0, 0.0, 0.0, 0.0] };
+    let Some(value) = cauldron_value(system) else { return none };
+    let x = DIAL_ZERO + value * DIAL_STEP;
+    let [bar_x, bar_y, bar_width, bar_height] = layout.bar.to;
+    let [from_x, from_y, from_width, from_height] = layout.bar.from;
+    let (scale_x, scale_y) = (bar_width / from_width, bar_height / from_height);
+    let (width, height) = (DIAL_SIZE[0] * scale_x * layout.dial, DIAL_SIZE[1] * scale_y * layout.dial);
+    let middle = bar_x + (x - from_x) * scale_x;
+    CauldronPlace {
+        from: [x - DIAL_SIZE[0] * 0.5, DIAL_TOP, DIAL_SIZE[0], DIAL_SIZE[1]],
+        to: [middle - width * 0.5, bar_y + (DIAL_TOP - from_y) * scale_y, width, height],
+    }
+}
+
+/// a camera's projection, as it is and turned to show only the part from of
+/// a screen of size pixels in the whole view, when it has one kept. the
+/// view of a wider screen is that much wider.
+fn cropped_projection(system: &mut System, camera: u32, from: [f32; 4], size: [f32; 2], stereo: bool) -> Option<([u8; 64], [u8; 64])> {
+    if camera == 0 || read_word(system, camera + 8) & 4 == 0 {
+        return None;
+    }
+    let widen = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.widen);
+    let mut matrix = [0u8; 64];
+    system.memory.read_bytes(camera + 0x6C, &mut matrix);
+    let mut m: Vec<f32> = matrix.as_chunks::<4>().0.iter().map(|word| f32::from_le_bytes(*word)).collect();
+    let [x, y, width, height] = from;
+    let [screen_width, screen_height] = size;
+    // the first row gives the view's -1..1 from the bottom of the screen
+    // up, the second from its right edge to its left: each gets the
+    // middle of the part and its share of the view. the top's stereo
+    // camera (0x00916234) builds each eye's from it turned back, and its
+    // middles end up the other way round, the second row's going across
+    // the screen from the left and the first's up it
+    let across = 1.0 - (x + width * 0.5) * 2.0 / screen_width;
+    let up = 1.0 - (y + height * 0.5) * 2.0 / screen_height;
+    let rows = match stereo {
+        false => [(up, height / screen_height), (across / widen, width / screen_width / widen)],
+        true => [(-across / widen, height / screen_height), (up, width / screen_width / widen)],
+    };
+    for (row, (middle, half)) in rows.into_iter().enumerate() {
+        for column in 0..4 {
+            m[row * 4 + column] = (m[row * 4 + column] - middle * m[12 + column]) / half;
+        }
+    }
+    let mut part = [0u8; 64];
+    part.iter_mut().zip(m.iter().flat_map(|value| value.to_le_bytes())).for_each(|(byte, value)| *byte = value);
+    Some((matrix, part))
+}
+
+/// starts drawing the top picture's panel in its place: the top's scene
+/// drawing's own setup called again, with its viewport the place's, its
+/// camera showing the panel's part, and only the panel's node of the
+/// picture's models shown, then (see top_screen_cauldron) its 3D, without
+/// the hint (see top_text_viewport).
+fn top_panel(system: &mut System, top: u32, place: CauldronPlace) {
+    let scene = read_word(system, top + 0x40);
+    let layers = read_word(system, scene + SCENE_LAYERS);
+    let list = read_word(system, layers + TOP_LAYER * LAYER_SIZE + 4);
+    if list == 0 {
+        return;
+    }
+    let mut moved = Vec::new();
+    let viewport = viewport_bytes(system, top, place.to);
+    change(system, &mut moved, top + 0x44, &viewport);
+    let renderer = read_word(system, scene + 4);
+    for (at, len) in [(scene + 0xF4, 8), (renderer + 0x58, 4)] {
+        let mut bytes = vec![0u8; len];
+        system.memory.read_bytes(at, &mut bytes);
+        moved.push((at, bytes));
+    }
+    let screen = read_word(system, top + 0x58);
+    let camera = read_word(system, scene + SCENE_CAMERAS + screen * 4);
+    if let Some((matrix, part)) = cropped_projection(system, camera, place.from, [400.0, 240.0], true) {
+        moved.push((camera + 0x6C, matrix.to_vec()));
+        system.memory.write_bytes(camera + 0x6C, &part);
+    }
+    let pictures = top_pictures(system, list);
+    for &model in &pictures {
+        show_nodes(system, &mut moved, model, |name| name == TOP_PANEL);
+    }
+    // the layer's other models, the hearts' number among them, left off
+    let start = read_word(system, list + 0x18);
+    let bytes: Vec<u8> = pictures.iter().flat_map(|model| model.to_le_bytes()).collect();
+    change(system, &mut moved, start, &bytes);
+    change(system, &mut moved, list + 0x1C, &(start + bytes.len() as u32).to_le_bytes());
+    call_here(system, TOP_SCENE_SETUP, top, scene, Drawing::Cauldron(0), moved);
+}
+
+/// the Fiend's Cauldron's layout, and the bottom screen's scene drawing,
+/// when it is shown on the top screen and the top's scene drawing, top, is
+/// of the same scene.
+fn cauldron_scenes(system: &mut System, top: u32) -> Option<(CauldronLayout, u32)> {
+    let aim_mouse = system.aim_mouse.as_ref()?;
+    let (layout, bottom) = (aim_mouse.cauldron_layout()?, aim_mouse.bottom_scene?);
+    if !aim_mouse.cauldron_shown(system.frames) {
+        return None;
+    }
+    let scene = read_word(system, top + 0x40);
+    (read_word(system, bottom) == BOTTOM_SCENE && read_word(system, bottom + 0x40) == scene).then_some((layout, bottom))
+}
+
+/// the top screen's viewport for a box of it, x, y, width and height as
+/// CauldronLayout has them, as the top's scene drawing, top, takes it, from
+/// its own. the buffer is the screen turned, so a viewport's x and y count
+/// from the screen's right and bottom edges, and a wider top screen is
+/// squeezed into it.
+fn viewport_bytes(system: &mut System, top: u32, view: [f32; 4]) -> Vec<u8> {
+    let widen = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.widen);
+    let [x, y, width, height] = view;
+    let (x, width) = (x / widen, width / widen);
+    let screen = [0x44, 0x48, 0x4C, 0x50].map(|at| read_word(system, top + at) as i32 as f32);
+    let viewport = [screen[0] + screen[2] - x - width, screen[1] + screen[3] - y - height, width, height];
+    viewport.iter().flat_map(|value| (value.round() as i32).to_le_bytes()).collect()
+}
+
+/// before the top's scene drawing, r4, sets its viewport and draws its 3D:
+/// while the Fiend's Cauldron is shown on the top screen, the top's
+/// picture goes in its box. top_screen_cauldron puts the viewport back.
+fn top_scene_viewport(system: &mut System) {
+    let top = system.cpu.regs[4];
+    let Some((layout, _)) = cauldron_scenes(system, top) else { return };
+    // with no models in the layer it does not reach its 3D, nor
+    // top_screen_cauldron
+    let scene = read_word(system, top + 0x40);
+    let layers = read_word(system, scene + SCENE_LAYERS);
+    let list = read_word(system, layers + TOP_LAYER * LAYER_SIZE + 4);
+    if list == 0 || read_word(system, list + 0x18) == read_word(system, list + 0x1C) {
+        return;
+    }
+    let mut viewport = [0u8; 16];
+    system.memory.read_bytes(top + 0x44, &mut viewport);
+    let smaller: [u8; 16] = viewport_bytes(system, top, layout.top.to).try_into().unwrap();
+    system.memory.write_bytes(top + 0x44, &smaller);
+    let mut moved = Vec::new();
+    // the picture's background and its panel
+    for model in top_pictures(system, list) {
+        show_nodes(system, &mut moved, model, |name| !TOP_BACKGROUND.contains(&name) && name != TOP_PANEL);
+    }
+    // and the part of it shown, while the viewport is the box's
+    let screen = read_word(system, top + 0x58);
+    let camera = read_word(system, scene + SCENE_CAMERAS + screen * 4);
+    let projection = cropped_projection(system, camera, layout.top.from, [400.0, 240.0], true).map(|(matrix, part)| {
+        system.memory.write_bytes(camera + 0x6C, &part);
+        (camera + 0x6C, matrix, part)
+    });
+    if let Some(aim_mouse) = &mut system.aim_mouse {
+        aim_mouse.top_viewport = Some((viewport, smaller));
+        aim_mouse.top_moved = moved;
+        aim_mouse.top_projection = projection;
+    }
+}
+
+/// the top picture's models in a layer's list of them.
+fn top_pictures(system: &mut System, list: u32) -> Vec<u32> {
+    let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
+    let models: Vec<u32> = (start..end.min(start + 0x400)).step_by(4).map(|at| read_word(system, at)).collect();
+    models.into_iter().filter(|&model| model_name(system, model) == TOP_PICTURE).collect()
+}
+
+/// hides a model's mesh nodes but those shown says to show, what was there
+/// kept in moved.
+fn show_nodes(system: &mut System, moved: &mut Vec<(u32, Vec<u8>)>, model: u32, shown: impl Fn(&str) -> bool) {
+    let cmdl = read_word(system, model + 8);
+    let dictionary = read_word(system, cmdl + 0xD0);
+    if dictionary == 0 {
+        return;
+    }
+    let dictionary = cmdl + 0xD0 + dictionary;
+    let nodes = read_word(system, model + MODEL_NODES);
+    let count = read_word(system, dictionary + 8).min(read_word(system, model + MODEL_NODES + 4).wrapping_sub(nodes) / 8);
+    for node in 0..count {
+        let name = dictionary + 0x24 + node * 0x10;
+        let name = name.wrapping_add(read_word(system, name));
+        if !shown(&c_string(system, name)) {
+            change(system, moved, nodes + node * 8 + 4, &[0]);
+        }
+    }
+}
+
+/// the string at at, up to 32 bytes.
+fn c_string(system: &mut System, at: u32) -> String {
+    let mut bytes = [0u8; 32];
+    system.memory.read_bytes(at, &mut bytes);
+    let len = bytes.iter().position(|&byte| byte == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..len]).into_owned()
+}
+
+/// while the top's picture is drawn smaller, its text is drawn with the
+/// whole screen's viewport and the game's projection, and what is drawn
+/// after with the smaller one and the part's again.
+fn top_text_viewport(system: &mut System, place: u32) {
+    if place == TOP_TEXT && drawing(system) == Some(Drawing::Cauldron(1)) {
+        // the panel's, past the text
+        system.cpu.regs[15] = TOP_TEXT_DRAWN;
+        return;
+    }
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    if let Some(back) = aim_mouse.saved.take_if(|saved| saved.drawing == Drawing::Viewport(place)) {
+        system.cpu.regs = back.regs;
+        system.cpu.cpsr = back.cpsr;
+        system.cpu.vfp.regs = back.vfp;
+        return;
+    }
+    let Some((whole, smaller)) = aim_mouse.top_viewport else { return };
+    if let Some((at, game, part)) = aim_mouse.top_projection {
+        system.memory.write_bytes(at, if place == TOP_TEXT { &game } else { &part });
+    }
+    let viewport = if place == TOP_TEXT { whole } else { smaller };
+    let manager = read_word(system, VSYNC_MANAGER);
+    if manager == 0 {
+        return;
+    }
+    let word = |i: usize| u32::from_le_bytes(viewport[i * 4..i * 4 + 4].try_into().unwrap());
+    call_here(system, SET_VIEWPORT, manager, word(0), Drawing::Viewport(place), Vec::new());
+    // the height goes on the stack, below what the place's function keeps
+    // there; the stack is put back with the rest
+    let sp = system.cpu.regs[13] - 8;
+    system.cpu.regs[2] = word(1);
+    system.cpu.regs[3] = word(2);
+    system.cpu.regs[13] = sp;
+    system.memory.write_bytes(sp, &word(3).to_le_bytes());
+}
+
+/// once the bottom's scene drawing has drawn its layers on the top screen
+/// for top_screen_cauldron, sets the top's viewport back, and goes on past
+/// the bottom's 2D to return.
+fn cauldron_drawn(system: &mut System) {
+    let Some(top) = system.aim_mouse.as_ref().and_then(|aim_mouse| aim_mouse.saved.as_ref()).filter(|saved| matches!(saved.drawing, Drawing::Cauldron(_))).map(|saved| saved.regs[4]) else {
+        return;
+    };
+    let manager = read_word(system, VSYNC_MANAGER);
+    if manager == 0 {
+        return;
+    }
+    let viewport: Vec<u32> = (0..4).map(|i| read_word(system, top + 0x44 + i * 4)).collect();
+    let cpu = &mut system.cpu;
+    let sp = cpu.regs[13];
+    cpu.regs[0] = manager;
+    cpu.regs[1..4].copy_from_slice(&viewport[..3]);
+    cpu.regs[14] = BOTTOM_SCENE_RETURN;
+    cpu.regs[15] = SET_VIEWPORT;
+    cpu.cpsr.thumb = false;
+    system.memory.write_bytes(sp, &viewport[3].to_le_bytes());
+}
+
+/// writes bytes at at, keeping what was there in moved.
+fn change(system: &mut System, moved: &mut Vec<(u32, Vec<u8>)>, at: u32, bytes: &[u8]) {
+    let mut was = vec![0u8; bytes.len()];
+    system.memory.read_bytes(at, &mut was);
+    moved.push((at, was));
+    system.memory.write_bytes(at, bytes);
+}
+
+/// the name of a scene model's CGFX model, empty for none.
+fn model_name(system: &mut System, model: u32) -> String {
+    let cmdl = read_word(system, model + 8);
+    if cmdl == 0 || read_word(system, cmdl + 4) != u32::from_le_bytes(*b"CMDL") {
+        return String::new();
+    }
+    let at = cmdl.wrapping_add(0xC).wrapping_add(read_word(system, cmdl + 0xC));
+    c_string(system, at)
+}
+
 /// starts drawing the first mirrored element from index on that the last
 /// bottom pass drew, whether there was one. each is drawn once: the bottom
 /// pass records it again when it draws it again.
@@ -1014,7 +1744,7 @@ fn start_mirrored(system: &mut System, from: usize) -> bool {
     }
     for index in from..MIRRORED.len() {
         let Some(recorded) = aim_mouse.recorded[index].take() else { continue };
-        call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::Mirrored(index), None);
+        call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::Mirrored(index), Vec::new());
         system.cpu.regs[2] = recorded.regs[2];
         system.cpu.regs[3] = recorded.regs[3];
         system.cpu.vfp.regs[..8].copy_from_slice(&recorded.floats);
@@ -1025,7 +1755,7 @@ fn start_mirrored(system: &mut System, from: usize) -> bool {
 
 /// has the game's code run function as if called from here with r0 and r1,
 /// coming back here, the CPU kept to be put back then.
-fn call_here(system: &mut System, function: u32, r0: u32, r1: u32, drawing: Drawing, moved: Option<(u32, [u8; 8])>) {
+fn call_here(system: &mut System, function: u32, r0: u32, r1: u32, drawing: Drawing, moved: Vec<(u32, Vec<u8>)>) {
     let cpu = &mut system.cpu;
     let saved = Saved { regs: cpu.regs, cpsr: cpu.cpsr, vfp: cpu.vfp.regs, drawing, moved };
     cpu.regs[0] = r0;
@@ -1059,7 +1789,7 @@ fn start_portraits(system: &mut System) -> bool {
     if !(fade < 1.0) {
         return false;
     }
-    call_here(system, DRAW_PORTRAITS, portraits, context, Drawing::Portraits, None);
+    call_here(system, DRAW_PORTRAITS, portraits, context, Drawing::Portraits, Vec::new());
     system.cpu.vfp.regs[0] = (1.0 - fade.max(0.0)).to_bits();
     true
 }
@@ -1080,12 +1810,20 @@ fn start_narration(system: &mut System) {
     if !(0.0..=400.0).contains(&width) || !(0.0..=240.0).contains(&height) {
         return;
     }
-    let position: [u8; 8] = head[0x14..0x1C].try_into().unwrap();
+    let position = head[0x14..0x1C].to_vec();
     let mut moved = [0u8; 8];
     moved[..4].copy_from_slice(&((400.0 - width) * 0.5).to_le_bytes());
     moved[4..].copy_from_slice(&(240.0 - height - 8.0).to_le_bytes());
     system.memory.write_bytes(message + 0x14, &moved);
-    call_here(system, DRAW_MESSAGE_LINE, message, context, Drawing::Narration, Some((message, position)));
+    call_here(system, DRAW_MESSAGE_LINE, message, context, Drawing::Narration, vec![(message + 0x14, position)]);
+}
+
+/// writes back what memory held before a call changed it, the last change
+/// first.
+fn put_back(system: &mut System, moved: &[(u32, Vec<u8>)]) {
+    for (at, bytes) in moved.iter().rev() {
+        system.memory.write_bytes(*at, bytes);
+    }
 }
 
 /// what the game's code is drawing on the top screen for us now, if anything.
