@@ -16,7 +16,7 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 18] = [
+pub const PLACES: [u32; 19] = [
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
     SPRITE_FLUSH,
@@ -31,6 +31,7 @@ pub const PLACES: [u32; 18] = [
     MIRRORED[0].site,
     MIRRORED[1].site,
     MIRRORED[2].site,
+    MIRRORED[3].site,
     PAUSE_KEY,
     PAUSE_OPTION_FOUND,
     OPTIONS_OPTION_FOUND,
@@ -193,14 +194,17 @@ struct Mirrored {
     hidden: &'static [u32],
 }
 
-/// the chapter title and hearts, under the score, with the hearts held on
-/// the top row and the intensity and the chapter's hearts a little below it;
-/// the item box and power icon, under the health bar. the chapter title is
-/// left off.
-const MIRRORED: [Mirrored; 3] = [
-    Mirrored { site: 0x00A181CC, from: [320.0, 0.0], to: [400.0, 0.0], below: 40.0, size: 1.0, swap_rows: Some([24.0, 31.0, 16.0]), hidden: &[0x00A192E4] },
+/// the chapter title and hearts, under the score, their rows as on the
+/// bottom screen: the intensity and the chapter's hearts, then the hearts
+/// held;
+/// the item box and power icon, under the health bar; what was just picked
+/// up ("You got treasure!", 0x009EA06C with the bottom UI's +0xDC) at the
+/// top's middle. the chapter title is left off.
+const MIRRORED: [Mirrored; 4] = [
+    Mirrored { site: 0x00A181CC, from: [320.0, 0.0], to: [400.0, 0.0], below: 40.0, size: 1.0, swap_rows: None, hidden: &[0x00A192E4] },
     Mirrored { site: 0x00A18400, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, swap_rows: None, hidden: &[] },
     Mirrored { site: 0x00A18430, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, swap_rows: None, hidden: &[] },
+    Mirrored { site: 0x00A18368, from: [162.0, 118.0], to: [200.0, 0.0], below: 8.0, size: 0.75, swap_rows: None, hidden: &[] },
 ];
 
 /// what a mirrored element's call was given in the bottom pass, made again
@@ -357,12 +361,12 @@ pub struct AimMouse {
     /// the CPU while the game draws the portraits or the narration on the
     /// top screen.
     saved: Option<Saved>,
-    /// whether the bottom screen's hearts, item box and power icon are drawn
-    /// on the top screen too.
+    /// whether the bottom screen's hearts, item box, power icon and pickups
+    /// are drawn on the top screen too.
     pub mirror_bottom: bool,
     /// the mirrored elements' calls from the last bottom pass, by MIRRORED's
     /// order.
-    recorded: [Option<Recorded>; 3],
+    recorded: [Option<Recorded>; 4],
     /// whether the pause menu and the dialogs over it are drawn on the top
     /// screen too.
     pub pause_on_top: bool,
@@ -422,7 +426,7 @@ impl Default for AimMouse {
             context: None,
             saved: None,
             mirror_bottom: false,
-            recorded: [None; 3],
+            recorded: [None; 4],
             pause_on_top: false,
             pause: [None; 15],
             pause_drawn: None,
