@@ -558,7 +558,10 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { .. } if self.aim_captured => {}
             WindowEvent::MouseInput { state, button, .. } => {
                 if button == MouseButton::Left {
-                    self.mouse_down = state == ElementState::Pressed && !self.pointer_taken(consumed);
+                    // a menu that takes the click uses what is under the
+                    // mouse by its own code, and nothing is touched
+                    let pressed = state == ElementState::Pressed && !self.pointer_taken(consumed);
+                    self.mouse_down = pressed && !self.menu_click();
                     self.touch();
                 }
                 if button == MouseButton::Right {
@@ -898,6 +901,14 @@ impl App {
             aim_mouse.captured = captured;
         }
         log::info!("mouse aiming {}", if captured { "on, F6 lets go" } else { "off" });
+    }
+
+    /// whether Kid Icarus: Uprising's menu shown takes a click of the mouse
+    /// as its own, using the part under it as A would.
+    fn menu_click(&mut self) -> bool {
+        let Some(game) = self.game.as_mut() else { return false };
+        let frames = game.system.frames;
+        game.system.aim_mouse.as_mut().is_some_and(|aim_mouse| aim_mouse.menu_click(frames))
     }
 
     /// whether Kid Icarus: Uprising shows its pause menu, or the Fiend's

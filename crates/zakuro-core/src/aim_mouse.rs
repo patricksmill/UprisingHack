@@ -16,7 +16,7 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 28] = [
+pub const PLACES: [u32; 31] = [
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
     SPRITE_FLUSH,
@@ -45,6 +45,9 @@ pub const PLACES: [u32; 28] = [
     TOP_SCENE_DRAWN,
     BOTTOM_SCENE_DRAW,
     BOTTOM_SCENE_3D_DRAWN,
+    MENU_NO_TOUCH,
+    MENU_SCREENS[0].update,
+    MENU_SCREENS[1].update,
 ];
 
 /// the Fiend's Cauldron's pot (a task, vtable 0x00CF9AEC), the update it
@@ -69,6 +72,107 @@ const CAULDRON_CURSOR_MOVED: u32 = 0x00305D44;
 const CAULDRON_CURSOR_FLAGS: u32 = 0x191;
 /// the names, and their hashes, of the dial, Move Out and Back.
 const CAULDRON_CURSOR_NAMES: [(&str, u32); 3] = [("Level_Bar", 0x53D3_F0F1), ("GO", 0xCD94_A288), ("return", 0x928B_EAA4)];
+
+/// the menus outside battle take touches through one class (vtable
+/// 0x00CFC340): 0x0071C420 reads the touch each frame and, with none, calls
+/// its slot 0x00A391E4, it in r0. 0x00A38324(out, it, &xy) finds what is
+/// under a pixel, frontmost: out gets the layer, then the element's index,
+/// -1 for none. a layer's part is at +0x38, and 0x00326D74(part, &PART_KEY)
+/// +0x1C is the part's descriptor, its name at +0x18, as CAULDRON_CURSOR's.
+const MENU_NO_TOUCH: u32 = 0x00A391E4;
+const MENU_TOUCH: u32 = 0x00CFC340;
+const MENU_HIT: u32 = 0x00A38324;
+const LAYER_PART: u32 = 0x38;
+const PART_LOOKUP: u32 = 0x00326D74;
+const PART_KEY: u32 = 0x00D71744;
+const PART_DESCRIPTOR: u32 = 0x1C;
+const DESCRIPTOR_NAME: u32 = 0x18;
+
+/// a menu outside battle that the mouse moves the outline of, as its keys
+/// do, by its own code: its object's vtable, the place the task loop runs
+/// its update from with it in r0, the calls of its own functions that
+/// outline what the mouse is over (see Found), none when it is not one of
+/// its parts, and the function A uses what is outlined with (object).
+struct MenuScreen {
+    vtable: u32,
+    update: u32,
+    outline: fn(&mut System, u32, Found) -> Option<Vec<MenuCall>>,
+    use_outlined: u32,
+}
+
+/// a call of the game's: the function, r0 to r2.
+type MenuCall = (u32, [u32; 3]);
+
+/// what the mouse is over in a menu: its part's hash and where its name is
+/// (a hash, then a string), and the element.
+#[derive(Clone, Copy)]
+struct Found {
+    hash: u32,
+    name: u32,
+    element: u32,
+}
+
+const MENU_SCREENS: [MenuScreen; 2] = [
+    MenuScreen { vtable: 0x00CEC3F4, update: 0x002A3EC4, outline: outline_file, use_outlined: 0x003374D0 },
+    MenuScreen { vtable: 0x00CF243C, update: 0x002A3FCC, outline: outline_chapter, use_outlined: 0x003675C0 },
+];
+
+/// file select's outlined part at +0x34, a hash; its parts, the three
+/// books (book_01 to _03), Back (return) and How to Play (guide). its keys
+/// go along its navigation table and outline the next part by 0x00302488
+/// (object, &name), which also turns its book, shows its file's panel and
+/// plays the cursor's sound; A (0x003374D0) opens the book, goes back or
+/// shows the guide.
+const FILE_OUTLINED: u32 = 0x34;
+const FILE_PARTS: [u32; 5] = [0xA70D_5C65, 0xA70D_5C64, 0xA70D_5C67, 0x928B_EAA4, 0x8D79_D12E];
+const OUTLINE_FILE_PART: u32 = 0x00302488;
+
+fn outline_file(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    if !FILE_PARTS.contains(&found.hash) {
+        return None;
+    }
+    let outlined = read_word(system, object + FILE_OUTLINED) == found.hash;
+    Some(if outlined { Vec::new() } else { vec![(OUTLINE_FILE_PART, [object, found.name, 0])] })
+}
+
+/// chapter select's outlined part at +0x6C, a hash: the chapters' list
+/// (BtThumbnail) or Back (Return). 0x00367394(object) outlines the list,
+/// 0x003668E8(object) Back, as up and down do; the chapter, +0x12C from 0,
+/// is picked by 0x00343FF8(object, chapter, 1), as left and right do,
+/// which scrolls the list to it. each chapter is an element of the list,
+/// named ML_B0001 to ML_B0026 by its number (two of them twice, _0 and
+/// _1), those not open yet not found under the mouse. A, 0x003675C0, goes
+/// to the chapter's Fiend's Cauldron or back.
+const CHAPTER_OUTLINED: u32 = 0x6C;
+const CHAPTER: u32 = 0x12C;
+const CHAPTER_LIST: u32 = 0x4D6A_3DE7;
+const CHAPTER_BACK: u32 = 0x9A07_E025;
+const OUTLINE_CHAPTER_LIST: u32 = 0x00367394;
+const OUTLINE_CHAPTER_BACK: u32 = 0x003668E8;
+const PICK_CHAPTER: u32 = 0x00343FF8;
+
+fn outline_chapter(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    let outlined = read_word(system, object + CHAPTER_OUTLINED);
+    match found.hash {
+        CHAPTER_BACK => Some(if outlined == CHAPTER_BACK { Vec::new() } else { vec![(OUTLINE_CHAPTER_BACK, [object, 0, 0])] }),
+        CHAPTER_LIST => {
+            let mut name = [0u8; 8];
+            let at = read_word(system, found.element);
+            system.memory.read_bytes(at, &mut name);
+            let number: u32 = std::str::from_utf8(name.strip_prefix(b"ML_B")?).ok()?.parse().ok()?;
+            let chapter = number.checked_sub(1)?;
+            let mut calls = Vec::new();
+            if outlined != CHAPTER_LIST {
+                calls.push((OUTLINE_CHAPTER_LIST, [object, 0, 0]));
+            }
+            if read_word(system, object + CHAPTER) != chapter {
+                calls.push((PICK_CHAPTER, [object, chapter, 1]));
+            }
+            Some(calls)
+        }
+        _ => None,
+    }
+}
 
 /// a scene's top screen drawing (0x0072A034, vtable 0x00CEF1A0), the
 /// drawing in r4, its scene at +0x40 and its viewport at +0x44, x, y,
@@ -382,6 +486,10 @@ enum Drawing {
     CauldronCursor(usize),
     /// the viewport, set for what is drawn from the place on.
     Viewport(u32),
+    /// a menu of MENU_SCREENS, the second, outlining what is under the
+    /// mouse by its own code before its update: what is there found, its
+    /// part's descriptor, then each of the menu's calls.
+    Menu(usize, usize),
 }
 
 impl Drawing {
@@ -392,6 +500,7 @@ impl Drawing {
             Drawing::Cauldron(_) => TOP_SCENE_DRAWN,
             Drawing::CauldronCursor(_) => CAULDRON_CURSOR_KEYS_DONE,
             Drawing::Viewport(place) => place,
+            Drawing::Menu(_, screen) => MENU_SCREENS[screen].update,
             _ => TOP_UI_AFTER_HUD,
         }
     }
@@ -658,6 +767,20 @@ pub struct AimMouse {
     /// whether a hover took the dialog's light off its buttons, for its
     /// cursor's sound not to play for that.
     dialog_cleared: bool,
+    /// the menus' touch object, from where it last had no touch, and the
+    /// frame.
+    menu_touch: Option<(u32, u64)>,
+    /// the menu of MENU_SCREENS last updated, its object and the frame.
+    menu_screen: Option<(usize, u32, u64)>,
+    /// where the mouse was when what is under it was first looked for there,
+    /// and the frame, and what was found there that its menu outlines.
+    menu_looked: Option<((f32, f32), u64)>,
+    menu_part: Option<Found>,
+    /// the menu's calls still to make to outline it.
+    menu_calls: Vec<MenuCall>,
+    /// whether a click is to use the part under the mouse once it is
+    /// outlined.
+    menu_click: bool,
     /// how many times wider than the console's 5:3 the top screen shows,
     /// 1 for its own shape: the view is that much wider and the top
     /// screen's 2D that much narrower, so it shows the right shape stretched.
@@ -710,6 +833,12 @@ impl Default for AimMouse {
             cleared: None,
             hovering: None,
             dialog_cleared: false,
+            menu_touch: None,
+            menu_screen: None,
+            menu_looked: None,
+            menu_part: None,
+            menu_calls: Vec::new(),
+            menu_click: false,
             widen: 1.0,
             screens: Vec::new(),
             lenses: Vec::new(),
@@ -733,6 +862,16 @@ impl AimMouse {
     pub fn hover(&mut self, pointer: Option<(f32, f32)>) {
         self.pointer = pointer;
         self.mouse_mode = true;
+    }
+
+    /// a click of the mouse where it is, which the menu shown takes when it
+    /// is over a part the menu outlines: that part is outlined and used, as
+    /// A uses it, and nothing is touched. frame as for pause_menu_shown.
+    pub fn menu_click(&mut self, frame: u64) -> bool {
+        let shown = self.menu_screen.is_some_and(|(_, _, seen)| frame <= seen + 3);
+        let taken = self.menu_hover && shown && self.menu_part.is_some() && self.pointer.is_some() && self.pointer == self.menu_looked.map(|(pointer, _)| pointer);
+        self.menu_click |= taken;
+        taken
     }
 
     pub fn add(&mut self, dx: f32, dy: f32) {
@@ -903,6 +1042,15 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
             }
         }
         BOTTOM_SCENE_3D_DRAWN => cauldron_drawn(system),
+        MENU_NO_TOUCH => {
+            let (frame, touch) = (system.frames, system.cpu.regs[0]);
+            if read_word(system, touch) == MENU_TOUCH {
+                if let Some(aim_mouse) = &mut system.aim_mouse {
+                    aim_mouse.menu_touch = Some((touch, frame));
+                }
+            }
+        }
+        _ if MENU_SCREENS.iter().any(|screen| screen.update == pc) => outline_menu(system, pc),
         _ if CAULDRON.contains(&pc) => {
             let (frame, task) = (system.frames, system.cpu.regs[0]);
             if let Some(aim_mouse) = &mut system.aim_mouse {
@@ -1220,7 +1368,7 @@ fn top_screen_extras(system: &mut System) {
         let next = match back.drawing {
             Drawing::Portraits => 0,
             Drawing::Mirrored(index) => index + 1,
-            Drawing::Narration | Drawing::PauseMenu(_) | Drawing::Cauldron(_) | Drawing::CauldronCursor(_) | Drawing::Viewport(_) => return,
+            Drawing::Narration | Drawing::PauseMenu(_) | Drawing::Cauldron(_) | Drawing::CauldronCursor(_) | Drawing::Viewport(_) | Drawing::Menu(..) => return,
         };
         if !start_mirrored(system, next) {
             start_narration(system);
@@ -1455,6 +1603,122 @@ fn light_cauldron_cursor(system: &mut System) {
     system.cpu.regs[1] = at;
     system.cpu.regs[2] = 0;
     system.cpu.regs[3] = 0;
+    system.cpu.regs[13] = at;
+}
+
+/// before a menu of MENU_SCREENS updates, the object in r0, outlines what
+/// is under the mouse when it moved there, by the menu's own code as its
+/// keys do, and after a click uses it as A does. the game finds what is
+/// under the mouse (MENU_HIT) and its part (PART_LOOKUP), then the menu's
+/// calls that outline it are made, and after a click its A. each call
+/// comes back here, the CPU put back between them. off its parts what is
+/// outlined stays, and keys move it from there.
+fn outline_menu(system: &mut System, pc: u32) {
+    let Some(index) = MENU_SCREENS.iter().position(|screen| screen.update == pc) else { return };
+    let screen = &MENU_SCREENS[index];
+    let frame = system.frames;
+    let back = system.aim_mouse.as_mut().and_then(|aim_mouse| aim_mouse.saved.take_if(|saved| matches!(saved.drawing, Drawing::Menu(..))));
+    if let Some(back) = back {
+        let returned = system.cpu.regs[0];
+        system.cpu.regs = back.regs;
+        system.cpu.cpsr = back.cpsr;
+        system.cpu.vfp.regs = back.vfp;
+        let Drawing::Menu(step, _) = back.drawing else { return };
+        let object = system.cpu.regs[0];
+        let at = (system.cpu.regs[13] - 0x40) & !7;
+        match step {
+            // what is under the mouse: a layer, the element's index, and
+            // the element
+            0 => {
+                let (layer, element) = (read_word(system, at), read_word(system, at + 4));
+                let part = if layer != 0 && element != u32::MAX { read_word(system, layer + LAYER_PART) } else { 0 };
+                if part != 0 {
+                    system.memory.write_bytes(at + 0x18, &PART_KEY.to_le_bytes());
+                    call_here(system, PART_LOOKUP, part, at + 0x18, Drawing::Menu(1, index), Vec::new());
+                    system.cpu.regs[13] = at;
+                    return;
+                }
+            }
+            // its part's descriptor, and the menu's calls to outline it
+            1 => {
+                let descriptor = if returned != 0 { read_word(system, returned + PART_DESCRIPTOR) } else { 0 };
+                if descriptor != 0 {
+                    let found = Found { hash: read_word(system, descriptor + DESCRIPTOR_NAME), name: descriptor + DESCRIPTOR_NAME, element: read_word(system, at + 0xC) };
+                    if let Some(calls) = (screen.outline)(system, object, found) {
+                        if let Some(aim_mouse) = &mut system.aim_mouse {
+                            aim_mouse.menu_part = Some(found);
+                            aim_mouse.menu_calls = calls;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        next_menu_call(system, index, object, at);
+        return;
+    }
+    let object = system.cpu.regs[0];
+    if read_word(system, object) != screen.vtable {
+        return;
+    }
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    // what was found on another menu, or before this one went, is not here,
+    // and a menu opens with its own outline, until the mouse moves
+    if !aim_mouse.menu_screen.is_some_and(|(_, seen, last)| seen == object && frame <= last + 3) {
+        aim_mouse.menu_looked = aim_mouse.pointer.map(|pointer| (pointer, 0));
+        aim_mouse.menu_part = None;
+        aim_mouse.menu_click = false;
+    }
+    aim_mouse.menu_screen = Some((index, object, frame));
+    if !aim_mouse.menu_hover || aim_mouse.saved.is_some() {
+        return;
+    }
+    let at = (system.cpu.regs[13] - 0x40) & !7;
+    if aim_mouse.menu_click {
+        // what was found last, outlined first when it is not
+        let Some(found) = aim_mouse.menu_part else {
+            aim_mouse.menu_click = false;
+            return;
+        };
+        let calls = (screen.outline)(system, object, found).unwrap_or_default();
+        if let Some(aim_mouse) = &mut system.aim_mouse {
+            aim_mouse.menu_calls = calls;
+        }
+        next_menu_call(system, index, object, at);
+        return;
+    }
+    // looked again while nothing was found, for a second: a part can be
+    // gone from under the mouse while it moves, as a book turning
+    let touch = aim_mouse.menu_touch.filter(|&(_, seen)| frame <= seen + 3).map(|(touch, _)| touch);
+    let (Some(touch), Some((x, y))) = (touch, aim_mouse.pointer) else { return };
+    let looked = aim_mouse.menu_looked.filter(|&(pointer, _)| Some(pointer) == aim_mouse.pointer);
+    if looked.is_some_and(|(_, since)| aim_mouse.menu_part.is_some() || frame > since + 60) {
+        return;
+    }
+    if looked.is_none() {
+        aim_mouse.menu_looked = Some(((x, y), frame));
+    }
+    aim_mouse.menu_part = None;
+    let mut record = [0u8; 0x18];
+    record[0x10..0x14].copy_from_slice(&x.to_le_bytes());
+    record[0x14..].copy_from_slice(&y.to_le_bytes());
+    system.memory.write_bytes(at, &record);
+    call_here(system, MENU_HIT, at, touch, Drawing::Menu(0, index), Vec::new());
+    system.cpu.regs[2] = at + 0x10;
+    system.cpu.regs[13] = at;
+}
+
+/// makes the menu's next call of those outlining what is under the mouse,
+/// then, after a click, its A, coming back to its update.
+fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    let call = match aim_mouse.menu_calls.is_empty() {
+        true => std::mem::take(&mut aim_mouse.menu_click).then_some((MENU_SCREENS[index].use_outlined, [object, 0, 0])),
+        false => Some(aim_mouse.menu_calls.remove(0)),
+    };
+    let Some((function, [r0, r1, r2])) = call else { return };
+    call_here(system, function, r0, r1, Drawing::Menu(2, index), Vec::new());
+    system.cpu.regs[2] = r2;
     system.cpu.regs[13] = at;
 }
 
@@ -2088,6 +2352,28 @@ mod tests {
         // a page of Options, all of it in the middle
         assert_eq!(aim_mouse.pause_menu_touch(20, 60.0, 83.0), Some((20.0, 83.0)));
         assert_eq!(aim_mouse.pause_menu_touch(20, 20.0, 83.0), None);
+    }
+
+    /// a menu takes a click while it is shown, over a part it outlines that
+    /// was found where the mouse still is, and not otherwise.
+    #[test]
+    fn menus_take_clicks_over_their_parts() {
+        let mut aim_mouse = AimMouse { menu_hover: true, ..AimMouse::default() };
+        aim_mouse.hover(Some((160.0, 80.0)));
+        aim_mouse.menu_screen = Some((0, 0x1404_E918, 10));
+        aim_mouse.menu_looked = Some(((160.0, 80.0), 10));
+        // nothing found there yet
+        assert!(!aim_mouse.menu_click(11));
+        aim_mouse.menu_part = Some(Found { hash: 0xA70D_5C64, name: 0x14B9_51A0, element: 0x1406_D9D0 });
+        assert!(aim_mouse.menu_click(11));
+        // the menu gone, or the mouse moved since
+        assert!(!aim_mouse.menu_click(20));
+        aim_mouse.hover(Some((161.0, 80.0)));
+        assert!(!aim_mouse.menu_click(11));
+        // or the mouse's menus off
+        aim_mouse.hover(Some((160.0, 80.0)));
+        aim_mouse.menu_hover = false;
+        assert!(!aim_mouse.menu_click(11));
     }
 
     /// on a top screen 1.4 times wider, what is by an edge is that much
