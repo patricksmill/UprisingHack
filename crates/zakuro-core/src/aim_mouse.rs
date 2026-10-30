@@ -192,6 +192,17 @@ struct Mirrored {
     /// where its sprite flushes come back to that draw something left off
     /// the top screen.
     hidden: &'static [u32],
+    /// the sprites of the call's last flush, which comes back where the call
+    /// does, placed on their own.
+    last: Option<Apart>,
+}
+
+/// where a mirrored element's last flush goes instead, as for Mirrored.
+struct Apart {
+    from: [f32; 2],
+    to: [f32; 2],
+    below: f32,
+    size: f32,
 }
 
 /// the chapter title and hearts, under the score, their rows as on the
@@ -199,12 +210,15 @@ struct Mirrored {
 /// held;
 /// the item box and power icon, under the health bar; what was just picked
 /// up ("You got treasure!", 0x009EA06C with the bottom UI's +0xDC) at the
-/// top's middle. the chapter title is left off.
+/// top's middle, and the item held, which the same call draws in the bottom
+/// right corner, bigger under the power icon, without the tab behind it
+/// (0x009EAC80). the chapter title is left off.
 const MIRRORED: [Mirrored; 4] = [
-    Mirrored { site: 0x00A181CC, from: [320.0, 0.0], to: [400.0, 0.0], below: 40.0, size: 1.0, swap_rows: None, hidden: &[0x00A192E4] },
-    Mirrored { site: 0x00A18400, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, swap_rows: None, hidden: &[] },
-    Mirrored { site: 0x00A18430, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, swap_rows: None, hidden: &[] },
-    Mirrored { site: 0x00A18368, from: [162.0, 118.0], to: [200.0, 0.0], below: 8.0, size: 0.75, swap_rows: None, hidden: &[] },
+    Mirrored { site: 0x00A181CC, from: [320.0, 0.0], to: [400.0, 0.0], below: 40.0, size: 1.0, swap_rows: None, hidden: &[0x00A192E4], last: None },
+    Mirrored { site: 0x00A18400, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, swap_rows: None, hidden: &[], last: None },
+    Mirrored { site: 0x00A18430, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, swap_rows: None, hidden: &[], last: None },
+    Mirrored { site: 0x00A18368, from: [162.0, 118.0], to: [200.0, 0.0], below: 8.0, size: 0.75, swap_rows: None, hidden: &[0x009EAC80],
+        last: Some(Apart { from: [289.0, 209.0], to: [4.0, 0.0], below: 76.0, size: 1.5 }) },
 ];
 
 /// what a mirrored element's call was given in the bottom pass, made again
@@ -1075,10 +1089,14 @@ fn set(quads: &mut [u8], at: usize, value: f32) {
 /// it leaves off go far off the screen.
 fn place_mirrored(system: &mut System, mirrored: &Mirrored, widen: f32) {
     let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.hud_scale);
-    let hide = mirrored.hidden.contains(&system.cpu.regs[14]);
+    let caller = system.cpu.regs[14];
+    let hide = mirrored.hidden.contains(&caller);
     let Some((at, mut quads)) = flushed_quads(system) else { return };
-    let down = if mirrored.to[1] == 0.0 { mirrored.below * scale } else { -mirrored.below * scale };
-    let scale = scale * mirrored.size;
+    let apart = mirrored.last.as_ref().filter(|_| caller == TOP_UI_AFTER_HUD);
+    let (from, to) = apart.map_or((mirrored.from, mirrored.to), |apart| (apart.from, apart.to));
+    let (below, size) = apart.map_or((mirrored.below, mirrored.size), |apart| (apart.below, apart.size));
+    let down = if to[1] == 0.0 { below * scale } else { -below * scale };
+    let scale = scale * size;
     for quad in (0..quads.len()).step_by(0x60) {
         let middle = (0..4).map(|corner| get(&quads, quad + corner * 0x18 + 4)).sum::<f32>() / 4.0;
         let moved = match mirrored.swap_rows {
@@ -1090,8 +1108,8 @@ fn place_mirrored(system: &mut System, mirrored: &Mirrored, widen: f32) {
                 (-10000.0, -10000.0)
             } else {
                 (
-                    mirrored.to[0] + (get(&quads, corner) - mirrored.from[0]) * scale / widen,
-                    mirrored.to[1] + down + (get(&quads, corner + 4) + moved - mirrored.from[1]) * scale,
+                    to[0] + (get(&quads, corner) - from[0]) * scale / widen,
+                    to[1] + down + (get(&quads, corner + 4) + moved - from[1]) * scale,
                 )
             };
             set(&mut quads, corner, x);
