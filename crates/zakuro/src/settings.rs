@@ -294,6 +294,8 @@ pub struct Keys {
     pub c_down: KeyCode,
     pub c_left: KeyCode,
     pub c_right: KeyCode,
+    /// uses the current power in a battle, as touching its box does.
+    pub power: KeyCode,
 }
 
 impl Default for Keys {
@@ -315,12 +317,13 @@ impl Default for Keys {
             circle_down: KeyCode::KeyK,
             circle_left: KeyCode::KeyJ,
             circle_right: KeyCode::KeyL,
-            zl: KeyCode::Digit1,
+            zl: KeyCode::Digit3,
             zr: KeyCode::Digit2,
             c_up: KeyCode::KeyT,
             c_down: KeyCode::KeyG,
             c_left: KeyCode::KeyF,
             c_right: KeyCode::KeyH,
+            power: KeyCode::Digit1,
         }
     }
 }
@@ -332,7 +335,7 @@ impl Keys {
     }
 
     /// every binding with the name it goes by, to show and change them.
-    pub fn all_mut(&mut self) -> [(&'static str, &mut KeyCode); 22] {
+    pub fn all_mut(&mut self) -> [(&'static str, &mut KeyCode); 23] {
         [
             ("A", &mut self.a),
             ("B", &mut self.b),
@@ -356,6 +359,7 @@ impl Keys {
             ("C-stick down", &mut self.c_down),
             ("C-stick left", &mut self.c_left),
             ("C-stick right", &mut self.c_right),
+            ("Use power", &mut self.power),
         ]
     }
 }
