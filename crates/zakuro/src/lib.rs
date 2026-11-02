@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
@@ -91,6 +91,7 @@ pub fn run(linked: Option<Linked>) {
         window: None,
         audio: None,
         mouse_down: false,
+        modifiers: winit::keyboard::ModifiersState::empty(),
         tilting_from: None,
         aim_captured: false,
         released_for_pause: false,
@@ -367,6 +368,7 @@ struct App {
     top_shape: settings::TopShape,
     /// the left button is down, and where the pointer is, in window pixels.
     mouse_down: bool,
+    modifiers: winit::keyboard::ModifiersState,
     /// where the pointer was when the right button went down, which tilts
     /// the console while held.
     tilting_from: Option<(f32, f32)>,
@@ -463,6 +465,15 @@ const CATCH_UP_LIMIT: Duration = Duration::from_millis(200);
 /// frames that may go unshown in a row while catching up.
 const MAX_SKIPPED: u32 = 4;
 
+/// Winit reports content motion; menus take viewport motion, down/right positive.
+fn menu_wheel_delta(delta: MouseScrollDelta, shift: bool) -> [f32; 2] {
+    let (x, y) = match delta {
+        MouseScrollDelta::LineDelta(x, y) => (x, y),
+        MouseScrollDelta::PixelDelta(position) => (position.x as f32 / 40.0, position.y as f32 / 40.0),
+    };
+    if shift { [-x - y, 0.0] } else { [-x, -y] }
+}
+
 /// whether a frame goes unshown, the game running behind the schedule with
 /// a presenter that waits for the display, and fewer than MAX_SKIPPED
 /// unshown before it.
@@ -541,8 +552,17 @@ impl ApplicationHandler for App {
                 self.released_for_pause = false;
                 self.set_aim_captured(false);
                 self.keyboard.release();
+                self.mouse_down = false;
+                self.modifiers = winit::keyboard::ModifiersState::empty();
+                if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    aim_mouse.cancel_menu_touch();
+                    aim_mouse.menu_touch(0, false);
+                }
             }
             WindowEvent::Resized(size) => {
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.cancel_menu_touch();
+                }
                 let top_width = self.top_width();
                 if let Some(backend) = &mut self.backend {
                     backend.resize(size.width, size.height);
@@ -550,6 +570,16 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => self.key(event, consumed),
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::MouseWheel { delta, .. } if !self.aim_captured && !self.pointer_taken(consumed) => {
+                self.touch();
+                let delta = menu_wheel_delta(delta, self.modifiers.shift_key());
+                if let Some(game) = &mut self.game {
+                    if let Some(mouse) = &mut game.system.aim_mouse {
+                        mouse.scroll_menu(game.system.frames, delta);
+                    }
+                }
+            }
             WindowEvent::MouseInput { state, button, .. } if self.aim_captured => {
                 if button == MouseButton::Left {
                     self.keyboard.mouse_button(zakuro_core::services::hid::PadState::L, state == ElementState::Pressed);
@@ -558,10 +588,8 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { .. } if self.aim_captured => {}
             WindowEvent::MouseInput { state, button, .. } => {
                 if button == MouseButton::Left {
-                    // a menu that takes the click uses what is under the
-                    // mouse by its own code, and nothing is touched
                     let pressed = state == ElementState::Pressed && !self.pointer_taken(consumed);
-                    self.mouse_down = pressed && !self.menu_click();
+                    self.mouse_down = pressed;
                     self.touch();
                 }
                 if button == MouseButton::Right {
@@ -714,6 +742,7 @@ impl App {
             // and the Fiend's Cauldron's two screens on the top screen, where
             // the mouse touches them, ZAKURO_CAULDRON_TOP=0 leaves them as they are
             aim_mouse.cauldron_on_top = std::env::var("ZAKURO_CAULDRON_TOP").map_or(true, |value| value != "0");
+            aim_mouse.menus_on_top = std::env::var("ZAKURO_MENUS_TOP").map_or(true, |value| value != "0");
             system.aim_mouse = Some(aim_mouse);
             // at 60 FPS the game has half a 3DS's time for each frame, which
             // its busiest scenes need more than: ZAKURO_OVERCLOCK times the
@@ -896,19 +925,14 @@ impl App {
             self.keyboard.mouse_button(zakuro_core::services::hid::PadState::L, false);
         }
         self.aim_captured = captured;
+        self.mouse_down = false;
         if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+            aim_mouse.cancel_menu_touch();
+            aim_mouse.menu_touch(0, false);
             aim_mouse.pending = [0.0; 2];
             aim_mouse.captured = captured;
         }
         log::info!("mouse aiming {}", if captured { "on, F6 lets go" } else { "off" });
-    }
-
-    /// whether Kid Icarus: Uprising's menu shown takes a click of the mouse
-    /// as its own, using the part under it as A would.
-    fn menu_click(&mut self) -> bool {
-        let Some(game) = self.game.as_mut() else { return false };
-        let frames = game.system.frames;
-        game.system.aim_mouse.as_mut().is_some_and(|aim_mouse| aim_mouse.menu_click(frames))
     }
 
     /// whether Kid Icarus: Uprising shows its pause menu, or the Fiend's
@@ -916,7 +940,7 @@ impl App {
     fn pause_menu_shown(&self) -> bool {
         self.game.as_ref().is_some_and(|game| {
             let frames = game.system.frames;
-            game.system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.pause_menu_shown(frames) || aim_mouse.cauldron_on_top_shown(frames))
+            game.system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.pause_menu_shown(frames) || aim_mouse.cauldron_on_top_shown(frames) || aim_mouse.menus_on_top_shown(frames))
         })
     }
 
@@ -945,35 +969,62 @@ impl App {
     /// tells the game's menus where over it the mouse is, for them to light
     /// what is under it.
     fn touch(&mut self) {
+        if self.pointer_taken(false) {
+            if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                mouse.cancel_menu_touch();
+                mouse.clear_menus_top_pointer();
+                if !self.mouse_down { mouse.menu_touch(0, false); }
+            }
+            self.keyboard.touch(None);
+            return;
+        }
         let Some(window) = &self.window else { return };
         let size = window.inner_size();
         let (top, bottom) = layout(size.width, size.height, self.layout.screens(), self.top_width(), self.settings.integer_scale);
-        let pointer = match bottom {
-            Some(bottom) => {
-                let x = (self.cursor.0 - bottom.x) / bottom.width * 320.0;
-                let y = (self.cursor.1 - bottom.y) / bottom.height * 240.0;
-                ((0.0..320.0).contains(&x) && (0.0..240.0).contains(&y)).then_some((x, y))
+        if top.is_none() {
+            if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                mouse.clear_menus_top_pointer();
             }
-            // with the top screen alone there is nothing to touch, but for
-            // the pause menu or the Fiend's Cauldron drawn there
-            None => top.filter(|_| self.pause_menu_shown()).and_then(|top| {
-                let x = (self.cursor.0 - top.x) / top.width * 400.0;
-                let y = (self.cursor.1 - top.y) / top.height * 240.0;
-                let pressed = self.mouse_down;
-                let game = self.game.as_mut()?;
-                let frames = game.system.frames;
-                let aim_mouse = game.system.aim_mouse.as_mut()?;
-                match aim_mouse.pause_menu_shown(frames) {
-                    true => aim_mouse.pause_menu_touch(frames, x, y),
-                    false => aim_mouse.cauldron_touch(frames, x, y, pressed),
-                }
-            }),
-        };
-        let pointer = pointer.filter(|_| !self.pointer_taken(false));
-        self.keyboard.touch(pointer.filter(|_| self.mouse_down).map(|(x, y)| (x as u16, y as u16)));
-        if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
-            aim_mouse.hover(pointer);
         }
+        let top_pointer = top.and_then(|top| {
+            let x = (self.cursor.0 - top.x) / top.width * 400.0;
+            let y = (self.cursor.1 - top.y) / top.height * 240.0;
+            let game = self.game.as_mut()?;
+            let frames = game.system.frames;
+            let mouse = game.system.aim_mouse.as_mut()?;
+            let dragging = self.mouse_down && mouse.menus_top_dragging();
+            if !dragging && (!(0.0..400.0).contains(&x) || !(0.0..240.0).contains(&y)) {
+                mouse.clear_menus_top_pointer();
+                return None;
+            }
+            if mouse.pause_menu_shown(frames) {
+                mouse.pause_menu_touch(frames, x, y)
+            } else if mouse.cauldron_on_top_shown(frames) {
+                mouse.cauldron_touch(frames, x, y, self.mouse_down)
+            } else {
+                mouse.menus_top_touch(frames, x, y, self.mouse_down)
+            }
+        });
+        let top_dragging = self.mouse_down && self.game.as_ref().and_then(|game| game.system.aim_mouse.as_ref()).is_some_and(|mouse| mouse.menus_top_dragging());
+        let pointer = top_pointer.or_else(|| {
+            if top_dragging { return None; }
+            let bottom = bottom?;
+            let x = (self.cursor.0 - bottom.x) / bottom.width * 320.0;
+            let y = (self.cursor.1 - bottom.y) / bottom.height * 240.0;
+            ((0.0..320.0).contains(&x) && (0.0..240.0).contains(&y)).then_some((x, y))
+        });
+        let pointer = pointer.filter(|_| !self.pointer_taken(false));
+        let touch = if let Some(game) = &mut self.game {
+            if let Some(aim_mouse) = &mut game.system.aim_mouse {
+                aim_mouse.hover(pointer);
+                aim_mouse.menu_touch(game.system.frames, self.mouse_down)
+            } else {
+                pointer.filter(|_| self.mouse_down)
+            }
+        } else {
+            None
+        };
+        self.keyboard.touch(touch.map(|(x, y)| (x.clamp(0.0, 319.0) as u16, y.clamp(0.0, 239.0) as u16)));
     }
 
     /// tilts the console while the right button is held, toward where the
@@ -1387,6 +1438,9 @@ impl App {
             }
         }
         if playing {
+            if self.mouse_down && !self.aim_captured {
+                self.touch();
+            }
             let start = Instant::now();
             self.emulate();
             self.spent.emulating.add(start.elapsed());
@@ -1840,6 +1894,14 @@ const _: RendererKind = RendererKind::Software;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wheel_scrolls_vertically_and_shift_scrolls_horizontally() {
+        assert_eq!(menu_wheel_delta(MouseScrollDelta::LineDelta(0.0, -1.0), false), [0.0, 1.0]);
+        assert_eq!(menu_wheel_delta(MouseScrollDelta::LineDelta(0.0, -1.0), true), [1.0, 0.0]);
+        assert_eq!(menu_wheel_delta(MouseScrollDelta::LineDelta(1.0, 0.0), false), [-1.0, 0.0]);
+        assert_eq!(menu_wheel_delta(MouseScrollDelta::PixelDelta((0.0, 10.0).into()), false), [0.0, -0.25]);
+    }
 
     /// a frame goes unshown only while the game runs behind with a
     /// presenter that waits for the display, a few in a row at most.
