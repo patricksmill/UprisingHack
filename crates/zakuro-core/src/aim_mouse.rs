@@ -7,6 +7,9 @@
 
 use crate::System;
 
+mod menu_top;
+use menu_top::MenuTop;
+
 /// Kid Icarus: Uprising, the USA cartridge.
 pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 
@@ -16,7 +19,10 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 31] = [
+pub const PLACES: [u32; 77] = [
+    0x0025EF84,
+    0x00A390F0, 0x00A3872C, 0x00A38514,
+    0x002A3374, 0x002A3470, 0x002A34C8, 0x002A3378, 0x002A3474, 0x002A34CC,
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
     SPRITE_FLUSH,
@@ -32,6 +38,11 @@ pub const PLACES: [u32; 31] = [
     MIRRORED[1].site,
     MIRRORED[2].site,
     MIRRORED[3].site,
+    MIRRORED[4].site,
+    MIRRORED[5].site,
+    MIRRORED[6].site,
+    MIRRORED[7].site,
+    BOTTOM_BATTLE_UI,
     PAUSE_KEY,
     PAUSE_OPTION_FOUND,
     OPTIONS_OPTION_FOUND,
@@ -45,9 +56,40 @@ pub const PLACES: [u32; 31] = [
     TOP_SCENE_DRAWN,
     BOTTOM_SCENE_DRAW,
     BOTTOM_SCENE_3D_DRAWN,
+    menu_top::SCISSOR,
+    menu_top::SCISSOR_DONE,
+    menu_top::BOTTOM_TEXT,
+    menu_top::BOTTOM_TRANSLUCENT,
+    menu_top::FONT_CALL[0],
+    menu_top::START,
+    menu_top::FINISHED,
     MENU_NO_TOUCH,
     MENU_SCREENS[0].update,
     MENU_SCREENS[1].update,
+    MENU_SCREENS[2].update,
+    MENU_SCREENS[3].update,
+    MENU_SCREENS[4].update,
+    MENU_SCREENS[5].update,
+    MENU_SCREENS[6].update,
+    MENU_SCREENS[7].update,
+    MENU_SCREENS[8].update,
+    MENU_SCREENS[9].update,
+    MENU_SCREENS[10].update,
+    MENU_SCREENS[11].update,
+    MENU_SCREENS[12].update,
+    MENU_SCREENS[13].update,
+    MENU_SCREENS[14].update,
+    MENU_SCREENS[15].update,
+    MENU_SCREENS[16].update,
+    MENU_SCREENS[17].update,
+    MENU_SCREENS[18].update,
+    MENU_SCREENS[19].update,
+    MENU_SCREENS[20].update,
+    MENU_SCREENS[21].update,
+    MENU_SCREENS[22].update,
+    MENU_SCREENS[23].update,
+    MENU_SCREENS[24].update,
+    MENU_SCREENS[25].update,
 ];
 
 /// the Fiend's Cauldron's pot (a task, vtable 0x00CF9AEC), the update it
@@ -110,12 +152,134 @@ struct Found {
     hash: u32,
     name: u32,
     element: u32,
+    part: u32,
 }
 
-const MENU_SCREENS: [MenuScreen; 2] = [
+/// A menu press waits for release to click, or becomes a native touch
+/// when held for 200 ms or moved four bottom-screen pixels.
+struct MenuPress {
+    pointer: (f32, f32),
+    object: u32,
+    since: u64,
+    dragging: Option<u64>,
+}
+
+/// a screen's click that is its own touch, for a screen whose parts act on
+/// touches and not on A (Idol Toss's bowl, its Back): the hover still
+/// outlines, and the press over a part touches it there, as unmapped
+/// controls do.
+const CLICK_TOUCHES: u32 = u32::MAX;
+
+const MENU_SCREENS: [MenuScreen; 26] = [
     MenuScreen { vtable: 0x00CEC3F4, update: 0x002A3EC4, outline: outline_file, use_outlined: 0x003374D0 },
     MenuScreen { vtable: 0x00CF243C, update: 0x002A3FCC, outline: outline_chapter, use_outlined: 0x003675C0 },
+    MenuScreen { vtable: 0x00CFBD9C, update: 0x002A3F9C, outline: outline_buttons, use_outlined: 0x0036F59C },
+    MenuScreen { vtable: 0x00CEAE98, update: 0x00224BA0, outline: outline_queued, use_outlined: 0x002FB9E0 },
+    MenuScreen { vtable: 0x00CF2368, update: 0x001ECB4C, outline: outline_other, use_outlined: 0x002D50FC },
+    MenuScreen { vtable: 0x00CF84DC, update: 0x00224C18, outline: outline_controls, use_outlined: 0x003186E8 },
+    MenuScreen { vtable: 0x00CF9B60, update: 0x001B4C74, outline: outline_queued, use_outlined: 0x0029B26C },
+    MenuScreen { vtable: 0x00CFA034, update: 0x001ECBBC, outline: outline_subtitles, use_outlined: 0x002E5448 },
+    MenuScreen { vtable: 0x00CF2390, update: 0x00224BD4, outline: outline_volume, use_outlined: 0x002D56CC },
+    MenuScreen { vtable: 0x00CF8E8C, update: 0x001ECBF4, outline: outline_profile, use_outlined: 0x002E2F4C },
+    MenuScreen { vtable: 0x00CEC41C, update: 0x0016756C, outline: outline_yes_no, use_outlined: 0x001C16D4 },
+    MenuScreen { vtable: 0x00CF8270, update: 0x002A4070, outline: outline_dialog, use_outlined: 0x00314DF8 },
+    MenuScreen { vtable: 0x00CFC3D0, update: 0x002ECCF4, outline: outline_solo, use_outlined: 0x00370300 },
+    MenuScreen { vtable: 0x00CFCA28, update: 0x002A1FD8, outline: outline_altar, use_outlined: 0x00322C34 },
+    MenuScreen { vtable: 0x00CEC2B8, update: 0x002B6DB8, outline: outline_armory, use_outlined: 0 },
+    MenuScreen { vtable: 0x00CEFCA8, update: 0x00238CBC, outline: outline_armory, use_outlined: 0 },
+    MenuScreen { vtable: 0x00CEEBFC, update: 0x001C9734, outline: outline_armory, use_outlined: 0 },
+    MenuScreen { vtable: 0x00CEE148, update: 0x00230B5C, outline: outline_armory, use_outlined: 0 },
+    MenuScreen { vtable: 0x00CEC2E0, update: 0x002BB14C, outline: outline_armory, use_outlined: 0 },
+    MenuScreen { vtable: 0x00CEE1E8, update: 0x0019CDC8, outline: outline_armory, use_outlined: 0 },
+    MenuScreen { vtable: 0x00CEE1C0, update: 0x0019BDC4, outline: outline_armory, use_outlined: 0 },
+    MenuScreen { vtable: 0x00CF0154, update: 0x0023A9FC, outline: outline_practice, use_outlined: 0x0030B5B4 },
+    MenuScreen { vtable: 0x00CF9400, update: 0x001B4D58, outline: outline_idol, use_outlined: CLICK_TOUCHES },
+    MenuScreen { vtable: 0x00CEEDD8, update: 0x0018AF44, outline: outline_treasure, use_outlined: CLICK_TOUCHES },
+    MenuScreen { vtable: 0x00CF8248, update: 0x00224B80, outline: outline_vault, use_outlined: 0x00345FDC },
+    MenuScreen { vtable: 0x00CF9400, update: 0x001B4D4C, outline: outline_idol, use_outlined: CLICK_TOUCHES },
 ];
+
+
+/// The Vault's Idols, Music Gallery, Power Portrait, Offering, Idol Toss,
+/// Records, AR and Back: a hash at +0x44 and its name after it.
+/// 0x00345C18(object, part, 1) outlines the part where a pointer finds
+/// it, as the screen's own pointer handler does (0 for a key), and A
+/// 0x00345FDC(object) presses whichever part that hash is.
+const OUTLINE_VAULT: u32 = 0x00345C18;
+
+fn outline_vault(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    if read_word(system, object + BUTTONS_OUTLINED) == found.hash {
+        return Some(Vec::new());
+    }
+    Some(vec![(OUTLINE_VAULT, [object, found.name, 1])])
+}
+
+/// Treasure Hunt's board and Back: the one picked a hash at +0x34 and its
+/// name after it. 0x0020207C(object, part) sets both from the part, as a
+/// touch on it does (its handler, 0x001CBFCC), and Back goes back.
+const TREASURE_PICKED: u32 = 0x34;
+const PICK_TREASURE_PART: u32 = 0x0020_207C;
+
+fn outline_treasure(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    if read_word(system, object + TREASURE_PICKED) == found.hash {
+        return Some(Vec::new());
+    }
+    Some(vec![(PICK_TREASURE_PART, [object, found.part, 0])])
+}
+
+/// Idol Toss's bowl and Back: the outlined one an index at +0x3B8 into its
+/// parts, at +0x44, +0x254 and +0x1D0 of the scene its task keeps (kind
+/// 0x00D71458), its hash at +0x48 and its name after it. its keys step
+/// the index and copy both from there (0x0024E9F8); so does a touch, with
+/// 0x0022CF38(object's +0x38, +0x48), which finds the part under it.
+const IDOL_INDEX: u32 = 0x3B8;
+const IDOL_OUTLINED: u32 = 0x48;
+const IDOL_NAME: u32 = 0x4C;
+const IDOL_PARTS: [u32; 3] = [0x44, 0x254, 0x1D0];
+const IDOL_KIND: u32 = 0x00D7_1458;
+
+fn outline_idol(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    if read_word(system, object + IDOL_OUTLINED) == found.hash {
+        return Some(Vec::new());
+    }
+    let task = read_word(system, object + 0x30);
+    let scene = kept_of_kind(system, task, IDOL_KIND);
+    if scene == 0 {
+        return None;
+    }
+    let index = (0..IDOL_PARTS.len()).find(|&part| read_word(system, scene + IDOL_PARTS[part]) == found.hash)?;
+    system.memory.write_bytes(object + IDOL_INDEX, &(index as u32).to_le_bytes());
+    system.memory.write_bytes(object + IDOL_OUTLINED, &found.hash.to_le_bytes());
+    Some(vec![(COPY_NAME, [object + IDOL_NAME, found.name + 4, 0])])
+}
+
+/// Practice Range's Air Battle, Land Battle and Gear: the outlined one a
+/// hash at +0x2E4, its name a string after it; a key writes the next name
+/// into a queue at +0x33C and sets +0x374's bit 0, and the update's own
+/// step, 0x00283DE0(object), copies it in with 0x002EA7A0(+0x2E4, +0x33C),
+/// plays the cursor's sound and marks the part's animation. the same here,
+/// for the part under the mouse: queue it, flag it, then apply it. A,
+/// 0x0030B5B4(object), acts on the hash at +0x2E4: Air Battle and Land
+/// Battle start with 0x00340ED4(object, 0 or 1), Gear opens the armory
+/// with 0x0030B68C(object).
+const PRACTICE_OUTLINED: u32 = 0x2E4;
+const PRACTICE_QUEUE: u32 = 0x33C;
+const PRACTICE_FLAGS: u32 = 0x374;
+const OUTLINE_PRACTICE_PART: u32 = 0x002EA7A0;
+const APPLY_PRACTICE_QUEUE: u32 = 0x00283DE0;
+
+fn outline_practice(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    if read_word(system, object + PRACTICE_OUTLINED) == found.hash {
+        return Some(Vec::new());
+    }
+    let mut flags = [0u8];
+    system.memory.read_bytes(object + PRACTICE_FLAGS, &mut flags);
+    system.memory.write_bytes(object + PRACTICE_FLAGS, &[flags[0] | 1]);
+    Some(vec![
+        (OUTLINE_PRACTICE_PART, [object + PRACTICE_QUEUE, found.name, 0]),
+        (APPLY_PRACTICE_QUEUE, [object, 0, 0]),
+    ])
+}
 
 /// file select's outlined part at +0x34, a hash; its parts, the three
 /// books (book_01 to _03), Back (return) and How to Play (guide). its keys
@@ -172,6 +336,424 @@ fn outline_chapter(system: &mut System, object: u32, found: Found) -> Option<Vec
         }
         _ => None,
     }
+}
+
+/// the hub's button menus (the main menu's Solo, StreetPass, Vault,
+/// Together, Options, AR, the guide and Back): the outlined part at +0x44,
+/// a hash, and its name at +0x48 (a string). their keys step along a
+/// table by 0x0034E1B8(object, direction), which writes both, copies them
+/// to +0x70 and +0x74, refreshes the outline with 0x0036FB58(object, 0),
+/// reading only +0x44 and +0x48, and plays the cursor's sound with
+/// 0x002B435C(object's +0x30, 7). the same here, for the part under the
+/// mouse; A is 0x0036F59C(object).
+const BUTTONS_OUTLINED: u32 = 0x44;
+const BUTTONS_LAST: u32 = 0x70;
+const BUTTONS_SOUND_OWNER: u32 = 0x30;
+const COPY_NAME: u32 = 0x00352A9C;
+const REFRESH_BUTTONS: u32 = 0x0036FB58;
+const BUTTONS_SOUND: u32 = 0x002B435C;
+
+fn outline_buttons(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    if read_word(system, object + BUTTONS_OUTLINED) == found.hash {
+        return Some(Vec::new());
+    }
+    system.memory.write_bytes(object + BUTTONS_OUTLINED, &found.hash.to_le_bytes());
+    system.memory.write_bytes(object + BUTTONS_LAST, &found.hash.to_le_bytes());
+    let owner = read_word(system, object + BUTTONS_SOUND_OWNER);
+    Some(vec![
+        (COPY_NAME, [object + BUTTONS_OUTLINED + 4, found.name + 4, 0]),
+        (COPY_NAME, [object + BUTTONS_LAST + 4, found.name + 4, 0]),
+        (REFRESH_BUTTONS, [object, 0, 0]),
+        (BUTTONS_SOUND, [owner, 7, 0]),
+    ])
+}
+
+/// Options' buttons (Controls, Volume, Other and Back), and Reticle/
+/// Camera's (Air Battle, Land Battle and Back; its own copies, 0x00251D74
+/// outlining, A 0x0029B26C): the outlined part
+/// at +0x44 as the main menu's, but a key queues the next one: first
+/// 0x002BFE50(object + 0x34, &{hash, name}), which updates the parts'
+/// states for it, then its hash
+/// and name copied to +0x9C by 0x002EA7A0(at, &{hash, name}) and +0xD4's
+/// bit 0 set (bit 1 for a move back), and 0x002B4428(object), early in
+/// the update, outlines it, posts it to the buttons' animations and plays
+/// the cursor's sound. A is 0x002FB9E0(object).
+const QUEUED_PART: u32 = 0x9C;
+const QUEUED: u32 = 0xD4;
+const QUEUE_PART: u32 = 0x002EA7A0;
+const LEAVE_PART: u32 = 0x002BFE50;
+const LEAVE_FROM: u32 = 0x34;
+
+fn outline_queued(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    if read_word(system, object + BUTTONS_OUTLINED) == found.hash {
+        return Some(Vec::new());
+    }
+    let mut queued = [0u8];
+    system.memory.read_bytes(object + QUEUED, &mut queued);
+    system.memory.write_bytes(object + QUEUED, &[queued[0] & !2 | 1]);
+    Some(vec![(LEAVE_PART, [object + LEAVE_FROM, found.name, 0]), (QUEUE_PART, [object + QUEUED_PART, found.name, 0])])
+}
+
+/// Solo's Move Out, Arms Altar, Practice Range, Idol Toss, Gear,
+/// Treasure Hunt and Back: keys queue the name at +0xFC and set +0x150
+/// bit 0. Its update posts the outline, sound, hint and camera together,
+/// then copies the name to +0x5C; A uses it through 0x00370300.
+fn outline_solo(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    // The opening guide owns input while +0x144 is 1.
+    if read_word(system, object + 0x144) == 1 {
+        return None;
+    }
+    if read_word(system, object + 0x5C) == found.hash {
+        return Some(Vec::new());
+    }
+    let mut flags = [0u8];
+    system.memory.read_bytes(object + 0x150, &mut flags);
+    system.memory.write_bytes(object + 0x150, &[flags[0] | 1]);
+    Some(vec![(LEAVE_PART, [object + 0x4C, found.name, 0]), (QUEUE_PART, [object + 0xFC, found.name, 0])])
+}
+
+/// Arms Altar's buttons: keys and touches both move the outline, sound
+/// and animations by 0x00322DB0(object, &name, repeat), keeping the
+/// current name at +0x44. A uses it through 0x00322C34.
+const OUTLINE_ALTAR: u32 = 0x00322DB0;
+
+fn outline_altar(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    let outlined = read_word(system, object + BUTTONS_OUTLINED) == found.hash;
+    Some(if outlined { Vec::new() } else { vec![(OUTLINE_ALTAR, [object, found.name, 0])] })
+}
+
+/// Armory lists share the game's scroll control: a row at +0xE4,
+/// viewport at +0xEC, row height at +0xFC, and cursor refresh 0x0031AED8.
+const GOODS_PANEL: u32 = 0x569F4534;
+const POWER_LIST_HASH: u32 = 0x104FFC79;
+const REFRESH_LIST: u32 = 0x0031AED8;
+
+fn armory_list(system: &mut System, object: u32) -> Option<u32> {
+    match read_word(system, object) {
+        0x00CEEBFC => Some(read_word(system, object + 0x58)),
+        0x00CEE1E8 => Some(read_word(system, object + 0x80)),
+        0x00CEC2E0 => Some(object + 0x1B74),
+        _ => None,
+    }.filter(|&list| list != 0)
+}
+
+fn list_row(system: &mut System, list: u32, y: f32) -> Option<u32> {
+    let top = f32::from_bits(read_word(system, list + 4));
+    let height = f32::from_bits(read_word(system, list + 0xFC)) * 10.0;
+    let offset = f32::from_bits(read_word(system, list + 0x11C)) * 10.0;
+    if !height.is_finite() || height <= 0.0 { return None; }
+    let visible = ((y - top + offset) / height).floor();
+    let row = read_word(system, list + 0xEC).checked_add(visible as u32)?;
+    (visible >= 0.0 && row < read_word(system, list + 0xD0)).then_some(row)
+}
+
+fn outline_armory(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    let vtable = read_word(system, object);
+    if vtable == 0x00CEC2B8 {
+        let outlined = read_word(system, object + 0x2E4) == found.hash;
+        return Some(if outlined { vec![] } else { vec![(0x00334D3C, [object, found.name, 0])] });
+    }
+    let pointer = system.aim_mouse.as_ref()?.pointer?;
+    if vtable == 0x00CEE1C0 {
+        let actor = kept_of_kind(system, found.part, 0x00D7681C);
+        let category = actor.checked_sub(3)?;
+        if category > 10 { return None; }
+        if (1..10).contains(&category) {
+            let singleton = read_word(system, 0x001FC76C);
+            let save = read_word(system, singleton);
+            let counts = save + 0x6474 + (category - 1) * 0x30;
+            if save == 0 || !(0..12).any(|item| read_word(system, counts + item * 4) != 0) { return None; }
+        }
+        let old = read_word(system, object + 0xDC);
+        if old == category { return Some(vec![]); }
+        system.memory.write_bytes(object + 0xE0, &old.to_le_bytes());
+        system.memory.write_bytes(object + 0xDC, &category.to_le_bytes());
+        return Some(vec![(0x001FA9EC, [object, 0, 0])]);
+    }
+    if let Some(list) = armory_list(system, object) {
+        if !matches!(found.hash, GOODS_PANEL | POWER_LIST_HASH | 0x2352A1DA) { return None; }
+        let mut calls = Vec::new();
+        if vtable == 0x00CEEBFC {
+            match read_word(system, object + 0x45AC) {
+                1 => {},
+                2 => calls.push((0x00235F98, [object, 0, 0])),
+                _ => return None,
+            }
+        }
+        if vtable == 0x00CEE1E8 {
+            match read_word(system, object + 0x2794) {
+                0 => {},
+                6..=8 => calls.push((0x001FAE48, [object, 0, 1])),
+                _ => return None,
+            }
+        }
+        let row = list_row(system, list, pointer.1)?;
+        let old = read_word(system, list + 0xE4);
+        if vtable == 0x00CEC2E0 && read_word(system, object + 0x48) != found.part {
+            system.memory.write_bytes(object + 0x4C, &found.part.to_le_bytes());
+            calls.push((0x002FEA08, [object, 0, 0]));
+        }
+        if old != row {
+            let first = read_word(system, list + 0xEC);
+            system.memory.write_bytes(list + 0xE4, &row.to_le_bytes());
+            system.memory.write_bytes(list + 0xDC, &row.saturating_sub(first).to_le_bytes());
+            calls.push((REFRESH_LIST, [list, 0, 0]));
+            if vtable == 0x00CEC2E0 {
+                system.memory.write_bytes(object + 0x1C58, &row.to_le_bytes());
+                calls.push((0x002FF834, [object, u32::MAX, 0]));
+            }
+        }
+        return Some(calls);
+    }
+    if vtable == 0x00CEFCA8 && found.hash == GOODS_PANEL {
+        let row = ((pointer.1 - 38.0) / 23.0).floor();
+        if row < 0.0 || row >= read_word(system, object + 0x5C4) as f32 { return None; }
+        let row = row as u32;
+        let mut calls = Vec::new();
+        if read_word(system, object + 0x5A8) != 3 {
+            calls.push((0x002CC0AC, [object, 0, 0]));
+        }
+        if read_word(system, object + 0x5C0) != row {
+            system.memory.write_bytes(object + 0x5C0, &row.to_le_bytes());
+            calls.extend([(0x002CC3B0, [object, 0, 0]), (0x0027F2E4, [object, 0, 0]), (0x0027EED4, [object, 0, 0])]);
+        }
+        return Some(calls);
+    }
+    if vtable == 0x00CEE148 && matches!(found.hash, 0x6166CB9B | 0x6166CBAD) {
+        if read_word(system, object + 0x2B20) != 0 { return None; }
+        let count = read_word(system, object + 0x2B40);
+        let horizontal = found.hash == 0x6166CB9B;
+        let visible = if horizontal { ((pointer.0 - 84.0) / 32.0).floor() } else { ((pointer.1 - 60.0) / 22.0).floor() };
+        if visible < 0.0 || visible >= 7.0 { return None; }
+        let scroll = if horizontal { 0x2B28 } else { 0x2B30 };
+        let selected = if horizontal { 0x2B38 } else { 0x2B3C };
+        if read_word(system, object + scroll) + visible as u32 >= count { return None; }
+        if read_word(system, object + selected) == visible as u32 { return Some(vec![]); }
+        system.memory.write_bytes(object + selected, &(visible as u32).to_le_bytes());
+        return Some(vec![(0x002C5588, [object, 0, 1]), (0x002C5398, [object, 0, 0])]);
+    }
+    None
+}
+
+fn scroll_armory(system: &mut System, object: u32, steps: [i32; 2], scratch: u32) -> Vec<MenuCall> {
+    let vtable = read_word(system, object);
+    if let Some(list) = armory_list(system, object) {
+        if vtable == 0x00CEEBFC && read_word(system, object + 0x45AC) != 1 { return vec![]; }
+        if vtable == 0x00CEE1E8 && read_word(system, object + 0x2794) != 0 { return vec![]; }
+        let mut calls = Vec::new();
+        if vtable == 0x00CEE1E8 {
+            system.memory.write_bytes(scratch + 0x30, &1u32.to_le_bytes());
+            calls.extend((0..steps[0].unsigned_abs()).map(|_| (if steps[0] > 0 { 0x001C7E64 } else { 0x001C706C }, [object, scratch + 0x30, 0])));
+        }
+        let scrolls = if vtable == 0x00CF_B010 {
+            read_word(system, list + 0xC8) > read_word(system, list + 0xD0)
+        } else {
+            read_word(system, list + 0xD0) > read_word(system, list + 0xC8) + 1
+        };
+        if scrolls {
+            calls.extend((0..steps[1].unsigned_abs()).map(|_| (0x0031AA88, [list, u32::from(steps[1] > 0), 0])));
+        }
+        return calls;
+    }
+    if vtable == 0x00CEE1C0 {
+        let axis = if steps[0] != 0 { 0 } else { 1 };
+        let literal = match (axis, steps[axis] > 0) {
+            (0, false) => 0x0019CA54, (0, true) => 0x0019CA58,
+            (_, false) => 0x0019CA5C, (_, true) => 0x0019CA60,
+        };
+        let table = read_word(system, literal);
+        return (0..steps[axis].unsigned_abs()).flat_map(|_| [(0x001C66BC, [object, table, 0]), (0x001FA9EC, [object, 0, 0])]).collect();
+    }
+    if read_word(system, object) == 0x00CEE148 && read_word(system, object + 0x2B20) == 0 {
+        let max = read_word(system, object + 0x2B40).saturating_sub(7);
+        for (axis, offset) in [0x2B28, 0x2B30].into_iter().enumerate() {
+            let value = (i64::from(read_word(system, object + offset)) + i64::from(steps[axis])).clamp(0, i64::from(max)) as u32;
+            system.memory.write_bytes(object + offset, &value.to_le_bytes());
+        }
+        return vec![(0x002C5588, [object, 0, 1]), (0x002C5398, [object, 0, 0])];
+    }
+    if read_word(system, object) == 0x00CEFCA8 && read_word(system, object + 0x5A8) == 3 {
+        return (0..steps[1].unsigned_abs()).map(|_| (0x002CC320, [object, u32::from(steps[1] < 0), 0])).collect();
+    }
+    vec![]
+}
+
+/// These input handlers consume their own A/B event records. Posting the
+/// press there uses precisely the same action and validation as the keys.
+fn activate_armory(system: &mut System, object: u32) {
+    let Some(found) = system.aim_mouse.as_ref().and_then(|mouse| mouse.menu_part) else { return };
+    let base = match read_word(system, object) {
+        0x00CEC2B8 => 0x514,
+        0x00CEFCA8 => 0x930,
+        0x00CEEBFC => 0x47DC,
+        0x00CEE148 => 0x2DEC,
+        0x00CEC2E0 => 0x180,
+        0x00CEE1E8 => 0x2A64,
+        0x00CEE1C0 => 0x2E4,
+        _ => return,
+    };
+    let event = object + base + if found.hash == CHAPTER_BACK { 0x24 } else { 0 };
+    let mut flags = [0u8; 2];
+    system.memory.read_bytes(event, &mut flags);
+    system.memory.write_bytes(event, &(u16::from_le_bytes(flags) | 1).to_le_bytes());
+}
+
+/// Other's rows (Profile, Subtitles, SpotPass and Back): queued as
+/// Options' are, outlined by its own copy, 0x00289244, but its keys go
+/// through one function, 0x002D5430(object, &{hash, name}, direction),
+/// which queues the part and, for SpotPass, marks the move as a key's
+/// (+0xC8, +0xCC 2). left 0, SpotPass's switch takes it for a touch on it
+/// and keeps the touches for itself (the touch object's +0x654), so none
+/// finds Profile after. A is 0x002D50FC(object).
+const OUTLINE_OTHER_PART: u32 = 0x002D5430;
+
+fn outline_other(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    let outlined = read_word(system, object + BUTTONS_OUTLINED) == found.hash;
+    Some(if outlined { Vec::new() } else { vec![(OUTLINE_OTHER_PART, [object, found.name, 0])] })
+}
+
+/// Controls' rows (Control Configuration, Reticle/Camera, More Controls
+/// and Back): queued at +0x9C as Options' are, but flagged by +0x118 (1),
+/// +0x108 -1 and +0x11D's bit 3 the direction, then 0x00318DD0(object,
+/// &{hash, name}) sets the rows' animations for it. 0x002E1CF8, early in
+/// the update, outlines it. A is 0x003186E8(object).
+const CONTROLS_QUEUED: u32 = 0x118;
+const CONTROLS_DIRECTION: u32 = 0x11D;
+const CONTROLS_HELD: u32 = 0x108;
+const CONTROLS_ROWS: u32 = 0x00318DD0;
+
+fn outline_controls(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    if read_word(system, object + BUTTONS_OUTLINED) == found.hash {
+        return Some(Vec::new());
+    }
+    let mut direction = [0u8];
+    system.memory.read_bytes(object + CONTROLS_DIRECTION, &mut direction);
+    system.memory.write_bytes(object + CONTROLS_DIRECTION, &[direction[0] & !8]);
+    system.memory.write_bytes(object + CONTROLS_QUEUED, &[1]);
+    system.memory.write_bytes(object + CONTROLS_HELD, &u32::MAX.to_le_bytes());
+    Some(vec![(QUEUE_PART, [object + QUEUED_PART, found.name, 0]), (CONTROLS_ROWS, [object, found.name, 0])])
+}
+
+/// Volume's rows (Music, SFX, Voice, To Music Gallery and Back): queued at
+/// +0x9C as Options' are, by 0x002D5B40(object, &keys), which also zeroes
+/// the held slider's +0xE4 and +0xE8 and, onto or off Back and the
+/// gallery, plays their animations (not here). 0x002D562C outlines it;
+/// A is 0x002D56CC(object), To Music Gallery opening it.
+const VOLUME_HELD: u32 = 0xE4;
+
+fn outline_volume(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    if read_word(system, object + BUTTONS_OUTLINED) == found.hash {
+        return Some(Vec::new());
+    }
+    let mut queued = [0u8];
+    system.memory.read_bytes(object + QUEUED, &mut queued);
+    system.memory.write_bytes(object + QUEUED, &[queued[0] & !2 | 1]);
+    system.memory.write_bytes(object + VOLUME_HELD, &[0; 8]);
+    Some(vec![(QUEUE_PART, [object + QUEUED_PART, found.name, 0])])
+}
+
+/// Profile's (Player and Back): queued as Options' are but further on, the
+/// hash at +0xA4, its name (a string) at +0xA8, +0xDC's bit 0 set (bit 1
+/// a move back); 0x002952F4 outlines it. A is 0x002E2F4C(object).
+const PROFILE_QUEUED_PART: u32 = 0xA4;
+const PROFILE_QUEUED: u32 = 0xDC;
+
+fn outline_profile(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    queue_hash_and_name(system, object, found, PROFILE_QUEUED_PART, PROFILE_QUEUED)
+}
+
+/// the Yes/No a choice asks (Profile's Player): queued as Profile's, the
+/// hash at +0x9C, its name at +0xA0, +0xF0's bit 0; 0x00172A50, its
+/// update, outlines it. A is 0x001C16D4(object).
+const YES_NO_QUEUED_PART: u32 = 0x9C;
+const YES_NO_QUEUED: u32 = 0xF0;
+
+fn outline_yes_no(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    queue_hash_and_name(system, object, found, YES_NO_QUEUED_PART, YES_NO_QUEUED)
+}
+
+/// queues the part for the menu to outline, as its keys do: its hash at
+/// part, then its name (a string), and bit 0 of the byte at flags (bit 1,
+/// a move back, cleared).
+fn queue_hash_and_name(system: &mut System, object: u32, found: Found, part: u32, flags: u32) -> Option<Vec<MenuCall>> {
+    if read_word(system, object + BUTTONS_OUTLINED) == found.hash {
+        return Some(Vec::new());
+    }
+    system.memory.write_bytes(object + part, &found.hash.to_le_bytes());
+    let mut queued = [0u8];
+    system.memory.read_bytes(object + flags, &mut queued);
+    system.memory.write_bytes(object + flags, &[queued[0] & !2 | 1]);
+    Some(vec![(COPY_NAME, [object + part + 4, found.name + 4, 0])])
+}
+
+/// the hub's choices in a box (SpotPass's No and Yes): the one picked an
+/// index at +0x44, each button an element of one part named fnt_02 on,
+/// for 0 on. its keys set it, then light it with 0x0028F8EC(object) and
+/// 0x002DC68C(object); A, and a touch, use it with 0x00314DF8(object).
+const DIALOG_PICKED: u32 = 0x44;
+const LIGHT_DIALOG_PICKED: [u32; 2] = [0x0028F8EC, 0x002DC68C];
+
+fn outline_dialog(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    let at = read_word(system, found.element);
+    let mut name = [0u8; 7];
+    system.memory.read_bytes(at, &mut name);
+    let picked = match name {
+        [b'f', b'n', b't', b'_', b'0', digit @ b'2'..=b'4', 0] => u32::from(digit - b'2'),
+        _ => return None,
+    };
+    if read_word(system, object + DIALOG_PICKED) == picked {
+        return Some(Vec::new());
+    }
+    system.memory.write_bytes(object + DIALOG_PICKED, &picked.to_le_bytes());
+    Some(LIGHT_DIALOG_PICKED.iter().map(|&light| (light, [object, 0, 0])).collect())
+}
+
+/// what a part (its +0x30) keeps of a kind, as 0x00326D74(part, &kind)
+/// +0x1C finds it: a sorted tree at +0x1A8 (its head) and +0x1AC (its
+/// root), each node's left at +8, right at +0xC, ending at the head,
+/// its kind at +0x14 and what it keeps at +0. 0 for none.
+fn kept_of_kind(system: &mut System, part: u32, kind: u32) -> u32 {
+    let head = part + 0x1A8;
+    let (mut found, mut node) = (head, read_word(system, part + 0x1AC));
+    for _ in 0..64 {
+        if node == 0 || node == head {
+            break;
+        }
+        if read_word(system, node + 0x14) < kind {
+            node = read_word(system, node + 0xC);
+        } else {
+            found = node;
+            node = read_word(system, node + 8);
+        }
+    }
+    if found == head || kind < read_word(system, found + 0x14) {
+        return 0;
+    }
+    let kept = read_word(system, found);
+    if kept == 0 || kept == read_word(system, head) { 0 } else { read_word(system, kept + 0x1C) }
+}
+
+/// Subtitles' choices (Upper, Lower, Off): the outlined one an index,
+/// +0x60's byte, into its parts, each a hash at +0x18 of 0x2C bytes from
+/// what its +0x30 keeps of kind 0x00D70E54. its keys outline one with
+/// 0x002E5608(object, &{hash, name}, direction); A is 0x002E5448(object).
+const SUBTITLES_OUTLINED: u32 = 0x60;
+const SUBTITLES_KIND: u32 = 0x00D7_0E54;
+const SUBTITLES_PARTS: u32 = 0x18;
+const SUBTITLES_PART_SIZE: u32 = 0x2C;
+const OUTLINE_SUBTITLES_PART: u32 = 0x002E5608;
+
+fn outline_subtitles(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
+    let owner = read_word(system, object + BUTTONS_SOUND_OWNER);
+    let parts = kept_of_kind(system, owner, SUBTITLES_KIND);
+    if parts != 0 {
+        let mut index = [0u8];
+        system.memory.read_bytes(object + SUBTITLES_OUTLINED, &mut index);
+        if read_word(system, parts + SUBTITLES_PARTS + u32::from(index[0]) * SUBTITLES_PART_SIZE) == found.hash {
+            return Some(Vec::new());
+        }
+    }
+    Some(vec![(OUTLINE_SUBTITLES_PART, [object, found.name, 0])])
 }
 
 /// a scene's top screen drawing (0x0072A034, vtable 0x00CEF1A0), the
@@ -311,9 +893,9 @@ const LENS_ASPECT: u32 = 0x14;
 /// flushes get.
 const PASS_BEGIN: u32 = 0x0092E4F8;
 
-/// in the top screen's battle UI pass, 0x0060D39C, just after it drew the
-/// health bar: the narration is drawn there too.
-const TOP_UI_AFTER_HUD: u32 = 0x0060D60C;
+/// In the top screen's battle UI pass, after every HUD branch, including
+/// boss reveals without a score. The narration is drawn here too.
+const TOP_UI_AFTER_HUD: u32 = 0x0060D66C;
 
 /// a bottom screen call the top screen makes too, in the same frame's top
 /// pass of the 2D context it draws through, with what the last bottom pass
@@ -452,13 +1034,56 @@ struct Apart {
 /// top's middle, and the item held, which the same call draws in the bottom
 /// right corner, bigger under the power icon, without the tab behind it
 /// (0x009EAC80). the chapter title is left off.
-const MIRRORED: [Mirrored; 4] = [
+const BOTTOM_BATTLE_UI: u32 = 0x00A17F70;
+const ILLUSTRATION: usize = 3;
+const BOSS_CARD: usize = 4;
+const BOSS_EFFECT: usize = 5;
+const BOSS_STATUS: usize = 6;
+const PICKUP: usize = 7;
+
+const MIRRORED: [Mirrored; 8] = [
     Mirrored { site: 0x00A181CC, from: [320.0, 0.0], to: [400.0, 0.0], below: 40.0, size: 1.0, swap_rows: None, hidden: &[0x00A192E4], last: None },
     Mirrored { site: 0x00A18400, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, swap_rows: None, hidden: &[], last: None },
     Mirrored { site: 0x00A18430, from: [0.0, 194.0], to: [0.0, 0.0], below: 36.0, size: 0.75, swap_rows: None, hidden: &[], last: None },
+    // The illustration call also draws the bottom screen's black bands.
+    // Only its image flush (0x00A0F9E8) belongs on top.
+    Mirrored { site: 0x00A18244, from: [0.0; 2], to: [0.0; 2], below: 0.0, size: 1.0, swap_rows: None, hidden: &[], last: None },
+    Mirrored { site: 0x00A18204, from: [0.0; 2], to: [0.0; 2], below: 0.0, size: 1.0, swap_rows: None, hidden: &[], last: None },
+    Mirrored { site: 0x00A18224, from: [0.0; 2], to: [0.0; 2], below: 0.0, size: 1.0, swap_rows: None, hidden: &[], last: None },
+    Mirrored { site: 0x00A18130, from: [0.0; 2], to: [0.0; 2], below: 0.0, size: 1.0, swap_rows: None, hidden: &[], last: None },
     Mirrored { site: 0x00A18368, from: [162.0, 118.0], to: [200.0, 0.0], below: 8.0, size: 0.75, swap_rows: None, hidden: &[0x009EAC80],
         last: Some(Apart { from: [289.0, 209.0], to: [4.0, 0.0], below: 76.0, size: 1.5 }) },
 ];
+
+/// A rectangle in native UI pixels, before the widescreen correction.
+#[derive(Clone, Copy, Debug)]
+struct UiBox {
+    min: [f32; 2],
+    max: [f32; 2],
+}
+
+impl UiBox {
+    fn valid(self) -> bool {
+        (0..2).all(|axis| self.min[axis].is_finite() && self.max[axis].is_finite() && self.max[axis] > self.min[axis])
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MirroredCall {
+    call: Recorded,
+    pass: u64,
+    bounds: Option<UiBox>,
+    material: [u32; 4],
+}
+
+impl MirroredCall {
+    fn for_pass(self, pass: u64) -> bool {
+        // Count UI passes, not vblanks: heavy scenes can take several
+        // refreshes to render. A missing bottom pass expires on the next
+        // top pass, independently of the game's frame rate.
+        self.pass.checked_add(1) == Some(pass)
+    }
+}
 
 /// what a mirrored element's call was given in the bottom pass, made again
 /// in the next frame's top pass.
@@ -472,7 +1097,7 @@ struct Recorded {
 }
 
 /// what the game's code is drawing on the top screen for us.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Drawing {
     Portraits,
     Mirrored(usize),
@@ -481,6 +1106,9 @@ enum Drawing {
     /// the Fiend's Cauldron's top picture's panel, its setup then its 3D,
     /// then the bottom screen, its bar, the bar's dial, Back, then the rest.
     Cauldron(usize),
+    /// A scripted menu part, its camera setup and drawing.
+    MenuTop(usize),
+    MenuClip(u32),
     /// the Fiend's Cauldron's cursor, lit where the mouse went as an arrow
     /// key would: set, then moved.
     CauldronCursor(usize),
@@ -498,8 +1126,9 @@ impl Drawing {
         match self {
             Drawing::PauseMenu(index) => PAUSE_MENU[index].place,
             Drawing::Cauldron(_) => TOP_SCENE_DRAWN,
+            Drawing::MenuTop(_) => menu_top::FINISHED,
             Drawing::CauldronCursor(_) => CAULDRON_CURSOR_KEYS_DONE,
-            Drawing::Viewport(place) => place,
+            Drawing::Viewport(place) | Drawing::MenuClip(place) => place,
             Drawing::Menu(_, screen) => MENU_SCREENS[screen].update,
             _ => TOP_UI_AFTER_HUD,
         }
@@ -695,12 +1324,13 @@ pub struct AimMouse {
     /// the CPU while the game draws the portraits or the narration on the
     /// top screen.
     saved: Option<Saved>,
-    /// whether the bottom screen's hearts, item box, power icon and pickups
-    /// are drawn on the top screen too.
+    /// whether the bottom screen's hearts, powers, pickups, dialogue images
+    /// and boss information are drawn on the top screen too.
     pub mirror_bottom: bool,
     /// the mirrored elements' calls from the last bottom pass, by MIRRORED's
     /// order.
-    recorded: [Option<Recorded>; 4],
+    recorded: [Option<MirroredCall>; MIRRORED.len()],
+    extras_pass: u64,
     /// whether the pause menu and the dialogs over it are drawn on the top
     /// screen too.
     pub pause_on_top: bool,
@@ -753,6 +1383,9 @@ pub struct AimMouse {
     /// on a PC, without using it, and over none lights none. keys bring the
     /// game's own cursor back until the mouse moves again.
     pub menu_hover: bool,
+    /// Scripted menus also draw their controls on the top screen.
+    pub menus_on_top: bool,
+    menu_top: MenuTop,
     /// the bottom screen pixel the mouse is over, none off it.
     pointer: Option<(f32, f32)>,
     /// whether the mouse moved since a key was last pressed in a menu.
@@ -772,6 +1405,10 @@ pub struct AimMouse {
     menu_touch: Option<(u32, u64)>,
     /// the menu of MENU_SCREENS last updated, its object and the frame.
     menu_screen: Option<(usize, u32, u64)>,
+    /// the menus of MENU_SCREENS updating, each object with the frame it
+    /// was first seen and last: of two at once (a choice over Other), the
+    /// mouse is the newer one's.
+    menus_open: Vec<(u32, u64, u64)>,
     /// where the mouse was when what is under it was first looked for there,
     /// and the frame, and what was found there that its menu outlines.
     menu_looked: Option<((f32, f32), u64)>,
@@ -781,6 +1418,12 @@ pub struct AimMouse {
     /// whether a click is to use the part under the mouse once it is
     /// outlined.
     menu_click: bool,
+    menu_button_down: bool,
+    menu_press: Option<MenuPress>,
+    /// Keep hover out of a native drag's release handling too.
+    menu_touched: Option<u64>,
+    /// Wheel fractions, kept with the menu that received them.
+    menu_wheel: Option<(u32, u64, [f32; 2])>,
     /// how many times wider than the console's 5:3 the top screen shows,
     /// 1 for its own shape: the view is that much wider and the top
     /// screen's 2D that much narrower, so it shows the right shape stretched.
@@ -806,7 +1449,8 @@ impl Default for AimMouse {
             context: None,
             saved: None,
             mirror_bottom: false,
-            recorded: [None; 4],
+            recorded: [None; MIRRORED.len()],
+            extras_pass: 0,
             pause_on_top: false,
             pause: [None; 15],
             pause_drawn: None,
@@ -827,6 +1471,8 @@ impl Default for AimMouse {
             top_projection: None,
             power_requested: None,
             menu_hover: false,
+            menus_on_top: true,
+            menu_top: MenuTop::default(),
             pointer: None,
             mouse_mode: false,
             paused: None,
@@ -835,10 +1481,15 @@ impl Default for AimMouse {
             dialog_cleared: false,
             menu_touch: None,
             menu_screen: None,
+            menus_open: Vec::new(),
             menu_looked: None,
             menu_part: None,
             menu_calls: Vec::new(),
             menu_click: false,
+            menu_button_down: false,
+            menu_press: None,
+            menu_touched: None,
+            menu_wheel: None,
             widen: 1.0,
             screens: Vec::new(),
             lenses: Vec::new(),
@@ -868,10 +1519,95 @@ impl AimMouse {
     /// is over a part the menu outlines: that part is outlined and used, as
     /// A uses it, and nothing is touched. frame as for pause_menu_shown.
     pub fn menu_click(&mut self, frame: u64) -> bool {
-        let shown = self.menu_screen.is_some_and(|(_, _, seen)| frame <= seen + 3);
-        let taken = self.menu_hover && shown && self.menu_part.is_some() && self.pointer.is_some() && self.pointer == self.menu_looked.map(|(pointer, _)| pointer);
+        let taken = self.menu_clickable(frame);
         self.menu_click |= taken;
         taken
+    }
+
+    fn menu_clickable(&self, frame: u64) -> bool {
+        if self.native_menu_on_top(frame) { return false; }
+        let shown = self.menu_screen.is_some_and(|(screen, _, seen)| frame <= seen + self.menu_age() && MENU_SCREENS[screen].use_outlined != CLICK_TOUCHES);
+        self.menu_hover && shown && self.menu_part.is_some() && self.pointer.is_some() && self.pointer == self.menu_looked.map(|(pointer, _)| pointer)
+    }
+
+    /// The native touch for a physical mouse button, polled each frame
+    /// while held. Unmapped controls touch immediately, as before.
+    pub fn menu_touch(&mut self, frame: u64, pressed: bool) -> Option<(f32, f32)> {
+        if self.menu_top.blocked {
+            self.menu_top.blocked = pressed;
+            self.menu_button_down = pressed;
+            return None;
+        }
+        let age = self.menu_age();
+        let was_down = std::mem::replace(&mut self.menu_button_down, pressed);
+        if !pressed {
+            if let Some(press) = self.menu_press.take() {
+                if press.dragging.is_none() && frame < press.since + 12 && self.menu_screen.is_some_and(|(_, object, seen)| object == press.object && frame <= seen + age) {
+                    self.menu_click(frame);
+                } else {
+                    self.menu_looked = None;
+                    self.menu_part = None;
+                }
+            }
+            return None;
+        }
+        if !was_down && self.menu_clickable(frame) {
+            self.menu_press = Some(MenuPress {
+                pointer: self.pointer.unwrap(),
+                object: self.menu_screen.unwrap().1,
+                since: frame,
+                dragging: None,
+            });
+        }
+        let Some(press) = &mut self.menu_press else {
+            if self.pointer.is_some() {
+                self.menu_touched = Some(frame);
+            }
+            return self.pointer;
+        };
+        // A transition or leaving the screen cancels this gesture.
+        if self.pointer.is_none() || !self.menu_screen.is_some_and(|(_, object, seen)| object == press.object && frame <= seen + age) {
+            press.object = 0;
+            return None;
+        }
+        let pointer = self.pointer.unwrap();
+        let moved = (pointer.0 - press.pointer.0).hypot(pointer.1 - press.pointer.1) >= 4.0;
+        if press.dragging.is_none() && (moved || frame >= press.since + 12) {
+            press.dragging = Some(frame);
+        }
+        // Keep the initial point through a native input poll, including
+        // the extra drawing time of a top-screen menu.
+        press.dragging.map(|started| {
+            self.menu_touched = Some(frame);
+            if frame <= started + age.saturating_sub(1).max(2) { press.pointer } else { pointer }
+        })
+    }
+
+    /// Losing focus or capturing the mouse cancels without clicking.
+    pub fn cancel_menu_touch(&mut self) {
+        self.menu_top.blocked |= self.menu_button_down;
+        self.menu_top.grab = None;
+        self.menu_button_down = false;
+        self.pointer = None;
+        self.menu_looked = None;
+        self.menu_part = None;
+        self.menu_press = None;
+        self.menu_click = false;
+        self.menu_wheel = None;
+    }
+
+    /// Wheel amounts in rows/columns, positive down/right. Never touch
+    /// or activate an item, and never carry a wheel gesture into a battle.
+    pub fn scroll_menu(&mut self, frame: u64, delta: [f32; 2]) -> bool {
+        let Some((index, object, seen)) = self.menu_screen else { return false };
+        if index < 14 || frame > seen + self.menu_age() || !self.menu_hover || self.captured || self.pointer.is_none() || self.menu_button_down
+            || delta.iter().any(|value| !value.is_finite()) {
+            return false;
+        }
+        let mut pending = self.menu_wheel.filter(|&(owner, last, _)| owner == object && frame <= last + 30).map_or([0.0; 2], |(_, _, pending)| pending);
+        for axis in 0..2 { pending[axis] = (pending[axis] + delta[axis]).clamp(-32.0, 32.0); }
+        self.menu_wheel = Some((object, frame, pending));
+        true
     }
 
     pub fn add(&mut self, dx: f32, dy: f32) {
@@ -994,6 +1730,7 @@ impl AimMouse {
 /// where the game has just summed the aim delta, the camera box on the
 /// ground, the HUD's and the reticle's size where they are drawn.
 pub(crate) fn apply(system: &mut System, pc: u32) {
+    menu_top::physics(system, pc);
     match pc {
         AFTER_AIM_DELTA => add_delta(system),
         BEFORE_CAMERA_TURN => close_box(system),
@@ -1001,6 +1738,9 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         PASS_BEGIN => {
             let (context, screen) = (system.cpu.regs[0], system.cpu.regs[1]);
             if let Some(aim_mouse) = &mut system.aim_mouse {
+                if screen == 1 && aim_mouse.context == Some(context) {
+                    aim_mouse.recorded.fill(None);
+                }
                 match aim_mouse.screens.iter_mut().find(|(seen, _)| *seen == context) {
                     Some(seen) => seen.1 = screen,
                     None => aim_mouse.screens.push((context, screen)),
@@ -1018,6 +1758,14 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         }
         RETICLE_DRAW => shrink_reticle(system),
         TOP_UI_AFTER_HUD => top_screen_extras(system),
+        BOTTOM_BATTLE_UI => {
+            if drawing(system).is_some() { return; }
+            // A skipped call must not survive a fade, pause or scene change.
+            if let Some(aim_mouse) = &mut system.aim_mouse {
+                aim_mouse.recorded.fill(None);
+                aim_mouse.context = Some(system.cpu.regs[1]);
+            }
+        }
         UI_COMMANDS => power_command(system),
         PAUSE_KEY => pause_key(system),
         PAUSE_TOUCH => hover_pause(system),
@@ -1030,11 +1778,21 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         }
         DIALOG_INPUT => hover_dialog(system),
         TOP_SCENE_3D => top_scene_viewport(system),
+        menu_top::START => { menu_top::begin(system); }
+        menu_top::FINISHED => { menu_top::draw(system); }
         CAULDRON_CURSOR_KEYS_DONE => light_cauldron_cursor(system),
-        TOP_TEXT | TOP_TEXT_DRAWN => top_text_viewport(system, pc),
+        TOP_TEXT | TOP_TEXT_DRAWN => {
+            if !menu_top::text(system, pc) { top_text_viewport(system, pc); }
+        }
+        menu_top::SCISSOR => menu_top::scissor(system),
+        menu_top::SCISSOR_DONE => menu_top::scissor_done(system),
+        menu_top::BOTTOM_TEXT => menu_top::bottom_text(system),
+        menu_top::BOTTOM_TRANSLUCENT => menu_top::bottom_translucent(system),
+        _ if menu_top::FONT_CALL.contains(&pc) => menu_top::font(system),
+        _ if menu_top::FONT_DONE.contains(&pc) => menu_top::font_done(system),
         TOP_SCENE_DRAWN => top_screen_cauldron(system),
         BOTTOM_SCENE_DRAW => {
-            if !matches!(drawing(system), Some(Drawing::Cauldron(_))) {
+            if !matches!(drawing(system), Some(Drawing::Cauldron(_) | Drawing::MenuTop(_))) {
                 let scene = system.cpu.regs[0];
                 if let Some(aim_mouse) = &mut system.aim_mouse {
                     aim_mouse.bottom_scene = Some(scene);
@@ -1360,15 +2118,25 @@ fn hover_dialog(system: &mut System) {
 fn top_screen_extras(system: &mut System) {
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
     aim_mouse.battle_drawn = Some(system.frames);
+    if aim_mouse.saved.is_none() {
+        aim_mouse.extras_pass = aim_mouse.extras_pass.wrapping_add(1);
+        log::trace!("battle extras pass {} frame {} context {:08X}, recordings {:?}", aim_mouse.extras_pass, system.frames, system.cpu.regs[4], aim_mouse.recorded.map(|kept| kept.map(|kept| (kept.pass, kept.call.regs[1]))));
+        // This pass keeps its own UI context in r4, even without a score.
+        // Do not reuse a context from another scene or a loaded state.
+        aim_mouse.context = Some(system.cpu.regs[4]);
+    }
     if let Some(back) = aim_mouse.saved.take() {
         system.cpu.regs = back.regs;
         system.cpu.cpsr = back.cpsr;
         system.cpu.vfp.regs = back.vfp;
         put_back(system, &back.moved);
+        if matches!(back.drawing, Drawing::Mirrored(_)) {
+            if let Some(context) = context(system) { dirty_material(system, context); }
+        }
         let next = match back.drawing {
             Drawing::Portraits => 0,
             Drawing::Mirrored(index) => index + 1,
-            Drawing::Narration | Drawing::PauseMenu(_) | Drawing::Cauldron(_) | Drawing::CauldronCursor(_) | Drawing::Viewport(_) | Drawing::Menu(..) => return,
+            Drawing::Narration | Drawing::PauseMenu(_) | Drawing::Cauldron(_) | Drawing::MenuTop(_) | Drawing::MenuClip(_) | Drawing::CauldronCursor(_) | Drawing::Viewport(_) | Drawing::Menu(..) => return,
         };
         if !start_mirrored(system, next) {
             start_narration(system);
@@ -1383,11 +2151,38 @@ fn top_screen_extras(system: &mut System) {
 /// keeps what the bottom pass gives a mirrored element's call, for the top
 /// pass to make it again.
 fn record(system: &mut System, site: u32) {
+    if drawing(system).is_some() { return; }
     let Some(index) = MIRRORED.iter().position(|mirrored| mirrored.site == site) else { return };
     let Some(recorded) = recorded_call(system, site) else { return };
+    let bounds = if index == ILLUSTRATION { illustration_bounds(system, recorded.regs[0]) } else { None };
+    let material = [0, 1, 2, 3].map(|word| read_word(system, recorded.regs[1] + 0xEC + word * 4));
     if let Some(aim_mouse) = &mut system.aim_mouse {
-        aim_mouse.recorded[index] = Some(recorded);
+        aim_mouse.recorded[index] = Some(MirroredCall { call: recorded, pass: aim_mouse.extras_pass, bounds, material });
     }
+}
+
+/// Up to four illustration slots: image id/flags, x/y, UV offset, width/
+/// height, scale and alpha. Fit their union, rather than the 320-pixel band,
+/// so a narrow picture such as the blue Hewdraw stays legible.
+fn illustration_bounds(system: &mut System, ui: u32) -> Option<UiBox> {
+    let mask = read_word(system, ui + 0x200);
+    let mut bounds = UiBox { min: [f32::MAX; 2], max: [f32::MIN; 2] };
+    for slot in 0..4 {
+        if mask & (1 << slot) == 0 { continue; }
+        let at = ui + 0x204 + slot * 0x24;
+        let x = f32::from_bits(read_word(system, at + 4));
+        let y = f32::from_bits(read_word(system, at + 8));
+        let scale = f32::from_bits(read_word(system, at + 0x1C));
+        let width = f32::from_bits(read_word(system, at + 0x14)) * scale;
+        let height = f32::from_bits(read_word(system, at + 0x18)) * scale;
+        let image = UiBox { min: [x, y], max: [x + width, y + height] };
+        if !image.valid() { return None; }
+        for axis in 0..2 {
+            bounds.min[axis] = bounds.min[axis].min(image.min[axis]);
+            bounds.max[axis] = bounds.max[axis].max(image.max[axis]);
+        }
+    }
+    bounds.valid().then_some(bounds)
 }
 
 /// the call the bl at site is about to make, and what it is given.
@@ -1638,12 +2433,15 @@ fn outline_menu(system: &mut System, pc: u32) {
                     system.cpu.regs[13] = at;
                     return;
                 }
+                if !menu_top::accept_hit(system, None) { outline_menu(system, pc); return; }
             }
             // its part's descriptor, and the menu's calls to outline it
             1 => {
                 let descriptor = if returned != 0 { read_word(system, returned + PART_DESCRIPTOR) } else { 0 };
                 if descriptor != 0 {
-                    let found = Found { hash: read_word(system, descriptor + DESCRIPTOR_NAME), name: descriptor + DESCRIPTOR_NAME, element: read_word(system, at + 0xC) };
+                    let layer = read_word(system, at);
+                    let found = Found { hash: read_word(system, descriptor + DESCRIPTOR_NAME), name: descriptor + DESCRIPTOR_NAME, element: read_word(system, at + 0xC), part: read_word(system, layer + LAYER_PART) };
+                    if !menu_top::accept_hit(system, Some(found.hash)) { outline_menu(system, pc); return; }
                     if let Some(calls) = (screen.outline)(system, object, found) {
                         if let Some(aim_mouse) = &mut system.aim_mouse {
                             aim_mouse.menu_part = Some(found);
@@ -1654,6 +2452,11 @@ fn outline_menu(system: &mut System, pc: u32) {
             }
             _ => {}
         }
+        // Queued menus apply the new outline in their update. Let that
+        // run before A, especially when keys changed the hovered choice.
+        if step == 2 && system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menu_calls.is_empty() && mouse.menu_click) {
+            return;
+        }
         next_menu_call(system, index, object, at);
         return;
     }
@@ -1662,18 +2465,50 @@ fn outline_menu(system: &mut System, pc: u32) {
         return;
     }
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    let age = aim_mouse.menu_age();
+    if aim_mouse.pointer.is_some() {
+        log::debug!("menu update {index} frame {frame}, previous {:?}, touch {:?}, pointer {:?}, age {age}, looked {:?}, saved {}", aim_mouse.menu_screen, aim_mouse.menu_touch, aim_mouse.pointer, aim_mouse.menu_looked, aim_mouse.saved.is_some());
+    }
+    aim_mouse.menus_open.retain(|&(_, _, last)| frame <= last + age);
+    match aim_mouse.menus_open.iter_mut().find(|(open, _, _)| *open == object) {
+        Some(open) => open.2 = frame,
+        None => aim_mouse.menus_open.push((object, frame, frame)),
+    }
+    let newest = aim_mouse.menus_open.iter().max_by_key(|&&(_, first, _)| first).map(|&(open, _, _)| open);
+    if newest != Some(object) {
+        return;
+    }
     // what was found on another menu, or before this one went, is not here,
     // and a menu opens with its own outline, until the mouse moves
-    if !aim_mouse.menu_screen.is_some_and(|(_, seen, last)| seen == object && frame <= last + 3) {
+    if !aim_mouse.menu_screen.is_some_and(|(_, seen, last)| seen == object && frame <= last + age) {
         aim_mouse.menu_looked = aim_mouse.pointer.map(|pointer| (pointer, 0));
         aim_mouse.menu_part = None;
         aim_mouse.menu_click = false;
     }
     aim_mouse.menu_screen = Some((index, object, frame));
-    if !aim_mouse.menu_hover || aim_mouse.saved.is_some() {
+    menu_top::refresh_hover(aim_mouse, frame);
+    if !aim_mouse.menu_hover || aim_mouse.saved.is_some() || system.services.hid.input.touch.is_some()
+        || aim_mouse.menu_touched.is_some_and(|last| frame <= last + age) {
         return;
     }
     let at = (system.cpu.regs[13] - 0x40) & !7;
+    if let Some((owner, last, mut wheel)) = aim_mouse.menu_wheel.take() {
+        if owner == object && frame <= last + 30 {
+            let steps = wheel.map(|value| value.trunc() as i32);
+            for axis in 0..2 { wheel[axis] -= steps[axis] as f32; }
+            aim_mouse.menu_wheel = Some((owner, last, wheel));
+            if steps != [0, 0] {
+                if !matches!(screen.vtable, 0x00CEE1C0 | 0x00CEFCA8) {
+                    aim_mouse.menu_looked = None;
+                    aim_mouse.menu_part = None;
+                }
+                let calls = scroll_armory(system, object, steps, at);
+                system.aim_mouse.as_mut().unwrap().menu_calls = calls;
+                next_menu_call(system, index, object, at);
+                return;
+            }
+        }
+    }
     if aim_mouse.menu_click {
         // what was found last, outlined first when it is not
         let Some(found) = aim_mouse.menu_part else {
@@ -1689,7 +2524,7 @@ fn outline_menu(system: &mut System, pc: u32) {
     }
     // looked again while nothing was found, for a second: a part can be
     // gone from under the mouse while it moves, as a book turning
-    let touch = aim_mouse.menu_touch.filter(|&(_, seen)| frame <= seen + 3).map(|(touch, _)| touch);
+    let touch = aim_mouse.menu_touch.filter(|&(_, seen)| frame <= seen + age).map(|(touch, _)| touch);
     let (Some(touch), Some((x, y))) = (touch, aim_mouse.pointer) else { return };
     let looked = aim_mouse.menu_looked.filter(|&(pointer, _)| Some(pointer) == aim_mouse.pointer);
     if looked.is_some_and(|(_, since)| aim_mouse.menu_part.is_some() || frame > since + 60) {
@@ -1712,6 +2547,15 @@ fn outline_menu(system: &mut System, pc: u32) {
 /// then, after a click, its A, coming back to its update.
 fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    if aim_mouse.menu_calls.is_empty() && aim_mouse.menu_click && MENU_SCREENS[index].use_outlined == CLICK_TOUCHES {
+        aim_mouse.menu_click = false;
+        return;
+    }
+    if aim_mouse.menu_calls.is_empty() && aim_mouse.menu_click && MENU_SCREENS[index].use_outlined == 0 {
+        aim_mouse.menu_click = false;
+        activate_armory(system, object);
+        return;
+    }
     let call = match aim_mouse.menu_calls.is_empty() {
         true => std::mem::take(&mut aim_mouse.menu_click).then_some((MENU_SCREENS[index].use_outlined, [object, 0, 0])),
         false => Some(aim_mouse.menu_calls.remove(0)),
@@ -1719,6 +2563,7 @@ fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
     let Some((function, [r0, r1, r2])) = call else { return };
     call_here(system, function, r0, r1, Drawing::Menu(2, index), Vec::new());
     system.cpu.regs[2] = r2;
+    if index >= 14 { system.cpu.regs[3] = 0; }
     system.cpu.regs[13] = at;
 }
 
@@ -1962,7 +2807,7 @@ fn top_text_viewport(system: &mut System, place: u32) {
 /// for top_screen_cauldron, sets the top's viewport back, and goes on past
 /// the bottom's 2D to return.
 fn cauldron_drawn(system: &mut System) {
-    let Some(top) = system.aim_mouse.as_ref().and_then(|aim_mouse| aim_mouse.saved.as_ref()).filter(|saved| matches!(saved.drawing, Drawing::Cauldron(_))).map(|saved| saved.regs[4]) else {
+    let Some(top) = system.aim_mouse.as_ref().and_then(|aim_mouse| aim_mouse.saved.as_ref()).filter(|saved| matches!(saved.drawing, Drawing::Cauldron(_) | Drawing::MenuTop(_))).map(|saved| saved.regs[4]) else {
         return;
     };
     let manager = read_word(system, VSYNC_MANAGER);
@@ -1991,7 +2836,7 @@ fn change(system: &mut System, moved: &mut Vec<(u32, Vec<u8>)>, at: u32, bytes: 
 /// the name of a scene model's CGFX model, empty for none.
 fn model_name(system: &mut System, model: u32) -> String {
     let cmdl = read_word(system, model + 8);
-    if cmdl == 0 || read_word(system, cmdl + 4) != u32::from_le_bytes(*b"CMDL") {
+    if cmdl == 0 || !system.memory.is_readable(cmdl, 0xD4) || read_word(system, cmdl + 4) != u32::from_le_bytes(*b"CMDL") {
         return String::new();
     }
     let at = cmdl.wrapping_add(0xC).wrapping_add(read_word(system, cmdl + 0xC));
@@ -1999,22 +2844,36 @@ fn model_name(system: &mut System, model: u32) -> String {
 }
 
 /// starts drawing the first mirrored element from index on that the last
-/// bottom pass drew, whether there was one. each is drawn once: the bottom
-/// pass records it again when it draws it again.
+/// bottom pass drew, whether there was one. Keep the calls for both eyes;
+/// the next bottom pass clears them before recording its visible elements.
 fn start_mirrored(system: &mut System, from: usize) -> bool {
     let Some(aim_mouse) = &mut system.aim_mouse else { return false };
     if !aim_mouse.mirror_bottom {
         return false;
     }
     for index in from..MIRRORED.len() {
-        let Some(recorded) = aim_mouse.recorded[index].take() else { continue };
-        call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::Mirrored(index), Vec::new());
+        let Some(kept) = aim_mouse.recorded[index].filter(|kept| kept.for_pass(aim_mouse.extras_pass) && Some(kept.call.regs[1]) == aim_mouse.context) else { continue };
+        log::trace!("battle extras replay {} pass {}", index, aim_mouse.extras_pass);
+        let recorded = kept.call;
+        // These draw routines inherit the bottom pass's material selectors.
+        // Restore them around each call and explicitly bind them on top.
+        let mut moved = Vec::new();
+        for (word, value) in kept.material.into_iter().enumerate() {
+            change(system, &mut moved, recorded.regs[1] + 0xEC + word as u32 * 4, &value.to_le_bytes());
+        }
+        dirty_material(system, recorded.regs[1]);
+        call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::Mirrored(index), moved);
         system.cpu.regs[2] = recorded.regs[2];
         system.cpu.regs[3] = recorded.regs[3];
         system.cpu.vfp.regs[..8].copy_from_slice(&recorded.floats);
         return true;
     }
     false
+}
+
+fn dirty_material(system: &mut System, context: u32) {
+    let flags = read_word(system, context + 0x50) | 0x1F00;
+    system.memory.write_bytes(context + 0x50, &flags.to_le_bytes());
 }
 
 /// has the game's code run function as if called from here with r0 and r1,
@@ -2116,6 +2975,117 @@ fn get(quads: &[u8], at: usize) -> f32 {
 
 fn set(quads: &mut [u8], at: usize, value: f32) {
     quads[at..at + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+/// Fit an element as a group, keeping its shape and the gaps between its
+/// sprites. Widescreen correction is applied after placement, about anchor.
+fn fit_ui(quads: &mut [u8], source: UiBox, area: UiBox, anchor: f32, widen: f32, right: bool) {
+    if !source.valid() || !area.valid() { hide_ui(quads); return; }
+    let scale = ((area.max[0] - area.min[0]) / (source.max[0] - source.min[0]))
+        .min((area.max[1] - area.min[1]) / (source.max[1] - source.min[1]));
+    let width = (source.max[0] - source.min[0]) * scale;
+    let left = if right { area.max[0] - width } else { (area.min[0] + area.max[0] - width) * 0.5 };
+    for at in (0..quads.len()).step_by(0x18) {
+        let x = left + (get(quads, at) - source.min[0]) * scale;
+        let y = area.min[1] + (get(quads, at + 4) - source.min[1]) * scale;
+        set(quads, at, anchor + (x - anchor) / widen);
+        set(quads, at + 4, y);
+    }
+}
+
+fn hide_ui(quads: &mut [u8]) {
+    for at in (0..quads.len()).step_by(0x18) {
+        set(quads, at, -10000.0);
+        set(quads, at + 4, -10000.0);
+    }
+}
+
+/// Clip the native boss card to its title during combat. Its two texture
+/// tiles must share the same transform and UV clipping, including the seam.
+fn clip_ui(quads: &mut [u8], source: UiBox) {
+    for quad in quads.chunks_exact_mut(0x60) {
+        let old = quad.to_vec();
+        let min = [0, 1].map(|axis| (0..4).map(|i| get(&old, i * 0x18 + axis * 4)).fold(f32::MAX, f32::min));
+        let max = [0, 1].map(|axis| (0..4).map(|i| get(&old, i * 0x18 + axis * 4)).fold(f32::MIN, f32::max));
+        if (0..2).any(|axis| max[axis] <= source.min[axis] || min[axis] >= source.max[axis]) {
+            hide_ui(quad);
+            continue;
+        }
+        for axis in 0..2 {
+            let coord = axis * 4;
+            let uv = 0x10 + axis * 4;
+            let start = get(&old, coord);
+            let slope = (1..4).find_map(|i| {
+                let distance = get(&old, i * 0x18 + coord) - start;
+                (distance.abs() > 0.001).then(|| (get(&old, i * 0x18 + uv) - get(&old, uv)) / distance)
+            }).unwrap_or(0.0);
+            for at in (0..0x60).step_by(0x18) {
+                let was = get(&old, at + coord);
+                let clipped = was.clamp(source.min[axis], source.max[axis]);
+                set(quad, at + coord, clipped);
+                set(quad, at + uv, get(&old, at + uv) + (clipped - was) * slope);
+            }
+        }
+    }
+}
+
+fn illustration_area(hud: f32, portrait: f32) -> UiBox {
+    // Hearts end at (40 + 50) * hud. Portrait artwork starts about 64
+    // pixels into its 256-pixel tile, above Pit's visible head.
+    let bottom = if portrait > 0.0 { 240.0 - 192.0 * portrait } else { 240.0 - 48.0 * hud };
+    UiBox { min: [400.0 - 136.0 * hud, 98.0 * hud], max: [400.0 - 8.0 * hud, bottom - 8.0 * hud] }
+}
+
+fn boss_area(hud: f32, combat: bool) -> UiBox {
+    let (width, top, height) = if combat { (160.0, 8.0, 32.0) } else { (128.0, 40.0, 96.0) };
+    UiBox { min: [200.0 - width * hud * 0.5, top * hud], max: [200.0 + width * hud * 0.5, (top + height) * hud] }
+}
+
+fn pickup_below_boss(hud: f32, portrait: f32, combat: bool) -> UiBox {
+    let width = (216.0 * hud).min((400.0 - 512.0 * portrait - 16.0 * hud).max(16.0 * hud));
+    UiBox { min: [200.0 - width * 0.5, boss_area(hud, combat).max[1] + 8.0 * hud],
+        max: [200.0 + width * 0.5, 240.0 - 48.0 * hud] }
+}
+
+/// Special layouts use the original native draw calls, without the bottom
+/// screen's full-screen bands. No gameplay state is changed to place them.
+fn place_battle_panel(system: &mut System, index: usize, widen: f32) -> bool {
+    let Some(mouse) = &system.aim_mouse else { return false };
+    let (hud, portrait) = (mouse.hud_scale, mouse.portrait_scale);
+    let kept = mouse.recorded[index];
+    let boss = mouse.recorded[BOSS_CARD].or(mouse.recorded[BOSS_STATUS])
+        .filter(|kept| kept.for_pass(mouse.extras_pass) && Some(kept.call.regs[1]) == mouse.context);
+    let boss_context = boss.map(|kept| kept.call.regs[1]);
+    // The normal player's health HUD is enabled once the reveal ends.
+    let combat = boss_context.is_some_and(|context| read_word(system, context + 0x31BC) & 1 != 0);
+    let caller = system.cpu.regs[14];
+    let (source, area, anchor, right, hidden, clip) = match index {
+        ILLUSTRATION => (kept.and_then(|kept| kept.bounds).unwrap_or(UiBox { min: [0.0; 2], max: [0.0; 2] }),
+            illustration_area(hud, portrait), 400.0, true, caller != 0x00A0F9E8, false),
+        BOSS_CARD | BOSS_EFFECT | BOSS_STATUS => (
+            UiBox { min: [0.0; 2], max: [320.0, if combat && index == BOSS_CARD { 64.0 } else { 240.0 }] },
+            boss_area(hud, combat), 200.0, false,
+            index == BOSS_STATUS && caller == 0x00A15D3C, combat && index == BOSS_CARD),
+        PICKUP if boss.is_some() && caller != TOP_UI_AFTER_HUD => (
+            UiBox { min: [23.0, 118.0], max: [301.0, 191.0] },
+            pickup_below_boss(hud, portrait, combat), 200.0, false, caller == 0x009EAC80, false),
+        _ => return false,
+    };
+    let Some((at, mut quads)) = flushed_quads(system) else { return true };
+    if hidden {
+        // Omit decorative bands rather than submitting degenerate quads.
+        // Leave material changes dirty for the next visible sprite.
+        let batch = system.cpu.regs[0];
+        let first = read_word(system, batch + 0x40);
+        system.memory.write_bytes(batch + 0x38, &at.to_le_bytes());
+        system.memory.write_bytes(batch + 0x3C, &first.to_le_bytes());
+        return true;
+    } else {
+        if clip { clip_ui(&mut quads, source); }
+        fit_ui(&mut quads, source, area, anchor, widen, right);
+    }
+    system.memory.write_bytes(at, &quads);
+    true
 }
 
 /// puts a mirrored element's sprites, drawn for the bottom screen, by its
@@ -2224,6 +3194,23 @@ fn place_portraits(system: &mut System, widen: f32) {
 /// ground battles, other HUD stays the size the game draws it.
 const TOP_HUD: [u32; 7] = [0x009F2F90, 0x009F45FC, 0x009F4800, 0x009F4BD4, 0x009F52C8, 0x009F557C, 0x00725828];
 
+/// Training's defeat and distance counters share one flush across both
+/// bottom corners. Keep each panel's slices and digits on the same anchor.
+const TRAINING_HUD: u32 = 0x0060D66C;
+
+fn place_training_hud(quads: &mut [u8], scale: f32, widen: f32) {
+    for quad in (0..quads.len()).step_by(0x60) {
+        let middle = (0..4).map(|corner| get(quads, quad + corner * 0x18)).sum::<f32>() * 0.25;
+        let anchor = if middle < 200.0 { 0.0 } else { 400.0 };
+        for corner in (quad..quad + 0x60).step_by(0x18) {
+            let x = anchor + (get(quads, corner) - anchor) * scale / widen;
+            let y = 240.0 + (get(quads, corner + 4) - 240.0) * scale;
+            set(quads, corner, x);
+            set(quads, corner + 4, y);
+        }
+    }
+}
+
 /// whether a sprite batch flushed from caller draws the top screen's HUD,
 /// which the narration's line is part of while it is drawn there.
 fn top_hud(system: &System, caller: u32) -> bool {
@@ -2234,12 +3221,45 @@ fn top_hud(system: &System, caller: u32) -> bool {
 /// draw, scaled together toward the edge or corner they sit by, or their
 /// own middle when they are by none, like a marker on an enemy.
 fn shrink_hud(system: &mut System) {
+    // The console status pass flushes the battery sprite separately from
+    // the scene's menu models. Remove it before any widescreen transform.
+    if system.cpu.regs[14] == 0x00725828 {
+        if let Some((at, quads)) = flushed_quads(system) {
+            let kept: Vec<u8> = quads.chunks_exact(0x60).filter(|quad| {
+                !(0..4).all(|corner| {
+                    let at = corner * 0x18;
+                    (382.0..=400.0).contains(&get(quad, at))
+                        && (0.0..=13.0).contains(&get(quad, at + 4))
+                })
+            }).flatten().copied().collect();
+            if kept.len() != quads.len() {
+                let batch = system.cpu.regs[0];
+                let first = read_word(system, batch + 0x40);
+                system.memory.write_bytes(at, &kept);
+                system.memory.write_bytes(batch + 0x38, &(at + kept.len() as u32).to_le_bytes());
+                system.memory.write_bytes(batch + 0x3C, &(first + (kept.len() / 0x60) as u32).to_le_bytes());
+            }
+        }
+    }
     let widen = widening(system);
     match drawing(system) {
         Some(Drawing::Portraits) => return place_portraits(system, widen),
-        Some(Drawing::Mirrored(index)) => return place_mirrored(system, &MIRRORED[index], widen),
+        Some(Drawing::Mirrored(index)) => {
+            if !place_battle_panel(system, index, widen) {
+                place_mirrored(system, &MIRRORED[index], widen);
+            }
+            return;
+        }
         Some(Drawing::PauseMenu(_)) => return place_pause_menu(system, widen),
         _ => {}
+    }
+    if drawing(system).is_none() && system.cpu.regs[14] == TRAINING_HUD {
+        let scale = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.hud_scale);
+        if let Some((at, mut quads)) = flushed_quads(system) {
+            place_training_hud(&mut quads, scale, widen);
+            system.memory.write_bytes(at, &quads);
+        }
+        return;
     }
     // the rest of the top screen's 2D only narrower, on a wider one
     let hud = top_hud(system, system.cpu.regs[14]);
@@ -2334,6 +3354,135 @@ fn shrink_reticle(system: &mut System) {
 mod tests {
     use super::*;
 
+    fn panel_quad(bounds: UiBox) -> Vec<u8> {
+        let mut quad = vec![0; 0x60];
+        for (i, (x, y, u, v)) in [
+            (bounds.min[0], bounds.min[1], 0.0, 1.0),
+            (bounds.max[0], bounds.min[1], 1.0, 1.0),
+            (bounds.min[0], bounds.max[1], 0.0, 0.0),
+            (bounds.max[0], bounds.max[1], 1.0, 0.0),
+        ].into_iter().enumerate() {
+            for (offset, value) in [(0, x), (4, y), (0x10, u), (0x14, v)] {
+                set(&mut quad, i * 0x18 + offset, value);
+            }
+            quad[i * 0x18 + 0xC..i * 0x18 + 0x10].copy_from_slice(&0x80FFFFFFu32.to_le_bytes());
+        }
+        quad
+    }
+
+    #[test]
+    fn dialogue_images_fit_above_pits_head_without_stretching() {
+        for hud in [0.5, 0.7, 1.0] {
+            for widen in [1.0, 16.0 / 9.0 / (5.0 / 3.0), 21.0 / 9.0 / (5.0 / 3.0)] {
+                for source in [UiBox { min: [112.0, 60.0], max: [208.0, 184.0] },
+                    UiBox { min: [53.0, 56.0], max: [273.0, 184.0] }] {
+                    let mut quad = panel_quad(source);
+                    let original = quad.clone();
+                    let area = illustration_area(hud, 0.5);
+                    fit_ui(&mut quad, source, area, 400.0, widen, true);
+                    let physical_x = |at| 400.0 + (get(&quad, at) - 400.0) * widen;
+                    assert!(physical_x(0) >= area.min[0] - 0.001);
+                    assert!((physical_x(0x18) - area.max[0]).abs() < 0.001);
+                    assert!((get(&quad, 4) - 98.0 * hud).abs() < 0.001);
+                    assert!(get(&quad, 0x34) <= 240.0 - 192.0 * 0.5 - 8.0 * hud + 0.001);
+                    let ratio = (physical_x(0x18) - physical_x(0)) / (get(&quad, 0x34) - get(&quad, 4));
+                    assert!((ratio - (source.max[0] - source.min[0]) / (source.max[1] - source.min[1])).abs() < 0.001);
+                    for at in (0..0x60).step_by(0x18) {
+                        assert_eq!(&quad[at + 8..at + 0x18], &original[at + 8..at + 0x18]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn boss_title_tiles_keep_their_seam_and_uvs_when_clipped() {
+        let source = UiBox { min: [0.0; 2], max: [320.0, 64.0] };
+        let mut left = panel_quad(UiBox { min: [0.0; 2], max: [256.0, 240.0] });
+        let mut right = panel_quad(UiBox { min: [256.0, 0.0], max: [320.0, 240.0] });
+        for tile in [&mut left, &mut right] {
+            clip_ui(tile, source);
+            assert_eq!(get(tile, 0x34), 64.0);
+            assert!((get(tile, 0x44) - (1.0 - 64.0 / 240.0)).abs() < 0.001);
+            fit_ui(tile, source, boss_area(0.7, true), 200.0, 1.4, false);
+        }
+        assert_eq!(get(&left, 0x18), get(&right, 0));
+        assert_eq!(get(&left, 0x4C), get(&right, 0x34));
+    }
+
+    #[test]
+    fn boss_pickups_fit_between_the_card_portraits_and_subtitles() {
+        for hud in [0.5, 0.7, 1.0] {
+            for combat in [false, true] {
+                let boss = boss_area(hud, combat);
+                let pickup = pickup_below_boss(hud, 0.5, combat);
+                assert!(pickup.valid());
+                assert!(pickup.min[1] >= boss.max[1] + 8.0 * hud);
+                assert!(pickup.min[0] >= 128.0 && pickup.max[0] <= 272.0);
+                assert!(pickup.max[1] <= 240.0 - 48.0 * hud);
+                let image = illustration_area(hud, 0.5);
+                assert!(boss.max[0] <= image.min[0] || boss.max[1] <= image.min[1]);
+            }
+        }
+    }
+
+    #[test]
+    fn mirrored_calls_expire_by_ui_pass_instead_of_vblank_time() {
+        let kept = MirroredCall { call: Recorded { target: 0, regs: [0; 4], floats: [0; 8], matrices: None }, pass: 10, bounds: None, material: [0; 4] };
+        assert!(kept.for_pass(11));
+        assert!(kept.for_pass(11)); // the shared list serves both eyes
+        assert!(!kept.for_pass(12)); // no intervening bottom recording
+        assert!(!kept.for_pass(10));
+        assert!(!kept.for_pass(9));
+    }
+
+    #[test]
+    fn narration_stays_centered_at_the_shared_training_return_address() {
+        let mut system = armory_test_system();
+        let batch = 0x1400_0000;
+        let vertices = batch + 0x1000;
+        system.cpu.regs[0] = batch;
+        system.cpu.regs[14] = TOP_UI_AFTER_HUD;
+        for (offset, value) in [(0x38, vertices + 0x60), (0x3C, 1), (0x40, 0)] {
+            system.memory.write_bytes(batch + offset, &value.to_le_bytes());
+        }
+        for hud in [0.5, 0.7, 1.0] {
+            for widen in [1.0, 16.0 / 9.0 / (5.0 / 3.0), 21.0 / 9.0 / (5.0 / 3.0)] {
+                let mut quad = panel_quad(UiBox { min: [100.0, 202.0], max: [300.0, 232.0] });
+                system.memory.write_bytes(vertices, &quad);
+                system.aim_mouse = Some(AimMouse { hud_scale: hud, widen, screens: vec![(batch, 0)],
+                    saved: Some(Saved { regs: system.cpu.regs, cpsr: system.cpu.cpsr, vfp: system.cpu.vfp.regs,
+                        drawing: Drawing::Narration, moved: Vec::new() }), ..AimMouse::default() });
+                shrink_hud(&mut system);
+                system.memory.read_bytes(vertices, &mut quad);
+                assert!(((get(&quad, 0) + get(&quad, 0x18)) * 0.5 - 200.0).abs() < 0.001);
+                assert!((get(&quad, 0x18) - get(&quad, 0) - 200.0 * hud / widen).abs() < 0.001);
+                assert!((get(&quad, 0x34) - (240.0 - 8.0 * hud)).abs() < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn training_panels_keep_their_slices_joined() {
+        // Adjacent slices in each corner, as submitted in the shared batch.
+        let boxes = [(2.0, 39.0), (39.0, 87.0), (233.0, 269.0), (269.0, 383.0)];
+        for widen in [1.0, 16.0 / 10.0, 21.0 / 10.0] {
+            let mut quads = vec![0; boxes.len() * 0x60];
+            for (index, (left, right)) in boxes.into_iter().enumerate() {
+                for (corner, (x, y)) in [(left, 200.0), (right, 200.0), (right, 242.0), (left, 242.0)].into_iter().enumerate() {
+                    set(&mut quads, index * 0x60 + corner * 0x18, x);
+                    set(&mut quads, index * 0x60 + corner * 0x18 + 4, y);
+                }
+            }
+            place_training_hud(&mut quads, 0.7, widen);
+            assert_eq!(get(&quads, 0x18), get(&quads, 0x60));
+            assert_eq!(get(&quads, 2 * 0x60 + 0x18), get(&quads, 3 * 0x60));
+            assert!((get(&quads, 4) - 212.0).abs() < 0.001);
+            assert!((get(&quads, 0x18) - 39.0 * 0.7 / widen).abs() < 0.001);
+            assert!((get(&quads, 3 * 0x60 + 0x18) - (400.0 - 17.0 * 0.7 / widen)).abs() < 0.001);
+        }
+    }
+
     /// a touch of the top screen's pause menu touches the bottom screen
     /// where the same thing is, by the edges too, and nothing beside what
     /// went to them.
@@ -2364,7 +3513,7 @@ mod tests {
         aim_mouse.menu_looked = Some(((160.0, 80.0), 10));
         // nothing found there yet
         assert!(!aim_mouse.menu_click(11));
-        aim_mouse.menu_part = Some(Found { hash: 0xA70D_5C64, name: 0x14B9_51A0, element: 0x1406_D9D0 });
+        aim_mouse.menu_part = Some(Found { hash: 0xA70D_5C64, name: 0x14B9_51A0, element: 0x1406_D9D0, part: 0 });
         assert!(aim_mouse.menu_click(11));
         // the menu gone, or the mouse moved since
         assert!(!aim_mouse.menu_click(20));
@@ -2374,6 +3523,220 @@ mod tests {
         aim_mouse.hover(Some((160.0, 80.0)));
         aim_mouse.menu_hover = false;
         assert!(!aim_mouse.menu_click(11));
+    }
+
+    fn clickable_menu() -> AimMouse {
+        let mut mouse = AimMouse { menu_hover: true, ..AimMouse::default() };
+        mouse.hover(Some((160.0, 80.0)));
+        mouse.menu_screen = Some((0, 0x1404_E918, 10));
+        mouse.menu_looked = Some(((160.0, 80.0), 10));
+        mouse.menu_part = Some(Found { hash: FILE_PARTS[0], name: 0x14B9_51A0, element: 0x1406_D9D0, part: 0 });
+        mouse
+    }
+
+    #[test]
+    fn short_menu_press_clicks_only_on_release() {
+        let mut mouse = clickable_menu();
+        assert_eq!(mouse.menu_touch(10, true), None);
+        assert!(!mouse.menu_click);
+        assert_eq!(mouse.menu_touch(11, true), None);
+        assert_eq!(mouse.menu_touch(12, false), None);
+        assert!(std::mem::take(&mut mouse.menu_click));
+        mouse.menu_touch(13, false);
+        assert!(!mouse.menu_click);
+    }
+
+    #[test]
+    fn wheel_fractions_stay_with_the_menu_and_never_click() {
+        let mut mouse = clickable_menu();
+        mouse.menu_screen.as_mut().unwrap().0 = 18;
+        assert!(mouse.scroll_menu(10, [0.0, 0.25]));
+        assert!(mouse.scroll_menu(11, [0.0, 0.75]));
+        assert_eq!(mouse.menu_wheel.unwrap().2, [0.0, 1.0]);
+        assert!(!mouse.menu_click);
+        mouse.menu_screen = Some((18, 0x1405_0000, 12));
+        assert!(mouse.scroll_menu(12, [1.0, 0.0]));
+        assert_eq!(mouse.menu_wheel.unwrap().2, [1.0, 0.0]);
+        assert!(!mouse.scroll_menu(16, [0.0, 1.0]));
+        mouse.captured = true;
+        assert!(!mouse.scroll_menu(12, [0.0, 1.0]));
+        mouse.captured = false;
+        mouse.menu_button_down = true;
+        assert!(!mouse.scroll_menu(12, [0.0, 1.0]));
+        mouse.menu_button_down = false;
+        assert!(!mouse.scroll_menu(12, [f32::NAN, 0.0]));
+    }
+
+    fn armory_test_system() -> System {
+        let mut system = System::new(crate::Config::default());
+        system.memory.map(0x1400_0000, 0x2000_0000, 0x10000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        system
+    }
+
+    #[test]
+    fn armory_rows_follow_the_viewport_and_reject_empty_space() {
+        let mut system = armory_test_system();
+        let list = 0x1400_0000;
+        for (offset, value) in [(4, 30.0f32.to_bits()), (0xFC, 2.3f32.to_bits()), (0xD0, 4)] {
+            system.memory.write_bytes(list + offset, &value.to_le_bytes());
+        }
+        assert_eq!(list_row(&mut system, list, 29.0), None);
+        assert_eq!(list_row(&mut system, list, 31.0), Some(0));
+        assert_eq!(list_row(&mut system, list, 54.0), Some(1));
+        assert_eq!(list_row(&mut system, list, 123.0), None);
+        system.memory.write_bytes(list + 0xEC, &2u32.to_le_bytes());
+        assert_eq!(list_row(&mut system, list, 31.0), Some(2));
+        assert_eq!(list_row(&mut system, list, 77.0), None);
+    }
+
+    #[test]
+    fn fusion_wheel_axes_are_independent_and_clamped_without_activating() {
+        let mut system = armory_test_system();
+        let object = 0x1400_0000;
+        system.memory.write_bytes(object, &0x00CEE148u32.to_le_bytes());
+        system.memory.write_bytes(object + 0x2B40, &20u32.to_le_bytes());
+        scroll_armory(&mut system, object, [3, 0], object + 0x5000);
+        assert_eq!(read_word(&mut system, object + 0x2B28), 3);
+        assert_eq!(read_word(&mut system, object + 0x2B30), 0);
+        scroll_armory(&mut system, object, [0, 2], object + 0x5000);
+        assert_eq!(read_word(&mut system, object + 0x2B28), 3);
+        assert_eq!(read_word(&mut system, object + 0x2B30), 2);
+        scroll_armory(&mut system, object, [-99, 99], object + 0x5000);
+        assert_eq!(read_word(&mut system, object + 0x2B28), 0);
+        assert_eq!(read_word(&mut system, object + 0x2B30), 13);
+        assert_eq!(read_word(&mut system, object + 0x2DEC), 0);
+    }
+
+    #[test]
+    fn part_lookup_ends_at_the_head_instead_of_interpreting_node_colours() {
+        let mut system = armory_test_system();
+        let part = 0x1400_0000;
+        let head = part + 0x1A8;
+        let node = part + 0x300;
+        let component = part + 0x500;
+        for (at, value) in [(head, head), (head + 4, node), (node, component), (node + 8, head),
+            (node + 12, head), (node + 16, 2), (node + 20, 0x00D7681C), (component + 0x1C, 8)] {
+            system.memory.write_bytes(at, &value.to_le_bytes());
+        }
+        assert_eq!(kept_of_kind(&mut system, part, 0x00D7681C), 8);
+        assert_eq!(kept_of_kind(&mut system, part, 0x00D7681D), 0);
+        assert_eq!(kept_of_kind(&mut system, part, 0x00D7681B), 0);
+    }
+
+    #[test]
+    fn held_menu_press_becomes_a_continuous_touch_without_a_click() {
+        let mut mouse = clickable_menu();
+        assert_eq!(mouse.menu_touch(10, true), None);
+        mouse.menu_screen.as_mut().unwrap().2 = 21;
+        assert_eq!(mouse.menu_touch(21, true), None);
+        assert_eq!(mouse.menu_touch(22, true), Some((160.0, 80.0)));
+        mouse.hover(Some((180.0, 100.0)));
+        assert_eq!(mouse.menu_touch(23, true), Some((160.0, 80.0)));
+        mouse.menu_screen.as_mut().unwrap().2 = 25;
+        assert_eq!(mouse.menu_touch(25, true), Some((180.0, 100.0)));
+        assert_eq!(mouse.menu_touch(26, false), None);
+        assert!(!mouse.menu_click);
+        assert!(mouse.menu_looked.is_none());
+    }
+
+    #[test]
+    fn moving_a_menu_press_starts_at_the_grabbed_item() {
+        let mut mouse = clickable_menu();
+        mouse.menu_touch(10, true);
+        mouse.hover(Some((200.0, 120.0)));
+        assert_eq!(mouse.menu_touch(11, true), Some((160.0, 80.0)));
+        mouse.menu_screen.as_mut().unwrap().2 = 14;
+        assert_eq!(mouse.menu_touch(14, true), Some((200.0, 120.0)));
+        mouse.menu_touch(15, false);
+        assert!(!mouse.menu_click);
+    }
+
+    #[test]
+    fn native_controls_touch_immediately_and_cancelled_presses_do_not_click() {
+        let mut mouse = clickable_menu();
+        mouse.menu_part = None;
+        assert_eq!(mouse.menu_touch(10, true), Some((160.0, 80.0)));
+        mouse.menu_part = Some(Found { hash: FILE_PARTS[0], name: 0, element: 0, part: 0 });
+        assert_eq!(mouse.menu_touch(11, true), Some((160.0, 80.0)));
+        mouse.menu_touch(12, false);
+        assert!(!mouse.menu_click);
+        mouse.menu_touch(12, true);
+        mouse.cancel_menu_touch();
+        mouse.menu_touch(13, false);
+        assert!(!mouse.menu_click);
+        mouse.menu_touch(13, true);
+        mouse.menu_screen = Some((1, 0x1405_0000, 14));
+        assert_eq!(mouse.menu_touch(14, true), None);
+        mouse.menu_touch(15, false);
+        assert!(!mouse.menu_click);
+    }
+
+    #[test]
+    fn menu_click_waits_for_the_queued_outline_to_update() {
+        let mut system = System::new(crate::Config::default());
+        let screen = 12;
+        system.cpu.regs[0] = 0x1234;
+        system.cpu.regs[13] = 0x1000;
+        system.cpu.regs[15] = MENU_SCREENS[screen].update;
+        system.aim_mouse = Some(AimMouse {
+            menu_click: true,
+            menu_calls: vec![(QUEUE_PART, [0x1330, 0x2000, 0])],
+            ..AimMouse::default()
+        });
+        next_menu_call(&mut system, screen, 0x1234, 0xFC0);
+        // Return from the last queueing call, before the game's update.
+        outline_menu(&mut system, MENU_SCREENS[screen].update);
+        assert_eq!(system.cpu.regs[15], MENU_SCREENS[screen].update);
+        assert!(system.aim_mouse.as_ref().unwrap().saved.is_none());
+        assert!(system.aim_mouse.as_ref().unwrap().menu_click);
+        // Once the update has applied it, A can use the new choice.
+        next_menu_call(&mut system, screen, 0x1234, 0xFC0);
+        assert_eq!(system.cpu.regs[15], MENU_SCREENS[screen].use_outlined);
+        assert!(!system.aim_mouse.as_ref().unwrap().menu_click);
+    }
+
+    /// a screen whose parts act on touches and not on A takes no click of
+    /// its own: the press over a part touches it there instead.
+    #[test]
+    fn a_touching_screen_is_not_clickable_and_still_outlines() {
+        let idols = MENU_SCREENS.iter().position(|screen| screen.use_outlined == CLICK_TOUCHES).expect("a screen that touches");
+        let mut mouse = clickable_menu();
+        mouse.menu_screen = Some((idols, 0x1405_0000, 10));
+        assert!(!mouse.menu_clickable(11));
+        assert!(mouse.menu_touch(11, true).is_some(), "the press touches where it is");
+        assert!(!mouse.menu_click);
+        // a screen with A stays clickable
+        mouse.menu_screen = Some((12, 0x1405_0000, 10));
+        assert!(mouse.menu_clickable(11));
+    }
+
+    /// a practice screen's part queues the new one and applies it as a key
+    /// does: its name at +0x33C and +0x374's bit 0, then the update's own
+    /// step; one already outlined is left alone.
+    #[test]
+    fn practice_outlines_by_queueing_and_applying_it() {
+        let mut system = System::new(crate::Config::default());
+        let object = 0x0800_1000;
+        let found = Found { hash: 0xADD1_FD65, name: 0x14B8_E528, element: 0, part: 0 };
+        let calls = outline_practice(&mut system, object, found).expect("the queue and its step");
+        assert_eq!(calls, vec![
+            (OUTLINE_PRACTICE_PART, [object + PRACTICE_QUEUE, found.name, 0]),
+            (APPLY_PRACTICE_QUEUE, [object, 0, 0]),
+        ]);
+        // the queue's slot holds what the update's step copies from
+        assert_eq!(calls[0].1[0], object + PRACTICE_QUEUE);
+        assert_eq!(calls[1].1[0], object);
+    }
+
+    /// the vault outlines the part a pointer finds with the same call the
+    /// screen's own pointer handler makes, and A presses the hash it set.
+    #[test]
+    fn the_vault_outlines_with_its_pointer_call() {
+        let mut system = System::new(crate::Config::default());
+        let object = 0x0800_1000;
+        let found = Found { hash: 0x0A9F_A648, name: 0x14B8_E528, element: 0, part: 0 };
+        let calls = outline_vault(&mut system, object, found).expect("its outline call");
+        assert_eq!(calls, vec![(OUTLINE_VAULT, [object, found.name, 1])]);
     }
 
     /// on a top screen 1.4 times wider, what is by an edge is that much

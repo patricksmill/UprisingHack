@@ -193,6 +193,11 @@ impl System {
         self.kernel = saved.kernel;
         let user_dir = std::mem::take(&mut self.services.fs.user_dir);
         self.services = saved.services;
+        for archive in self.services.fs.archives.values_mut() {
+            if let Some(host) = &mut archive.host {
+                host.rebase(&user_dir);
+            }
+        }
         self.services.fs.user_dir = user_dir;
         self.services.fs.files = files;
         // the computer's camera on while the state has a camera capturing
@@ -233,6 +238,7 @@ impl System {
         }
         // what was about to be shown, and the pace of the pictures in
         // between, start again
+        if let Some(mouse) = &mut self.aim_mouse { mouse.reset_menu_after_load(); }
         self.showing = [None, None, None];
         self.pacing = Pacing::default();
         self.prefetch_aborts.clear();

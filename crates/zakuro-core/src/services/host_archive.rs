@@ -55,6 +55,17 @@ impl HostArchive {
         HostArchive { root: root.into() }
     }
 
+    /// the same directory under another user directory: a saved state
+    /// keeps the root of the machine it was made on, maybe another one's
+    /// (Windows' separators), and every root is under a directory named
+    /// user. a root not under one stays.
+    pub fn rebase(&mut self, user_dir: &Path) {
+        let root = self.root.to_string_lossy().into_owned();
+        let parts: Vec<&str> = root.split(['/', '\\']).collect();
+        let Some(at) = parts.iter().rposition(|part| *part == "user") else { return };
+        self.root = parts[at + 1..].iter().filter(|part| !part.is_empty()).fold(user_dir.to_path_buf(), |path, part| path.join(part));
+    }
+
     /// the running title's own save data.
     pub fn save_data(base: &Path, program_id: u64) -> HostArchive {
         HostArchive::at(base.join("savedata").join(format!("{program_id:016X}")))
