@@ -1523,15 +1523,16 @@ pub struct Hardware {
     /// the same writing an image, made the first time it is needed.
     upright_image: Option<Compute>,
     samples: Option<Local>,
-    samplers: QuickMap<(bool, Wrap, Wrap, u32), vk::Sampler>,
+    samplers: QuickMap<(bool, bool, Wrap, Wrap, u32, bool), vk::Sampler>,
     ring: Buffer,
     used: u64,
     readback: Option<Buffer>,
     surfaces: Vec<Surface>,
     /// by the address of the decoded texels.
     textures: HashMap<usize, Texture>,
-    /// textures copied from surfaces, by what they are.
-    copies: HashMap<DrawnTexture, Copied>,
+    /// Textures copied from surfaces, keyed by texture and native footprint.
+    /// Full-resolution copies stay separate from filtered effect inputs.
+    copies: HashMap<(DrawnTexture, bool), Copied>,
     /// texture pack pictures, by the hash of the textures they replace.
     replaced: HashMap<u64, Replaced>,
     /// the bytes those take, and how many they may, half the GPU's memory.
@@ -1572,7 +1573,7 @@ pub struct Hardware {
     /// twins once rather than once a draw.
     twin_draws: Vec<Recorded>,
     /// textures copied from twins, as copies has those from surfaces.
-    twin_copies: HashMap<DrawnTexture, Copied>,
+    twin_copies: HashMap<(DrawnTexture, bool), Copied>,
     /// the batch the draw a draw in between follows staged its vertices
     /// and its indices in, and where, which the one in between reads too.
     twinned_inputs: Option<(u64, Staged, Staged)>,
@@ -2878,36 +2879,14 @@ impl Hardware {
         let key = Arc::as_ptr(&bound.texels) as *const u8 as usize;
         if let Some(texture) = self.textures.get_mut(&key) {
             texture.used = self.batch;
-            return Ok((texture.image.view, 0));
+            return Ok((texture.image.view, bound.width.max(bound.height).ilog2()));
         }
-        self.mark(Work::Upload, false);
-        self.end_rendering();
-        let image = self.image(
-            bound.width,
-            bound.height,
-            COLOR_FORMAT,
-            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC,
-            vk::ImageAspectFlags::COLOR,
-        )?;
-        let size = bound.texels.len() as u64 * 4;
-        let offset = self.stage(size, 16)?;
-        let staging = self.ring(offset, size);
-        for (out, texel) in staging.as_chunks_mut::<4>().0.iter_mut().zip(bound.texels.iter()) {
-            *out = *texel;
-        }
-        let regions = [vk::BufferImageCopy::default()
-            .buffer_offset(offset)
-            .image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
-            .image_extent(vk::Extent3D { width: bound.width, height: bound.height, depth: 1 })];
-        // SAFETY: recording, the region lies inside the ring and the image
-        unsafe {
-            self.unfenced = true;
-            self.device.cmd_copy_buffer_to_image(self.commands, self.ring.buffer, image.image, vk::ImageLayout::GENERAL, &regions)
-        };
-        self.uploads = true;
+        let picture = crate::pack::mipmapped(bound.width, bound.height, bound.texels.as_flattened().to_vec());
+        let smallest = picture.levels.len() as u32 - 1;
+        let image = self.upload_picture(&picture)?;
         let view = image.view;
         self.textures.insert(key, Texture { image, _texels: bound.texels.clone(), used: self.batch });
-        Ok((view, 0))
+        Ok((view, smallest))
     }
 
     /// the image of a texture pack's picture for a texture of size, and
@@ -2981,7 +2960,7 @@ impl Hardware {
             unsafe { std::ptr::copy_nonoverlapping(picture.texels.as_ptr(), staging.mapped, picture.texels.len()) };
             (staging.buffer, 0, Some(staging))
         };
-        let usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST;
+        let usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC;
         let levels = picture.levels.len() as u32;
         let image = match self.image_levels(width, height, levels, COLOR_FORMAT, usage, vk::ImageAspectFlags::COLOR) {
             Ok(image) => image,
@@ -3027,8 +3006,8 @@ impl Hardware {
 
     /// a sampler for a unit, which goes between an image's sizes down to
     /// smallest, as texture pack pictures have them.
-    fn sampler(&mut self, linear: bool, s: Wrap, t: Wrap, smallest: u32) -> Result<vk::Sampler, String> {
-        if let Some(&sampler) = self.samplers.get(&(linear, s, t, smallest)) {
+    fn sampler(&mut self, linear: bool, min_linear: bool, s: Wrap, t: Wrap, smallest: u32, sharpen: bool) -> Result<vk::Sampler, String> {
+        if let Some(&sampler) = self.samplers.get(&(linear, min_linear, s, t, smallest, sharpen)) {
             return Ok(sampler);
         }
         // the border is the shader's to draw, past the edge it clamps
@@ -3038,13 +3017,13 @@ impl Hardware {
             _ => vk::SamplerAddressMode::CLAMP_TO_EDGE,
         };
         let filter = if linear { vk::Filter::LINEAR } else { vk::Filter::NEAREST };
-        let between = if smallest > 0 && linear { vk::SamplerMipmapMode::LINEAR } else { vk::SamplerMipmapMode::NEAREST };
+        let between = if smallest > 0 && min_linear { vk::SamplerMipmapMode::LINEAR } else { vk::SamplerMipmapMode::NEAREST };
         // a picture drawn a little smaller than its own size, as at 3 times
         // the console's resolution, stays as sharp as it is
-        let bias = if smallest > 0 { -0.5 } else { 0.0 };
+        let bias = if smallest > 0 && sharpen { -0.5 } else { 0.0 };
         let info = vk::SamplerCreateInfo::default()
             .mag_filter(filter)
-            .min_filter(filter)
+            .min_filter(if min_linear { vk::Filter::LINEAR } else { vk::Filter::NEAREST })
             .mipmap_mode(between)
             .mip_lod_bias(bias)
             .address_mode_u(mode(s))
@@ -3053,7 +3032,7 @@ impl Hardware {
             .max_lod(smallest as f32);
         // SAFETY: plain object creation on our device
         let sampler = unsafe { self.device.create_sampler(&info, None) }.map_err(vk_error("create a sampler"))?;
-        self.samplers.insert((linear, s, t, smallest), sampler);
+        self.samplers.insert((linear, min_linear, s, t, smallest, sharpen), sampler);
         Ok(sampler)
     }
 
@@ -3794,11 +3773,20 @@ impl Hardware {
                 Some(bound) => {
                     let smallest = match bound.drawn {
                         Some(drawn) => {
+                            let viewport = (super::read_float24(draw.registers, REG_VIEWPORT_WIDTH) * 2.0,
+                                super::read_float24(draw.registers, REG_VIEWPORT_HEIGHT) * 2.0);
+                            // A resized framebuffer effect uses the original pixel
+                            // footprint for its blur. A same-size scene copy keeps
+                            // every scaled sample, including through padded targets.
+                            let native = self.scale > 1 && draw.depth.is_none() && bound.linear
+                                && (drawn.width != draw.width || drawn.height != draw.height)
+                                && ((drawn.width as f32 > viewport.0 && drawn.height as f32 > viewport.1)
+                                    || ((drawn.width as f32) < viewport.0 && (drawn.height as f32) < viewport.1));
                             if real {
-                                views[unit] = self.copy_texture(&drawn, bound, false)?;
+                                views[unit] = self.copy_texture(&drawn, bound, false, native)?;
                             }
                             if twin {
-                                twin_views[unit] = self.copy_texture(&drawn, bound, true)?;
+                                twin_views[unit] = self.copy_texture(&drawn, bound, true, native)?;
                             }
                             0
                         }
@@ -3808,10 +3796,13 @@ impl Hardware {
                             smallest
                         }
                     };
-                    samplers[unit] = self.sampler(bound.linear, bound.wrap_s, bound.wrap_t, smallest)?;
+                    // Texture packs already supply levels for point-filtered
+                    // pictures too; keep those available as before.
+                    let levels = if bound.min_linear || bound.replacement.is_some() { smallest } else { 0 };
+                    samplers[unit] = self.sampler(bound.linear, bound.min_linear, bound.wrap_s, bound.wrap_t, levels, bound.replacement.is_some())?;
                     enabled |= 1 << unit;
                 }
-                None => samplers[unit] = self.sampler(false, Wrap::ClampToEdge, Wrap::ClampToEdge, 0)?,
+                None => samplers[unit] = self.sampler(false, false, Wrap::ClampToEdge, Wrap::ClampToEdge, 0, false)?,
             }
         }
         let tables = match draw.lighting.is_some() || draw.proctex || draw.fog {
@@ -4473,7 +4464,7 @@ impl Hardware {
     /// again whenever the surface changed. a texture reaching past the
     /// surface's last row has the rows past it as memory holds them. a twin
     /// one is copied from the surface's twin, when it has one.
-    fn copy_texture(&mut self, texture: &DrawnTexture, bound: &BoundTexture, twin: bool) -> Result<vk::ImageView, String> {
+    fn copy_texture(&mut self, texture: &DrawnTexture, bound: &BoundTexture, twin: bool, native: bool) -> Result<vk::ImageView, String> {
         self.mark(Work::Copy, false);
         let (source, row) = self.texture_source(texture).ok_or("the buffer a texture was drawn into is gone")?;
         let twin = twin && self.surfaces[source].twinned;
@@ -4490,8 +4481,11 @@ impl Hardware {
         } else {
             None
         };
+        let native = native && matches!(self.surfaces[source].kind, Kind::Color(_));
+        let key = (*texture, native);
+        let n = if native { 1 } else { self.scale };
         let batch = self.batch;
-        if let Some(copy) = self.copies(twin).get_mut(texture) {
+        if let Some(copy) = self.copies(twin).get_mut(&key) {
             let same_memory = match (&copy.memory, &memory) {
                 (Some(kept), Some(now)) => Arc::ptr_eq(kept, now),
                 (kept, now) => kept.is_none() && now.is_none(),
@@ -4501,22 +4495,21 @@ impl Hardware {
                 return Ok(copy.image.view);
             }
         }
-        if !self.copies(twin).contains_key(texture) {
+        if !self.copies(twin).contains_key(&key) {
             let usage = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST;
             self.end_rendering();
-            let image = self.image(texture.width * self.scale, texture.height * self.scale, COLOR_FORMAT, usage, vk::ImageAspectFlags::COLOR)?;
-            self.copies(twin).insert(*texture, Copied { image, surface: source, generation, memory: None, used: batch });
+            let image = self.image(texture.width * n, texture.height * n, COLOR_FORMAT, usage, vk::ImageAspectFlags::COLOR)?;
+            self.copies(twin).insert(key, Copied { image, surface: source, generation, memory: None, used: batch });
         }
-        let (view, image) = (self.copies(twin)[texture].image.view, self.copies(twin)[texture].image.image);
+        let (view, image) = (self.copies(twin)[&key].image.view, self.copies(twin)[&key].image.image);
         if memory.is_some() {
             // the rows past the surface as memory has them, scaled up, the
             // copy's rows run as memory's do
             self.texture(bound)?;
-            let key = Arc::as_ptr(&bound.texels) as *const u8 as usize;
-            let from = self.textures.get(&key).ok_or("a texture reaching past the buffer drawn into it was not uploaded")?.image.image;
+            let memory_key = Arc::as_ptr(&bound.texels) as *const u8 as usize;
+            let from = self.textures.get(&memory_key).ok_or("a texture reaching past the buffer drawn into it was not uploaded")?.image.image;
             self.end_rendering();
             self.barrier();
-            let n = self.scale;
             let rect = |n: u32| {
                 let (width, top, bottom) = ((texture.width * n) as i32, (rows * n) as i32, (texture.height * n) as i32);
                 [vk::Offset3D { x: 0, y: top, z: 0 }, vk::Offset3D { x: width, y: bottom, z: 1 }]
@@ -4543,17 +4536,20 @@ impl Hardware {
         } else {
             // the texture's rows run top first, the surface's bottom first,
             // so the copy flips them, and its pixels round to the format as
-            // memory would have them
+            // memory would have them. Effect inputs average the scaled
+            // samples within each guest pixel before bilinear filtering.
             let format = format_index(texture.format);
-            let n = self.scale;
             let (width, height) = ((texture.width * n) as i32, (rows * n) as i32);
-            let (row, source_height) = ((row * n) as i32, (self.surfaces[source].height * n) as i32);
-            let constants = [width, height, height, height, 1, 1, 1, format, format, row, source_height];
+            let source_scale = self.scale as i32;
+            let footprint = if native { source_scale } else { 1 };
+            let (row, source_height) = ((row as i32 * source_scale), self.surfaces[source].height as i32 * source_scale);
+            let constants = [width, height, rows as i32 * source_scale, height,
+                footprint, footprint, 1, format, format, row, source_height];
             let from = self.surface_view(source, twin);
             self.dispatch_transfer((from, view), constants, (texture.width * n, rows * n))?;
         }
         self.uploads = true;
-        if let Some(copy) = self.copies(twin).get_mut(texture) {
+        if let Some(copy) = self.copies(twin).get_mut(&key) {
             copy.surface = source;
             copy.generation = generation;
             copy.memory = memory;
@@ -4563,7 +4559,7 @@ impl Hardware {
     }
 
     /// the textures copied from surfaces, or from their twins.
-    fn copies(&mut self, twin: bool) -> &mut HashMap<DrawnTexture, Copied> {
+    fn copies(&mut self, twin: bool) -> &mut HashMap<(DrawnTexture, bool), Copied> {
         match twin {
             true => &mut self.twin_copies,
             false => &mut self.copies,
@@ -5173,7 +5169,7 @@ impl Hardware {
             }
         }
         for twin in [false, true] {
-            let stale: Vec<DrawnTexture> = self.copies(twin).iter().filter(|(_, c)| batch - c.used > 600).map(|(&k, _)| k).collect();
+            let stale: Vec<(DrawnTexture, bool)> = self.copies(twin).iter().filter(|(_, c)| batch - c.used > 600).map(|(&k, _)| k).collect();
             for key in stale {
                 if let Some(copy) = self.copies(twin).remove(&key) {
                     self.destroy_image(&copy.image);
@@ -6059,6 +6055,88 @@ mod tests {
         fn guard_writes(&mut self, _addr: u32, _len: u32) {
             self.guards += 1;
         }
+    }
+
+    fn read_test_image(gpu: &mut Hardware, image: vk::Image, width: u32, height: u32) -> Vec<u8> {
+        gpu.begin().unwrap();
+        gpu.end_rendering();
+        gpu.barrier();
+        let buffer = gpu.buffer((width * height * 4) as u64, vk::BufferUsageFlags::TRANSFER_DST, true).unwrap();
+        let regions = [vk::BufferImageCopy::default()
+            .image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
+            .image_extent(vk::Extent3D { width, height, depth: 1 })];
+        // SAFETY: the complete RGBA image fits the mapped readback buffer.
+        unsafe {
+            gpu.device.cmd_copy_image_to_buffer(gpu.commands, image, vk::ImageLayout::GENERAL, buffer.buffer, &regions);
+            let barriers = [vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS).src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::HOST).dst_access_mask(vk::AccessFlags2::HOST_READ)];
+            gpu.device.cmd_pipeline_barrier2(gpu.commands, &vk::DependencyInfo::default().memory_barriers(&barriers));
+        }
+        gpu.submit().unwrap();
+        gpu.wait().unwrap();
+        // SAFETY: the GPU has finished writing the buffer; it remains mapped.
+        let pixels = unsafe {
+            if buffer.incoherent {
+                let ranges = [vk::MappedMemoryRange::default().memory(buffer.memory).size(vk::WHOLE_SIZE)];
+                gpu.device.invalidate_mapped_memory_ranges(&ranges).unwrap();
+            }
+            std::slice::from_raw_parts(buffer.mapped, buffer.size as usize).to_vec()
+        };
+        gpu.destroy_buffer(&buffer);
+        pixels
+    }
+
+    /// A glow input averages each guest pixel's samples, without replacing
+    /// the sharp scene copy, reversing rows, or reusing an old generation.
+    #[test]
+    fn effect_copies_filter_the_native_footprint_and_keep_sharp_copies() {
+        let Ok(mut gpu) = Hardware::new() else { return };
+        assert_eq!(gpu.set_scale(3), 3);
+        let mut memory = AliasMemory { bytes: vec![0; 8192], stores: 0, guards: 0 };
+        gpu.begin().unwrap();
+        let source = gpu.surface(&mut memory, 256, (8, 16), Kind::Color(ColorFormat::Rgba8), true).unwrap();
+        let texture = DrawnTexture { addr: 256 + 8 * 8 * 4, width: 8, height: 8, format: ColorFormat::Rgba8 };
+        let bound = BoundTexture { texels: Arc::default(), drawn: Some(texture), linear: true, min_linear: true,
+            wrap_s: Wrap::ClampToEdge, wrap_t: Wrap::ClampToEdge, width: 8, height: 8,
+            border: [0.0; 4], replacement: None };
+        for red in [255, 120] {
+            gpu.begin().unwrap();
+            let size = 24 * 48 * 4;
+            let offset = gpu.stage(size, 16).unwrap();
+            for (i, pixel) in gpu.ring(offset, size).as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                let (x, y) = (i % 24, i / 24);
+                *pixel = [if x % 3 == 0 { red } else { 0 }, (y / 3 * 12) as u8, (x / 3 * 17) as u8, 255];
+            }
+            gpu.end_rendering();
+            gpu.barrier();
+            let regions = [vk::BufferImageCopy::default().buffer_offset(offset)
+                .image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
+                .image_extent(vk::Extent3D { width: 24, height: 48, depth: 1 })];
+            // SAFETY: the staged pixels exactly cover the scaled source image.
+            unsafe { gpu.device.cmd_copy_buffer_to_image(gpu.commands, gpu.ring.buffer,
+                gpu.surfaces[source].image.image, vk::ImageLayout::GENERAL, &regions) };
+            gpu.surfaces[source].changed();
+            gpu.surfaces[source].twinned = false;
+            gpu.make_twin(source).unwrap();
+            for twin in [false, true] {
+                for native in [true, false] {
+                    gpu.begin().unwrap();
+                    gpu.copy_texture(&texture, &bound, twin, native).unwrap();
+                    let image = gpu.copies(twin)[&(texture, native)].image.image;
+                    let n = if native { 1 } else { 3 };
+                    let pixels = read_test_image(&mut gpu, image, 8 * n, 8 * n);
+                    for y in 0..8 * n {
+                        for x in 0..8 * n {
+                            let at = ((y * 8 * n + x) * 4) as usize;
+                            let r = if native { red / 3 } else if x % 3 == 0 { red } else { 0 };
+                            assert_eq!(&pixels[at..at + 4], &[r, ((7 - y / n) * 12) as u8, (x / n * 17) as u8, 255]);
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(memory.stores, 0, "filtered copies must stay on the GPU");
     }
 
     #[test]

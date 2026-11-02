@@ -34,6 +34,9 @@ pub const REG_SHADER_OUTPUT_MAP: usize = 0x0050;
 pub const REG_SHADER_OUTPUT_MAP_END: usize = 0x0056;
 
 pub const REG_VIEWPORT_XY: usize = 0x0068;
+pub const REG_SCISSOR_MODE: usize = 0x0065;
+pub const REG_SCISSOR_START: usize = 0x0066;
+pub const REG_SCISSOR_END: usize = 0x0067;
 
 pub const REG_TEXTURE_CONFIG: usize = 0x0080;
 pub const REG_TEXTURE0_BORDER_COLOR: usize = 0x0081;

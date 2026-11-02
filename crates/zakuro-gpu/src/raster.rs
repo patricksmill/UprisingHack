@@ -811,6 +811,9 @@ fn geometry_stage(
     vertex_outputs: impl Iterator<Item = [Vec4; 16]>,
 ) -> Vec<Vertex> {
     let mode = registers[REG_GS_CONFIG] & 0xFF;
+    if mode == 2 {
+        return fixed_geometry_stage(registers, unit, map, vertex_outputs);
+    }
     if mode != 0 {
         log::warn!("geometry shader mode {mode} is not implemented");
         return Vec::new();
@@ -862,6 +865,50 @@ fn geometry_stage(
         for triangle in triangles {
             for outputs in triangle {
                 vertices.push(plan.vertex(outputs));
+            }
+        }
+    }
+    vertices
+}
+
+/// Fixed primitives deliver packed vertex outputs to float uniforms rather
+/// than input registers. Each complete group invokes the geometry shader.
+fn fixed_geometry_stage(
+    registers: &[u32],
+    unit: &ShaderUnit,
+    map: &OutputMap,
+    vertex_outputs: impl Iterator<Item = [Vec4; 16]>,
+) -> Vec<Vertex> {
+    let config = registers[REG_GS_CONFIG];
+    let count = (((config >> 8) & 0xF) + 1) as usize;
+    let stride = (((config >> 12) & 0xF) + 1) as usize;
+    let start = ((config >> 16) & 0xFF) as usize;
+    let per_vertex = ((registers[REG_VS_OUTPUT_TOTAL] & 0xF) + 1) as usize;
+    if stride != per_vertex || start + count * stride > shader::FLOAT_UNIFORMS {
+        log::warn!("invalid fixed geometry shader configuration 0x{config:08X}");
+        return Vec::new();
+    }
+
+    let plan = VertexPlan::new(map, registers[REG_GS_BLOCK + SHADER_OUTPUT_MASK]);
+    let mut unit = unit.clone();
+    unit.prepare();
+    let mut state = shader::ShaderState::new();
+    let mut vertices = Vec::new();
+    let mut received = 0;
+    for outputs in vertex_outputs {
+        let offset = start + received * stride;
+        unit.float_uniforms[offset..offset + stride].copy_from_slice(&outputs[..stride]);
+        received += 1;
+        if received != count {
+            continue;
+        }
+        received = 0;
+        let mut emitter = shader::Emitter::default();
+        shader::run_geometry(&unit, &mut state, &mut emitter);
+        unit.bool_uniforms |= 1 << 15;
+        for triangle in emitter.triangles {
+            for outputs in triangle {
+                vertices.push(plan.vertex(&outputs));
             }
         }
     }
@@ -981,6 +1028,8 @@ struct BoundTexture {
     drawn: Option<DrawnTexture>,
     /// bilinear rather than point sampling when magnifying.
     linear: bool,
+    /// bilinear filtering when reducing a texture.
+    min_linear: bool,
     wrap_s: Wrap,
     wrap_t: Wrap,
     width: u32,
@@ -1384,6 +1433,7 @@ fn empty_texture() -> BoundTexture {
         texels: TEXELS.get_or_init(|| Arc::from([[0u8; 4]].as_slice())).clone(),
         drawn: None,
         linear: false,
+        min_linear: false,
         wrap_s: Wrap::Repeat,
         wrap_t: Wrap::Repeat,
         width: 1,
@@ -1450,6 +1500,7 @@ fn bind_texture<M: GpuMemory>(
         texels,
         drawn,
         linear: config & 0x2 != 0,
+        min_linear: config & 0x4 != 0,
         wrap_t: Wrap::from_raw(config >> 8),
         wrap_s: Wrap::from_raw(config >> 12),
         width,
@@ -2475,8 +2526,10 @@ fn rasterize<M: GpuMemory>(registers: &[u32], memory: &mut M, resources: &mut Re
     let dimensions = registers[REG_FRAMEBUFFER_DIMENSIONS];
     let viewport_right = (viewport_x + viewport_width).round() as i32;
     let viewport_top = (viewport_y + viewport_height).round() as i32;
-    let buffer_width = (dimensions & 0x7FF).max(viewport_right.max(1) as u32);
-    let buffer_height = (((dimensions >> 12) & 0x3FF) + 1).max(viewport_top.max(1) as u32);
+    // An offset viewport can extend outside the framebuffer. Its extent
+    // must not change the tile stride or the height of that framebuffer.
+    let buffer_width = (dimensions & 0x7FF).max(1);
+    let buffer_height = ((dimensions >> 12) & 0x3FF) + 1;
     let (target_width, target_height) = (buffer_width, buffer_height);
 
     // draws are far more frequent than fills or transfers (thousands per
@@ -2533,14 +2586,23 @@ fn rasterize<M: GpuMemory>(registers: &[u32], memory: &mut M, resources: &mut Re
     let tex_env = resources.tex_env.read(registers);
     // the lighting only matters to a draw whose combiners read it.
     let lighting = if tex_env.reads_lighting() { resources.lighting.read(registers) } else { None };
+    let mut bounds = [(viewport_x.round() as i32).max(0), (viewport_y.round() as i32).max(0),
+        viewport_right.min(buffer_width as i32), viewport_top.min(buffer_height as i32)];
+    if registers[REG_SCISSOR_MODE] & 3 == 3 {
+        let (start, end) = (registers[REG_SCISSOR_START], registers[REG_SCISSOR_END]);
+        bounds[0] = bounds[0].max((start & 0x3FF) as i32);
+        bounds[1] = bounds[1].max(((start >> 16) & 0x3FF) as i32);
+        bounds[2] = bounds[2].min((end & 0x3FF) as i32 + 1);
+        bounds[3] = bounds[3].min(((end >> 16) & 0x3FF) as i32 + 1);
+        log::trace!("scissor {start:08X}..{end:08X}, viewport {viewport:?}, target {buffer_width}x{buffer_height}, bounds {bounds:?}");
+    }
     let state = DrawState {
         target: ColorTarget {
             addr: target_addr,
-            // drawing stays inside the viewport.
-            left: (viewport_x.round() as i32).max(0),
-            bottom: (viewport_y.round() as i32).max(0),
-            right: viewport_right.min(buffer_width as i32),
-            top: viewport_top.min(buffer_height as i32),
+            left: bounds[0],
+            bottom: bounds[1],
+            right: bounds[2],
+            top: bounds[3],
             buffer_width,
             buffer_height,
             format: target_format,
@@ -3059,6 +3121,63 @@ mod tests {
     const GREEN: Vec4 = [0.0, 1.0, 0.0, 1.0];
     const BLUE: Vec4 = [0.0, 0.0, 1.0, 1.0];
 
+    #[test]
+    fn inclusive_scissor_clips_color_and_depth_inside_the_viewport() {
+        let mut registers = target_registers();
+        registers[REG_SCISSOR_MODE] = 3;
+        registers[REG_SCISSOR_START] = 2 | 1 << 16;
+        registers[REG_SCISSOR_END] = 4 | 5 << 16;
+        registers[REG_DEPTH_COLOR_MASK] |= 1 << 12;
+        registers[REG_DEPTHMAP_ENABLE] = 1;
+        registers[REG_VIEWPORT_DEPTH_RANGE] = float24(-1.0);
+        let mut memory = ConsoleMemory::default();
+        let written = rasterize_shaded(&registers, &mut memory, &mut Resources::default(), &cover(-0.5, RED));
+        assert_eq!(written, 15);
+        assert_eq!(pixels(&mut memory).iter().filter(|&&p| p == [255, 0, 0, 255]).count(), 15);
+        let mut depth = [0; 256];
+        memory.read(DEPTH, &mut depth);
+        assert_eq!(depth.chunks_exact(4).filter(|p| p[..3] != [0; 3]).count(), 15);
+        registers[REG_SCISSOR_MODE] = 0;
+        assert_eq!(rasterize_shaded(&registers, &mut memory, &mut Resources::default(), &cover(-0.5, GREEN)), 64);
+        assert!(pixels(&mut memory).iter().all(|&p| p == [0, 255, 0, 255]));
+    }
+
+    #[test]
+    fn an_oversized_viewport_keeps_the_framebuffer_tile_stride() {
+        let mut registers = target_registers();
+        registers[REG_VIEWPORT_WIDTH] = float24(8.0);
+        registers[REG_VIEWPORT_HEIGHT] = float24(8.0);
+        let mut memory = ConsoleMemory::default();
+        assert_eq!(rasterize_shaded(&registers, &mut memory, &mut Resources::default(), &cover(-0.5, RED)), 64);
+        assert!(pixels(&mut memory).iter().all(|&p| p == [255, 0, 0, 255]));
+        let mut after = [0; 32];
+        memory.read(COLOR + 256, &mut after);
+        assert_eq!(after, [0; 32]);
+    }
+
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn scissor_and_offset_viewports_match_on_the_gpu() {
+        let Ok(hardware) = hardware::Hardware::new() else { return };
+        let mut resources = Resources { hardware: Some(hardware), ..Default::default() };
+        for (offset, extent, clip) in [(0, 4.0, 3), (0, 8.0, 3), (1020 | 1022 << 16, 8.0, 3), (0, 4.0, 0)] {
+            let mut registers = target_registers();
+            registers[REG_VIEWPORT_XY] = offset;
+            registers[REG_VIEWPORT_WIDTH] = float24(extent);
+            registers[REG_VIEWPORT_HEIGHT] = float24(extent);
+            registers[REG_SCISSOR_MODE] = clip;
+            registers[REG_SCISSOR_START] = 2 | 1 << 16;
+            registers[REG_SCISSOR_END] = 4 | 5 << 16;
+            let mut cpu = ConsoleMemory::default();
+            let mut gpu = ConsoleMemory::default();
+            rasterize_shaded(&registers, &mut cpu, &mut Resources::default(), &cover(-0.5, RED));
+            resources.hardware.as_mut().unwrap().forget();
+            rasterize_shaded(&registers, &mut gpu, &mut resources, &cover(-0.5, RED));
+            resources.hardware.as_mut().unwrap().flush(&mut gpu).unwrap();
+            assert_eq!(pixels(&mut cpu), pixels(&mut gpu));
+        }
+    }
+
     /// titles map depth with a scale of -1, so near is 1, and keep the
     /// nearer surface with a GREATER test against a buffer cleared to 0.
     #[test]
@@ -3209,6 +3328,7 @@ mod tests {
             drawn: None,
             texels: vec![[0xFF; 4]; 8 * 8].into(),
             linear: false,
+            min_linear: false,
             wrap_s: wrap,
             wrap_t: wrap,
             width: 8,
@@ -5091,6 +5211,65 @@ mod tests {
             }
             program
         });
+    }
+
+    /// A heavily repeated texture must converge to its average instead of
+    /// beating against the output pixel grid. Magnification has its own bit.
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn minified_grain_is_averaged_without_changing_magnification() {
+        const TEXTURE: u32 = 0x8_0000;
+        for scale in [1, 3] {
+            let Ok(mut gpu) = hardware::Hardware::new() else { return };
+            assert_eq!(gpu.set_scale(scale), scale);
+            let mut resources = Resources { hardware: Some(gpu), ..Default::default() };
+            let mut memory = ConsoleMemory::default();
+            let mut texels = vec![0; 64 * 64 * 4];
+            for y in 0..64 {
+                for x in 0..64 {
+                    let value = if (x + y) % 2 == 0 { 0 } else { 255 };
+                    let at = crate::format::morton_offset(x, y, 64, 4) as usize;
+                    ColorFormat::Rgba8.encode([value, value, value, 255], &mut texels[at..at + 4]);
+                }
+            }
+            memory.write(TEXTURE, &texels);
+            let mut registers = target_registers();
+            registers[REG_TEXTURE_CONFIG] = 1;
+            registers[REG_TEXTURE0_ADDRESS] = TEXTURE >> 3;
+            registers[REG_TEXTURE0_DIMENSIONS] = 64 | (64 << 16);
+            registers[0x0C0] = 0x0003_0003;
+            for stage in [0x0C8, 0x0D0, 0x0D8, 0x0F0, 0x0F8] {
+                registers[stage] = 0x000F_000F;
+            }
+            for linear in [false, true] {
+                registers[TEXTURE_UNIT_BASES[0] + 2] = 0x2204 | ((linear as u32) << 1);
+                let mut triangle = cover(-0.5, [1.0; 4]);
+                for v in &mut triangle {
+                    v.texcoords[0] = [
+                        (v.clip[0] + 1.0) * 500.15 + 0.25 / 64.0,
+                        (v.clip[1] + 1.0) * 500.15 + 0.25 / 64.0,
+                    ];
+                }
+                rasterize_shaded(&registers, &mut memory, &mut resources, &triangle);
+                resources.hardware.as_mut().unwrap().flush(&mut memory).unwrap();
+                for pixel in pixels(&mut memory) {
+                    assert!(pixel[..3].iter().all(|&c| c.abs_diff(128) <= 1), "scale {scale}, mag {linear}: {pixel:?}");
+                    assert_eq!(pixel[3], 255);
+                }
+                // Magnify the same texture: 4x4 texels across an 8x8 target.
+                // A quarter-texel offset distinguishes point from bilinear.
+                for v in &mut triangle {
+                    v.texcoords[0] = [(v.clip[0] + 1.0) / 32.0 + 0.25 / 64.0,
+                        (v.clip[1] + 1.0) / 32.0 + 0.25 / 64.0];
+                }
+                rasterize_shaded(&registers, &mut memory, &mut resources, &triangle);
+                resources.hardware.as_mut().unwrap().flush(&mut memory).unwrap();
+                if scale == 1 {
+                    let result = pixels(&mut memory);
+                    assert_eq!(result.iter().any(|p| p[0] > 1 && p[0] < 254), linear, "magnification bit must remain independent");
+                }
+            }
+        }
     }
 
     /// a texture that is rows of a buffer the GPU just drew samples the

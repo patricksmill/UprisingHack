@@ -1541,6 +1541,15 @@ mod tests {
     /// whole target from it, the way particle systems expand their points.
     #[test]
     fn a_geometry_shader_expands_a_point() {
+        geometry_shader_draws_triangle(false);
+    }
+
+    #[test]
+    fn a_fixed_geometry_shader_reads_vertices_from_uniforms() {
+        geometry_shader_draws_triangle(true);
+    }
+
+    fn geometry_shader_draws_triangle(fixed: bool) {
         let mut memory = FlatMemory(vec![0; 0x2000]);
         let mut renderer = SoftwareRenderer::default();
         let mut gpu = gpu_for_immediate_draws(&mut memory, &mut renderer);
@@ -1550,14 +1559,14 @@ mod tests {
         let emit = 0x2A << 26;
         let program = [
             setemit(0, false),
-            mov(0, 0x20), // o0 = c0
-            mov(1, 1),    // o1 = v1, the point's color
+            mov(0, if fixed { 0x24 } else { 0x20 }),
+            mov(1, if fixed { 0x25 } else { 1 }),
             emit,
             setemit(1, false),
-            mov(0, 0x21),
+            mov(0, if fixed { 0x26 } else { 0x21 }),
             emit,
             setemit(2, true),
-            mov(0, 0x22),
+            mov(0, if fixed { 0x28 } else { 0x22 }),
             emit,
             0x22 << 26,
         ];
@@ -1571,6 +1580,12 @@ mod tests {
             gpu.write_internal(&mut memory, &mut renderer, register, value, 0xF)
         };
         write(REG_GEOSTAGE_CONFIG, 2);
+        if fixed {
+            // Three vertices, two outputs each, starting at c4. Deliberately
+            // keep the input-register count at one vertex: it is irrelevant
+            // when the geometry shader receives its vertices in uniforms.
+            write(REG_GS_CONFIG, 2 | (2 << 8) | (1 << 12) | (4 << 16));
+        }
         write(REG_VS_COM_MODE, 1);
         write(REG_VS_OUTPUT_TOTAL, 1); // two attributes per vertex
         write(REG_GS_BLOCK + SHADER_INPUT_CONFIG, 1); // one vertex per invocation
@@ -1579,7 +1594,16 @@ mod tests {
         write(REG_FIXED_ATTRIBUTE_INDEX, 0xF);
 
         let green = [0.0, 1.0, 0.0, 1.0];
-        send_vertex(&mut gpu, &mut memory, &mut renderer, &[[0.0, 0.0, 0.0, 1.0], green]);
+        if fixed {
+            // Two invocations exercise refilling the same uniform range.
+            for color in [[1.0, 0.0, 0.0, 1.0], green] {
+                for position in [[-1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [-1.0, 3.0, 0.0, 1.0]] {
+                    send_vertex(&mut gpu, &mut memory, &mut renderer, &[position, color]);
+                }
+            }
+        } else {
+            send_vertex(&mut gpu, &mut memory, &mut renderer, &[[0.0, 0.0, 0.0, 1.0], green]);
+        }
         gpu.write_internal(&mut memory, &mut renderer, 0x245, 1, 0xF);
 
         for pixel in memory.0[COLOR_BUFFER as usize..][..8 * 8 * 4].chunks(4) {

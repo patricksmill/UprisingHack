@@ -615,6 +615,17 @@ fn read_png(path: &Path, flipped: bool, kept: u32) -> Result<Picture, String> {
     Ok(Picture { width: top.width, height: top.height, texels, levels })
 }
 
+/// Builds minification levels for decoded guest textures too. Their base
+/// level stays unchanged, so magnified sprites and text retain their detail.
+pub(crate) fn mipmapped(width: u32, height: u32, mut texels: Vec<u8>) -> Picture {
+    let mut levels = vec![Level { offset: 0, width, height }];
+    texels.reserve(texels.len() / 3 + 64);
+    while let Some(&above) = levels.last().filter(|level| level.width > 1 || level.height > 1) {
+        levels.push(halve(&mut texels, above));
+    }
+    Picture { width, height, texels, levels }
+}
+
 /// adds the level half the size of above to texels, each of its texels the
 /// average of 2x2 of above's, the colors weighed by their alpha, so that
 /// the color of clear texels, black in most pictures, does not darken the
