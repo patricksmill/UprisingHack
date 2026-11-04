@@ -100,7 +100,7 @@ pub fn run(linked: Option<Linked>) {
         last_title_update: Instant::now(),
         next_frame: Instant::now(),
         skipped: 0,
-        shown: 0,
+        shown: FrameRate::new(),
         spent: Spent::default(),
         paused: false,
         fast_forward_key: false,
@@ -317,9 +317,9 @@ struct Running {
     /// place of the keyboard's and the controllers', and the frames run.
     replay: Option<zakuro_core::replay::Replay>,
     frame: u64,
-    /// frames run since counting_since, for the frame rate.
-    frames: u32,
-    counting_since: Instant,
+    /// the game's own frames a second, counted as they run.
+    rate: FrameRate,
+    /// the last rate the game's count read, kept for the menu.
     fps: f32,
 }
 
@@ -332,20 +332,13 @@ impl Running {
             recorder: None,
             replay: None,
             frame: 0,
-            frames: 0,
-            counting_since: Instant::now(),
+            rate: FrameRate::new(),
             fps: 0.0,
         }
     }
 
     fn count_frame(&mut self) {
-        self.frames += 1;
-        let elapsed = self.counting_since.elapsed();
-        if elapsed >= Duration::from_millis(500) {
-            self.fps = self.frames as f32 / elapsed.as_secs_f32();
-            self.frames = 0;
-            self.counting_since = Instant::now();
-        }
+        self.rate.count();
     }
 }
 
@@ -398,8 +391,8 @@ struct App {
     next_frame: Instant,
     /// frames in a row not shown while catching up.
     skipped: u32,
-    /// frames shown since the title was last updated.
-    shown: u32,
+    /// the pictures shown a second, the host's in High Refresh Mode.
+    shown: FrameRate,
     /// how long emulating and showing frames took since the title was last
     /// updated, for the frame rate's log.
     spent: Spent,
@@ -480,6 +473,46 @@ impl std::fmt::Display for Times {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mean = self.total.as_secs_f64() * 1e3 / self.count.max(1) as f64;
         write!(f, "{mean:.1} ms, at most {:.1}", self.longest.as_secs_f64() * 1e3)
+    }
+}
+
+/// how many of something go by a second, counted between reads, the game's
+/// own frames and the host's pictures kept apart.
+struct FrameRate {
+    /// counted since the last read.
+    counted: u32,
+    /// when the count started.
+    since: Instant,
+    /// what the last read gave a second.
+    rate: f32,
+}
+
+impl FrameRate {
+    fn new() -> FrameRate {
+        FrameRate { counted: 0, since: Instant::now(), rate: 0.0 }
+    }
+
+    /// one more went by.
+    fn count(&mut self) {
+        self.counted += 1;
+    }
+
+    /// what went by a second since the last read, once half a second has
+    /// gone by, and the last rate before that.
+    fn read(&mut self, now: Instant) -> f32 {
+        let elapsed = now.saturating_duration_since(self.since);
+        if elapsed < Duration::from_millis(500) {
+            return self.rate;
+        }
+        self.rate = self.counted as f32 / elapsed.as_secs_f32();
+        self.counted = 0;
+        self.since = now;
+        self.rate
+    }
+
+    /// the rate the last read gave.
+    fn rate(&self) -> f32 {
+        self.rate
     }
 }
 
@@ -1614,7 +1647,7 @@ impl App {
             // behind, at the console's rate on average
             self.next_shown = (self.next_shown + FRAME_TIME).max(Instant::now() - FRAME_TIME);
             self.spent.showing.add(start.elapsed());
-            self.shown += 1;
+            self.shown.count();
         }
     }
 
@@ -1640,20 +1673,22 @@ impl App {
             let start = Instant::now();
             self.present(event_loop, true);
             self.spent.showing.add(start.elapsed());
-            self.shown += 1;
+            self.shown.count();
             self.next_host = next_host_time(self.next_host, self.host_step, Instant::now());
         }
     }
 
     /// the frame rate's log and the window's title, every half second.
     fn report(&mut self, playing: bool) {
-        if self.last_title_update.elapsed() < Duration::from_millis(500) {
+        let now = Instant::now();
+        if now.saturating_duration_since(self.last_title_update) < Duration::from_millis(500) {
             return;
         }
-        let shown = self.shown as f32 / self.last_title_update.elapsed().as_secs_f32();
-        self.shown = 0;
-        self.last_title_update = Instant::now();
-        if let Some(game) = &self.game {
+        let shown = self.shown.read(now);
+        self.last_title_update = now;
+        if let Some(game) = &mut self.game {
+            // read even when no frame ran, so a stall drops the game's rate
+            game.fps = game.rate.read(now);
             let Spent { emulating, showing } = std::mem::take(&mut self.spent);
             log::debug!(
                 target: "zakuro::fps",
@@ -1918,9 +1953,16 @@ impl App {
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
             .map(ago);
         let high_refresh_blocked = self.high_refresh_blocker();
+        // the host's pictures read apart from the game's own frames, so a
+        // dropped picture and a dropped frame can be told apart
+        let high_refresh = self.high_refresh();
+        let shown = self.shown.rate();
         let (Some(gui), Some(window)) = (&mut self.gui, &self.window) else { return Overlay::default() };
         let show_fps = self.settings.show_fps;
-        let game = self.game.as_ref().map(|game| (game.name.clone(), game.fps, game.system.recompiled.is_some()));
+        let game = self.game.as_ref().map(|game| {
+            let fps = menus::FpsReadout::new(high_refresh, shown, game.fps);
+            (game.name.clone(), fps, game.system.recompiled.is_some())
+        });
         let fast = self.fast_forwarding;
         let keyboard = self.game.as_ref().and_then(|game| game.system.keyboard_request().cloned());
         let room = self.room.as_ref().filter(|_| self.menus.multiplayer_open).map(|connection| {
@@ -2172,5 +2214,46 @@ mod tests {
         assert!(!skips_showing(true, true, false, 0), "mailbox shows every frame");
         assert!(!skips_showing(true, false, true, 0), "on time");
         assert!(!skips_showing(false, true, true, 0), "paused");
+    }
+
+    /// without High Refresh Mode the readout is the game's own rate.
+    #[test]
+    fn the_frame_rate_is_the_game_rate_with_high_refresh_off() {
+        assert_eq!(menus::FpsReadout::new(false, 144.0, 60.0).text(), "60 fps");
+    }
+
+    /// with High Refresh Mode on the readout keeps the shown pictures and
+    /// the game's frames apart.
+    #[test]
+    fn the_frame_rate_tells_shown_pictures_and_game_frames_apart() {
+        assert_eq!(menus::FpsReadout::new(true, 144.0, 60.0).text(), "144 shown / 60 game");
+    }
+
+    /// a stall runs no game frame while the display keeps its pictures
+    /// coming, so the game's number drops and the shown one stays.
+    #[test]
+    fn a_stall_drops_the_game_rate_and_keeps_the_shown_rate() {
+        let start = Instant::now();
+        let mut shown = FrameRate { counted: 0, since: start, rate: 0.0 };
+        let mut game = FrameRate { counted: 0, since: start, rate: 0.0 };
+        for _ in 0..144 {
+            shown.count();
+        }
+        for _ in 0..60 {
+            game.count();
+        }
+        assert_eq!(shown.read(start + Duration::from_secs(1)), 144.0);
+        assert_eq!(game.read(start + Duration::from_secs(1)), 60.0);
+
+        // the game stalls: a second goes by with no frame, the pictures
+        // carry on
+        for _ in 0..144 {
+            shown.count();
+        }
+        let second = start + Duration::from_secs(2);
+        assert_eq!(shown.read(second), 144.0);
+        assert_eq!(game.read(second), 0.0);
+        let readout = menus::FpsReadout::new(true, shown.rate(), game.rate());
+        assert_eq!(readout.text(), "144 shown / 0 game");
     }
 }
