@@ -64,6 +64,33 @@ pub enum Action {
     CheatsFolder,
 }
 
+/// what the frame rate over the game reads: the game's own frames a second,
+/// or, in High Refresh Mode, the host's pictures and the game's frames
+/// apart so dropped pictures and dropped frames can be told apart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FpsReadout {
+    /// the game's frames a second.
+    Game(f32),
+    /// pictures the host showed a second and frames the game ran.
+    Split { shown: f32, game: f32 },
+}
+
+impl FpsReadout {
+    /// the readout for a mode: High Refresh Mode shows the host's pictures
+    /// and the game's frames apart.
+    pub fn new(high_refresh: bool, shown: f32, game: f32) -> FpsReadout {
+        if high_refresh { FpsReadout::Split { shown, game } } else { FpsReadout::Game(game) }
+    }
+
+    /// the line the overlay shows.
+    pub fn text(self) -> String {
+        match self {
+            FpsReadout::Game(fps) => format!("{fps:.0} fps"),
+            FpsReadout::Split { shown, game } => format!("{shown:.0} shown / {game:.0} game"),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Menus {
     /// the menu over a running game.
@@ -363,7 +390,7 @@ impl Menus {
         &mut self,
         ui: &mut egui::Ui,
         name: &str,
-        fps: Option<f32>,
+        fps: Option<FpsReadout>,
         recompiled: bool,
         fast: bool,
         jobs: &[Job],
@@ -400,7 +427,7 @@ impl Menus {
             // clicks go through to the screen under it
             egui::Area::new(egui::Id::new("fps")).fixed_pos(egui::pos2(8.0, 8.0)).interactable(false).show(&ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.label(RichText::new(format!("{fps:.0} fps")).monospace());
+                    ui.label(RichText::new(fps.text()).monospace());
                 });
             });
         }
