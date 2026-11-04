@@ -646,7 +646,7 @@ impl Menus {
     }
 
     /// the settings window, when open.
-    pub fn settings(&mut self, ctx: &egui::Context, settings: &mut Settings) -> Vec<Action> {
+    pub fn settings(&mut self, ctx: &egui::Context, settings: &mut Settings, high_refresh_blocked: Option<&'static str>) -> Vec<Action> {
         let mut actions = Vec::new();
         let before = settings.clone();
         let mut open = self.settings_open;
@@ -690,9 +690,17 @@ impl Menus {
                 .on_hover_text("How many times the console's resolution the 3D is drawn at. Past what the window shows, the extra pixels smooth the edges, at a cost to the GPU that grows fast.");
                 ui.add_enabled(settings.hardware_rasterizer, egui::Checkbox::new(&mut settings.texture_packs, "Texture packs"))
                     .on_hover_text("Draw a game's texture pack, made for Citra or Azahar, put in the textures folder of the game's mods folder.");
-                let interpolates = settings.hardware_rasterizer && settings.renderer == Renderer::Vulkan;
-                ui.add_enabled(interpolates, egui::Checkbox::new(&mut settings.frame_interpolation, "Frame interpolation"))
-                    .on_hover_text("A game at 30 frames a second gets a picture drawn in between each two of its own, with everything halfway between where it was in both, so it moves at 60. The screens show a 60th of a second late. It takes the 3D drawn on the GPU and the Vulkan presenter.");
+                let (can_high_refresh, high_refresh_text) = high_refresh_controls(high_refresh_blocked);
+                let response = ui.add_enabled(
+                    can_high_refresh,
+                    egui::Checkbox::new(&mut settings.high_refresh_mode, "High Refresh Mode"),
+                );
+                if can_high_refresh {
+                    response.on_hover_text(high_refresh_text);
+                } else {
+                    response.on_disabled_hover_text(high_refresh_text);
+                    ui.label(RichText::new(high_refresh_text).weak());
+                }
                 ui.add(egui::Slider::new(&mut settings.scale, 1..=6).text("Window scale"));
                 egui::ComboBox::from_label("Screens").selected_text(settings.layout.name()).show_ui(ui, |ui| {
                     for layout in Screens::ALL {
@@ -956,6 +964,19 @@ fn progress(ui: &mut egui::Ui, job: &Job) {
     ui.add(egui::ProgressBar::new(stage.fraction()).desired_width(220.0).text(format!("{text}, {minutes}:{seconds:02}")));
 }
 
+/// whether the High Refresh Mode toggle can be turned on, and what to say
+/// about it: why not when it can't, what it does when it can.
+fn high_refresh_controls(blocked: Option<&'static str>) -> (bool, &'static str) {
+    match blocked {
+        Some(reason) => (false, reason),
+        None => (
+            true,
+            "A new picture on every refresh of the display, drawn in between the last two the game made, so motion looks as \
+             smooth as the display. The game still updates 60 times a second, and the screens show a 60th of a second late.",
+        ),
+    }
+}
+
 /// a key as a person would call it.
 pub fn key_name(key: KeyCode) -> String {
     let name = format!("{key:?}");
@@ -1006,12 +1027,24 @@ mod tests {
         for _ in 0..3 {
             let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
             ctx.run_ui(input, |ui| {
-                menus.settings(ui.ctx(), &mut settings);
+                menus.settings(ui.ctx(), &mut settings, None);
             })
             .drop_without_applying_deltas();
         }
         let window = ctx.memory(|memory| memory.area_rect(egui::Id::new("settings"))).unwrap();
         assert!(screen.contains_rect(window), "{window:?} in {screen:?}");
+    }
+
+    /// the High Refresh Mode toggle is on offer only when it can run, and
+    /// says why not when it can't.
+    #[test]
+    fn high_refresh_toggle_is_greyed_out_with_its_reason() {
+        let (enabled, text) = high_refresh_controls(None);
+        assert!(enabled);
+        assert!(text.contains("every refresh"), "{text}");
+        let (enabled, text) = high_refresh_controls(Some("High Refresh Mode needs the Vulkan presenter."));
+        assert!(!enabled);
+        assert_eq!(text, "High Refresh Mode needs the Vulkan presenter.");
     }
 
     #[test]

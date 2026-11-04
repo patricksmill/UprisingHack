@@ -106,6 +106,13 @@ pub fn run(linked: Option<Linked>) {
         fast_forward_key: false,
         fast_forwarding: false,
         next_shown: Instant::now(),
+        host_step: Duration::from_nanos(1_000_000_000_000 / 60_000),
+        next_host: Instant::now(),
+        host_epoch: Instant::now(),
+        frame_host: Duration::ZERO,
+        older_frame_host: Duration::ZERO,
+        shown_host: Duration::ZERO,
+        high_refresh_applied: false,
         stop: false,
         camera: None,
         room_server: None,
@@ -404,6 +411,23 @@ struct App {
     /// when fast forward shows its next frame, on a grid at the console's
     /// frame rate.
     next_shown: Instant,
+    /// the display's refresh interval, the rate High Refresh Mode shows a
+    /// picture at.
+    host_step: Duration,
+    /// when High Refresh Mode shows its next picture.
+    next_host: Instant,
+    /// the host time the picture clock counts from, so a picture in
+    /// between can be drawn at the fraction of the way it belongs at.
+    host_epoch: Instant,
+    /// the host time the last console frame started at, and the one before
+    /// it: the two a picture in between is drawn between.
+    frame_host: Duration,
+    older_frame_host: Duration,
+    /// the host time the next picture is drawn at, a console frame behind
+    /// the frames' own so both of the last two are there to draw between.
+    shown_host: Duration,
+    /// the High Refresh Mode setting last put to the running game.
+    high_refresh_applied: bool,
     stop: bool,
     /// what the running game's cameras were given to see, to give them
     /// another only when the settings change it.
@@ -481,6 +505,33 @@ fn skips_showing(playing: bool, behind: bool, waits: bool, skipped: u32) -> bool
     playing && behind && waits && skipped < MAX_SKIPPED
 }
 
+/// whether a picture goes in between the title's own, one on every refresh
+/// of the display, rather than the title's own at the console's rate. fast
+/// forward shows real frames only, so no GPU time goes on pictures nobody
+/// needs.
+fn draws_in_between(high_refresh: bool, fast_forwarding: bool) -> bool {
+    high_refresh && !fast_forwarding
+}
+
+/// when the next picture is due, a display refresh after the one scheduled,
+/// or a refresh on from now when that has already passed: the refreshes a
+/// slow picture missed go unshown rather than pile up.
+fn next_host_time(scheduled: Instant, step: Duration, now: Instant) -> Instant {
+    let next = scheduled + step;
+    if next <= now { now + step } else { next }
+}
+
+/// the display's refresh interval, one picture a refresh in High Refresh
+/// Mode, 60 a second when it can't be read.
+fn monitor_step(window: &Window) -> Duration {
+    let millihertz = window
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .filter(|&millihertz| millihertz > 0)
+        .unwrap_or(60_000);
+    Duration::from_nanos((1_000_000_000_000 / u64::from(millihertz)).max(1))
+}
+
 /// what the player is told when the 3D can't be drawn on the GPU.
 const GPU_FALLBACK: &str = "The 3D can't be drawn on the GPU, as Vulkan isn't working on this computer, so it's drawn in software. \
 Games run much slower that way, and texture packs are left out. Updating the graphics driver usually fixes it; the log says \
@@ -515,6 +566,8 @@ impl ApplicationHandler for App {
                 backend.set_scaling(self.settings.filter.screens(), self.settings.integer_scale);
                 backend.set_stereo(self.settings.stereo());
                 self.gui = Some(Gui::new(&window));
+                self.host_step = monitor_step(&window);
+                self.next_host = Instant::now();
                 self.window = Some(window);
                 self.backend = Some(backend);
                 // the game the command line names starts on the device the
@@ -569,6 +622,9 @@ impl ApplicationHandler for App {
                     backend.set_top_width(top_width);
                 }
             }
+            // another display can refresh at another rate, which High
+            // Refresh Mode follows
+            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => self.measure_host_step(),
             WindowEvent::KeyboardInput { event, .. } => self.key(event, consumed),
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::MouseWheel { delta, .. } if !self.aim_captured && !self.pointer_taken(consumed) => {
@@ -638,7 +694,7 @@ impl App {
             find_recompiled: !interpret,
             hardware_renderer: self.options.hardware_rasterizer.unwrap_or(self.settings.hardware_rasterizer),
             texture_packs: self.settings.texture_packs,
-            interpolate: self.settings.frame_interpolation,
+            interpolate: self.settings.high_refresh_mode,
             enhancements: self
                 .settings
                 .enhancements
@@ -792,6 +848,11 @@ impl App {
         self.keyboard.release();
         self.paused = false;
         self.next_frame = Instant::now();
+        if let Some(window) = &self.window {
+            self.host_step = monitor_step(window);
+        }
+        self.high_refresh_applied = self.settings.high_refresh_mode;
+        self.reset_host_pace();
         Ok(())
     }
 
@@ -1069,14 +1130,59 @@ impl App {
         }
     }
 
+    /// whether the running game shows a picture on every refresh of the
+    /// display.
+    fn high_refresh(&self) -> bool {
+        self.game.as_ref().is_some_and(|game| game.system.gpu.interpolates())
+    }
+
+    /// why High Refresh Mode can't run with the renderer and rasterizer in
+    /// use, none when it can.
+    fn high_refresh_blocker(&self) -> Option<&'static str> {
+        // what the game's 3D really uses, when one runs: the settings may
+        // ask for Vulkan and the GPU while the backend fell back
+        let hardware = match &self.game {
+            Some(game) => game.system.gpu.draws_on_gpu(),
+            None => self.options.hardware_rasterizer.unwrap_or(self.settings.hardware_rasterizer),
+        };
+        let vulkan = matches!(self.backend, Some(Backend::Vulkan(_)));
+        settings::high_refresh_blocker(hardware, vulkan)
+    }
+
+    /// the host time now, on the clock the console's frames are timed by.
+    fn host_time(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.host_epoch)
+    }
+
+    /// reads the display's refresh rate again, after moving to another.
+    fn measure_host_step(&mut self) {
+        let Some(window) = &self.window else { return };
+        self.host_step = monitor_step(window);
+        self.next_host = Instant::now();
+    }
+
+    /// starts the pictures and the frame pair over, a toggle's say.
+    fn reset_host_pace(&mut self) {
+        self.next_host = Instant::now();
+        self.shown_host = self.older_frame_host;
+        self.frame_host = Duration::ZERO;
+        self.older_frame_host = Duration::ZERO;
+    }
+
     /// saves the settings and puts to use what can change right away.
     fn apply_settings(&mut self) {
         self.settings.save();
-        if let Some(game) = &mut self.game {
-            if game.system.gpu.interpolates() != self.settings.frame_interpolation {
-                let on = game.system.set_interpolation(self.settings.frame_interpolation);
-                log::info!("frame interpolation {}", if on { "on" } else { "off" });
+        if self.high_refresh_applied != self.settings.high_refresh_mode {
+            self.high_refresh_applied = self.settings.high_refresh_mode;
+            self.reset_host_pace();
+            if let Some(game) = &mut self.game {
+                // a fresh pacer and matcher history, so pictures in between
+                // never come from before the switch
+                let on = game.system.set_interpolation(self.settings.high_refresh_mode);
+                log::info!("High Refresh Mode {}", if on { "on" } else { "off" });
             }
+        }
+        if let Some(game) = &mut self.game {
             // games read the 3D slider every frame
             let slider = self.settings.slider_3d();
             if game.system.config.slider_3d != slider {
@@ -1435,8 +1541,29 @@ impl App {
                     audio.clear();
                 }
                 self.next_frame = Instant::now();
+                self.next_host = Instant::now();
             }
         }
+
+        // a picture on every refresh of the display, or one a console frame
+        let host_rate = playing && draws_in_between(self.high_refresh(), fast);
+        if host_rate {
+            self.step_at_host_rate(event_loop);
+        } else {
+            self.step_at_console_rate(event_loop, playing, fast);
+        }
+        self.report(playing);
+
+        let now = Instant::now();
+        let due = if host_rate { self.next_frame.min(self.next_host) } else { self.next_frame };
+        if now < due {
+            std::thread::sleep(due - now);
+        }
+    }
+
+    /// the console's own pace, one picture a console frame, a few skipped
+    /// while the game runs behind a presenter that waits for the display.
+    fn step_at_console_rate(&mut self, event_loop: &ActiveEventLoop, playing: bool, fast: bool) {
         if playing {
             if self.mouse_down && !self.aim_captured {
                 self.touch();
@@ -1468,49 +1595,81 @@ impl App {
         } else {
             self.skipped = 0;
             let start = Instant::now();
-            self.present(event_loop);
+            self.present(event_loop, false);
             // the next one a frame later, or right away after falling
             // behind, at the console's rate on average
             self.next_shown = (self.next_shown + FRAME_TIME).max(Instant::now() - FRAME_TIME);
             self.spent.showing.add(start.elapsed());
             self.shown += 1;
         }
+    }
 
-        if self.last_title_update.elapsed() >= Duration::from_millis(500) {
-            let shown = self.shown as f32 / self.last_title_update.elapsed().as_secs_f32();
-            self.shown = 0;
-            self.last_title_update = Instant::now();
-            if let Some(game) = &self.game {
-                let Spent { emulating, showing } = std::mem::take(&mut self.spent);
-                log::debug!(
-                    target: "zakuro::fps",
-                    "{:.1} frames emulated and {shown:.1} shown a second, emulating took {emulating}, showing {showing}",
-                    game.fps
-                );
-            }
-            if let Some(window) = &self.window {
-                let title = match &self.game {
-                    Some(game) => format!("Zakuro - {} - {}", game.name, game.system.status_line()),
-                    None => "Zakuro".to_owned(),
-                };
-                window.set_title(&title);
-            }
-            let underruns = self.audio.as_ref().map_or(0, |audio| audio.take_underruns());
-            if underruns > 0 && playing {
-                log::warn!("the sound ran dry {underruns} times, the emulation is falling behind");
-            }
-        }
-
+    /// High Refresh Mode's pace: the console keeps its 59.83 Hz schedule,
+    /// and the display gets a picture on every one of its own refreshes.
+    fn step_at_host_rate(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
-        if now < self.next_frame {
-            std::thread::sleep(self.next_frame - now);
+        if now >= self.next_frame {
+            if self.mouse_down && !self.aim_captured {
+                self.touch();
+            }
+            let start = Instant::now();
+            self.emulate();
+            self.spent.emulating.add(start.elapsed());
+            self.follow_pause_menu();
+            // the pair the pictures in between come from: the frame just
+            // started and the one before it, drawn over the next interval
+            self.shown_host = self.older_frame_host;
+            self.next_frame += FRAME_TIME;
+        }
+        let now = Instant::now();
+        if now >= self.next_host {
+            let start = Instant::now();
+            self.present(event_loop, true);
+            self.spent.showing.add(start.elapsed());
+            self.shown += 1;
+            self.next_host = next_host_time(self.next_host, self.host_step, Instant::now());
+        }
+    }
+
+    /// the frame rate's log and the window's title, every half second.
+    fn report(&mut self, playing: bool) {
+        if self.last_title_update.elapsed() < Duration::from_millis(500) {
+            return;
+        }
+        let shown = self.shown as f32 / self.last_title_update.elapsed().as_secs_f32();
+        self.shown = 0;
+        self.last_title_update = Instant::now();
+        if let Some(game) = &self.game {
+            let Spent { emulating, showing } = std::mem::take(&mut self.spent);
+            log::debug!(
+                target: "zakuro::fps",
+                "{:.1} frames emulated and {shown:.1} shown a second, emulating took {emulating}, showing {showing}",
+                game.fps
+            );
+        }
+        if let Some(window) = &self.window {
+            let title = match &self.game {
+                Some(game) => format!("Zakuro - {} - {}", game.name, game.system.status_line()),
+                None => "Zakuro".to_owned(),
+            };
+            window.set_title(&title);
+        }
+        let underruns = self.audio.as_ref().map_or(0, |audio| audio.take_underruns());
+        if underruns > 0 && playing {
+            log::warn!("the sound ran dry {underruns} times, the emulation is falling behind");
         }
     }
 
     /// runs one frame of the game.
     fn emulate(&mut self) {
         let top_width = self.top_width();
+        // when the frame started on the host's clock, which the pictures in
+        // between the last two are drawn at a fraction of
+        let host_clock = self.host_time(Instant::now());
+        self.older_frame_host = self.frame_host;
+        self.frame_host = host_clock;
         let Some(game) = &mut self.game else { return };
+        game.system.host_clock = host_clock;
         // Kid Icarus: Uprising draws a view as wide as the top screen shows
         if let Some(aim_mouse) = &mut game.system.aim_mouse {
             aim_mouse.widen = top_width / 400.0;
@@ -1744,6 +1903,7 @@ impl App {
             .flatten()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
             .map(ago);
+        let high_refresh_blocked = self.high_refresh_blocker();
         let (Some(gui), Some(window)) = (&mut self.gui, &self.window) else { return Overlay::default() };
         let show_fps = self.settings.show_fps;
         let game = self.game.as_ref().map(|game| (game.name.clone(), game.fps, game.system.recompiled.is_some()));
@@ -1770,7 +1930,7 @@ impl App {
                 }
                 None => actions.extend(menus.library(ui, library, settings, jobs)),
             }
-            actions.extend(menus.settings(ui.ctx(), settings));
+            actions.extend(menus.settings(ui.ctx(), settings, high_refresh_blocked));
             if menus.multiplayer_open {
                 actions.extend(menus.multiplayer(ui.ctx(), settings, room.as_ref()));
             }
@@ -1790,12 +1950,29 @@ impl App {
         overlay
     }
 
-    fn present(&mut self, event_loop: &ActiveEventLoop) {
+    fn present(&mut self, event_loop: &ActiveEventLoop, host_rate: bool) {
         let overlay = self.interface(event_loop);
         let blank = |screen: Screen| ((std::sync::Arc::new(Vec::new()), screen.width(), screen.height()), None);
         // the right eye's picture only while the 3D shows
         let stereo = self.settings.stereo != settings::Stereo3d::Off;
+        // the title's own at a frame's time, or one drawn in between the
+        // last two, on every refresh of the display; fast forward shows the
+        // title's own only
+        let high_refresh = self.high_refresh();
+        let in_between = host_rate;
+        let real_only = high_refresh && self.fast_forwarding;
+        let host_time = self.shown_host;
         let (top, bottom, right) = match &mut self.game {
+            Some(game) if in_between => (
+                shown_at_host_time(&mut game.system, Screen::Top, host_time),
+                shown_at_host_time(&mut game.system, Screen::Bottom, host_time),
+                stereo.then(|| shown_right_at_host_time(&mut game.system, host_time)).flatten(),
+            ),
+            Some(game) if real_only => (
+                shown_real(&mut game.system, Screen::Top),
+                shown_real(&mut game.system, Screen::Bottom),
+                stereo.then(|| shown_right_real(&mut game.system)).flatten(),
+            ),
             Some(game) => (
                 shown(&mut game.system, Screen::Top),
                 shown(&mut game.system, Screen::Bottom),
@@ -1803,6 +1980,11 @@ impl App {
             ),
             None => (blank(Screen::Top), blank(Screen::Bottom), None),
         };
+        if in_between {
+            // the next refresh a display's interval further through the
+            // last two frames
+            self.shown_host += self.host_step;
+        }
         let right = right.unwrap_or_else(|| blank(Screen::Top));
         let Some(backend) = &mut self.backend else { return };
         let (((top, top_width, top_height), top_gpu), ((bottom, bottom_width, bottom_height), bottom_gpu)) = (top, bottom);
@@ -1867,6 +2049,49 @@ fn download_play_view(guest: &zakuro_core::download_play::Guest, members: &[zaku
     menus::DlpView { offers, doing }
 }
 
+/// a screen's picture at a host time, straight from the GPU when it shares
+/// the renderer's device: the title's own at a frame's time, or one drawn in
+/// between the last two at the fraction of the way from the older.
+fn shown_at_host_time(system: &mut System, screen: Screen, host_time: Duration) -> (zakuro_core::Screen, Option<GpuScreen>) {
+    let (gpu, _) = system.gpu_picture_at_host_time(screen, false, host_time);
+    if let Some(gpu) = gpu {
+        let scale = system.gpu.scale();
+        return ((std::sync::Arc::new(Vec::new()), screen.width() * scale, screen.height() * scale), Some(gpu));
+    }
+    (system.read_screen_scaled(screen), None)
+}
+
+/// the top screen's picture at a host time for the right eye, when the
+/// title draws in 3D.
+fn shown_right_at_host_time(system: &mut System, host_time: Duration) -> Option<(zakuro_core::Screen, Option<GpuScreen>)> {
+    let (gpu, _) = system.gpu_picture_at_host_time(Screen::Top, true, host_time);
+    if let Some(gpu) = gpu {
+        let scale = system.gpu.scale();
+        return Some(((std::sync::Arc::new(Vec::new()), Screen::Top.width() * scale, Screen::Top.height() * scale), Some(gpu)));
+    }
+    system.read_right_eye_scaled().map(|screen| (screen, None))
+}
+
+/// a screen's own newest picture with none drawn in between, for fast
+/// forward, which shows the title's frames only.
+fn shown_real(system: &mut System, screen: Screen) -> (zakuro_core::Screen, Option<GpuScreen>) {
+    if let Some(gpu) = system.gpu_screen_real(screen) {
+        let scale = system.gpu.scale();
+        return ((std::sync::Arc::new(Vec::new()), screen.width() * scale, screen.height() * scale), Some(gpu));
+    }
+    (system.read_screen_scaled(screen), None)
+}
+
+/// the top screen's own newest picture for the right eye, with none drawn
+/// in between.
+fn shown_right_real(system: &mut System) -> Option<(zakuro_core::Screen, Option<GpuScreen>)> {
+    if let Some(gpu) = system.gpu_right_eye_real() {
+        let scale = system.gpu.scale();
+        return Some(((std::sync::Arc::new(Vec::new()), Screen::Top.width() * scale, Screen::Top.height() * scale), Some(gpu)));
+    }
+    system.read_right_eye_scaled().map(|screen| (screen, None))
+}
+
 /// a screen as the presenter takes it, straight from the GPU when it shares
 /// the renderer's device and the GPU drew what the screen shows, else its
 /// pixels.
@@ -1901,6 +2126,26 @@ mod tests {
         assert_eq!(menu_wheel_delta(MouseScrollDelta::LineDelta(0.0, -1.0), true), [1.0, 0.0]);
         assert_eq!(menu_wheel_delta(MouseScrollDelta::LineDelta(1.0, 0.0), false), [-1.0, 0.0]);
         assert_eq!(menu_wheel_delta(MouseScrollDelta::PixelDelta((0.0, 10.0).into()), false), [0.0, -0.25]);
+    }
+
+    /// a picture on the refresh after the one scheduled, or a refresh on
+    /// from now when it is late, so missed refreshes never pile up.
+    #[test]
+    fn a_late_picture_does_not_show_a_burst_of_them() {
+        let now = Instant::now();
+        let step = Duration::from_millis(8);
+        assert_eq!(next_host_time(now, step, now), now + step);
+        assert_eq!(next_host_time(now - Duration::from_secs(1), step, now), now + step);
+    }
+
+    /// fast forward shows the title's own frames only, never a picture
+    /// drawn in between, whether the mode was on or off.
+    #[test]
+    fn fast_forward_shows_real_frames_only() {
+        assert!(draws_in_between(true, false));
+        assert!(!draws_in_between(true, true), "fast forward skips the pictures in between");
+        assert!(!draws_in_between(false, false));
+        assert!(!draws_in_between(false, true));
     }
 
     /// a frame goes unshown only while the game runs behind with a

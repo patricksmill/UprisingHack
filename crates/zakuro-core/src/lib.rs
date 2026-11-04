@@ -73,9 +73,9 @@ pub struct Config {
     /// the time the console's clock starts at, in milliseconds since 1900,
     /// the host's when none, a fixed one makes runs repeat exactly.
     pub clock: Option<u64>,
-    /// draw a picture in between each two of a title that draws one every
-    /// other refresh, see System::pace, when the host's GPU draws the 3D
-    /// and shows the screens straight from its device.
+    /// High Refresh Mode, a picture on every refresh of the host drawn in
+    /// between the title's last two, see System::pace, when the host's GPU
+    /// draws the 3D and shows the screens straight from its device.
     pub interpolate: bool,
     /// the console owner's name, up to ten characters, which titles show
     /// and local wireless tells others.
@@ -866,13 +866,13 @@ impl System {
         }
     }
 
-    /// frame interpolation at a refresh. while a title sets a new picture
-    /// every other refresh, the GPU draws the picture in between along with
-    /// each, from the frame before's draws and this one's, see zakuro_gpu's
-    /// interpolation. it goes up at the refresh the title set the picture
-    /// at, and the title's own at the next, a refresh late, so the two take
-    /// a refresh each. a title at the full rate, or slower, shows its own
-    /// at once, and draws nothing in between.
+    /// High Refresh Mode's pacing at a refresh. while a title sets a new
+    /// picture every refresh, or every other one, the GPU draws a picture in
+    /// between along with each, from the frame before's draws and this
+    /// one's, see zakuro_gpu's interpolation. the host's presenter picks the
+    /// title's own or one in between at the host time it shows it at. a
+    /// title that stalled, more than two refreshes without a new picture,
+    /// draws none in between.
     fn pace(&mut self) {
         let pacing = &mut self.pacing;
         pacing.refreshes += 1;
@@ -893,16 +893,19 @@ impl System {
         let matches = self.gpu.frame_done();
         let pacing = &mut self.pacing;
         pacing.matches = matches;
-        pacing.between = gap == 2 && matches.is_some_and(|matches| matches.smooth());
+        // High Refresh Mode shows the pictures in between at every refresh
+        // of the host, so a title drawing every refresh keeps its twins too,
+        // as does one drawing every other refresh
+        pacing.between = gap <= 2 && matches.is_some_and(|matches| matches.smooth());
         pacing.shown += pacing.between as u64;
-        // the next frame is drawn in between too while the title keeps to
-        // every other refresh
-        self.gpu.set_twins(gap == 2);
+        self.gpu.set_twins(gap <= 2);
     }
 
     /// draws a picture in between each two of the title's own from now on,
-    /// when it draws one every other refresh, see pace, or stops. it says
-    /// whether it does, it takes the host's GPU showing the screens.
+    /// for High Refresh Mode, see pace, or stops. it starts the pacer and
+    /// the matcher over, so no picture in between comes from before the
+    /// switch. it says whether it does, it takes the host's GPU showing the
+    /// screens.
     pub fn set_interpolation(&mut self, on: bool) -> bool {
         self.pacing = Pacing::default();
         self.gpu.set_interpolation(on)
@@ -1174,7 +1177,7 @@ impl System {
     pub fn gpu_picture_at_host_time(&mut self, screen: zakuro_common::Screen, right: bool, host_time: std::time::Duration) -> (Option<zakuro_gpu::GpuScreen>, PictureKind) {
         let kind = self.picture_kind_at_host_time(host_time);
         let picture = match kind {
-            PictureKind::Real => self.gpu_picture(screen, right),
+            PictureKind::Real => self.gpu_picture_real(screen, right),
             PictureKind::InBetween(_) => {
                 let now = self.screen_ref(screen, right);
                 if let Some(now) = now {
@@ -1198,6 +1201,31 @@ impl System {
             return None;
         }
         self.gpu_picture(zakuro_common::Screen::Top, true)
+    }
+
+    /// a screen's own newest picture on the host's GPU, never one drawn in
+    /// between, for fast forward showing the title's frames only.
+    pub fn gpu_screen_real(&mut self, screen: zakuro_common::Screen) -> Option<zakuro_gpu::GpuScreen> {
+        self.gpu_picture_real(screen, false)
+    }
+
+    /// the top screen's own newest picture for the right eye, never one
+    /// drawn in between.
+    pub fn gpu_right_eye_real(&mut self) -> Option<zakuro_gpu::GpuScreen> {
+        if !self.draws_in_3d() {
+            return None;
+        }
+        self.gpu_picture_real(zakuro_common::Screen::Top, true)
+    }
+
+    /// the newest picture the host's GPU drew for a screen, never the one it
+    /// drew in between it and the one before.
+    fn gpu_picture_real(&mut self, screen: zakuro_common::Screen, right: bool) -> Option<zakuro_gpu::GpuScreen> {
+        if !self.gpu.shows_directly() {
+            return None;
+        }
+        let now = self.screen_ref(screen, right)?;
+        self.gpu.screen_image(now)
     }
 
     fn gpu_picture(&mut self, screen: zakuro_common::Screen, right: bool) -> Option<zakuro_gpu::GpuScreen> {
@@ -2082,5 +2110,25 @@ mod tests {
         assert_eq!(pacing.kind_at_host_time(Duration::from_millis(0)), PictureKind::Real);
         assert_eq!(pacing.kind_at_host_time(frame_time), PictureKind::Real);
         assert_eq!(pacing.kind_at_host_time(frame_time + Duration::from_millis(1)), PictureKind::Real);
+    }
+
+    /// switching High Refresh Mode on or off starts the pacer over, so no
+    /// picture in between is timed from before the switch.
+    #[test]
+    fn switching_the_mode_starts_the_pacer_over() {
+        let mut system = System::new(Config::default());
+        for on in [true, false] {
+            system.pacing.refreshes = 12;
+            system.pacing.new_at = 7;
+            system.pacing.between = true;
+            system.pacing.older_host_time = Some(std::time::Duration::ZERO);
+            system.pacing.newer_host_time = Some(std::time::Duration::from_millis(16));
+            system.set_interpolation(on);
+            assert_eq!(system.pacing.refreshes, 0, "the pacer starts over, on={on}");
+            assert_eq!(system.pacing.new_at, 0, "the pacer starts over, on={on}");
+            assert!(!system.pacing.between, "no picture in between is kept, on={on}");
+            assert!(system.pacing.older_host_time.is_none(), "no frame times are kept, on={on}");
+            assert!(system.pacing.newer_host_time.is_none(), "no frame times are kept, on={on}");
+        }
     }
 }
