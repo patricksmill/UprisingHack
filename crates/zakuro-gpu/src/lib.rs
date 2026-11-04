@@ -1064,7 +1064,7 @@ impl Gpu {
         let geometry = self.internal[REG_GEOSTAGE_CONFIG] & 0x3 == 2;
         let twins = self.resources.twins();
         let between = match self.interpolation.as_mut() {
-            Some(interpolation) => interpolation.draw(&self.internal, &self.vertex_shader, geometry.then_some(&self.geometry_shader), twins),
+            Some(interpolation) => interpolation.draw(&self.internal, &self.vertex_shader, geometry.then_some(&self.geometry_shader), twins.then_some(0.5)),
             None => None,
         };
         self.resources.set_pass(if between.is_some() { raster::Pass::Twinned } else { raster::Pass::Real });

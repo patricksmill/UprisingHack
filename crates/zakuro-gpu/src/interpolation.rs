@@ -137,13 +137,13 @@ impl Matches {
 }
 
 impl Interpolation {
-    /// the uniforms halfway between the draw's and those of the frame
+    /// the uniforms at t in [0, 1] between the draw's and those of the frame
     /// before's draw that matches it, for drawing it again in between, none
     /// when they are the same or it has no match or it jumped, or nothing
     /// is drawn in between. the draw's own are kept for the next frame's to
     /// match. a draw through a geometry shader is left as it is. give the
     /// uniforms back once drawn with.
-    pub(crate) fn draw(&mut self, registers: &[u32], vertex: &ShaderUnit, geometry: Option<&ShaderUnit>, between: bool) -> Option<Box<Uniforms>> {
+    pub(crate) fn draw(&mut self, registers: &[u32], vertex: &ShaderUnit, geometry: Option<&ShaderUnit>, between: Option<f32>) -> Option<Box<Uniforms>> {
         self.draws += 1;
         let key = key(registers, vertex, geometry);
         let drawn = self.now.entry(key).or_default();
@@ -151,9 +151,8 @@ impl Interpolation {
         drawn.moves.push([[0.0; 4]; FLOAT_UNIFORMS]);
         drawn.restless.push(0);
         let place = drawn.uniforms.len() - 1;
-        if !between {
-            return None;
-        }
+        let t = between?;
+        let t = if t.is_nan() { 0.5 } else { t.clamp(0.0, 1.0) };
         if geometry.is_some() {
             self.matched += self.before.get(&key).is_some_and(|before| place < before.uniforms.len()) as u32;
             return None;
@@ -208,7 +207,16 @@ impl Interpolation {
                 *out = *now;
                 continue;
             }
-            *out = std::array::from_fn(|i| if moving[i] { before[i] + (now[i] - before[i]) * 0.5 } else { now[i] });
+            let blend = |before: f32, now: f32| {
+                if t == 0.0 {
+                    before
+                } else if t == 1.0 {
+                    now
+                } else {
+                    before + (now - before) * t
+                }
+            };
+            *out = std::array::from_fn(|i| if moving[i] { blend(before[i], now[i]) } else { now[i] });
             lerped |= moving.contains(&true);
         }
         if !jumped && !lerped {
@@ -307,25 +315,65 @@ mod tests {
     #[test]
     fn draws_match_the_frame_before_in_order() {
         let mut interpolation = Interpolation::default();
-        assert!(interpolation.draw(&registers(3), &unit(0.0), None, true).is_none(), "nothing before");
-        assert!(interpolation.draw(&registers(3), &unit(4.0), None, true).is_none());
-        assert!(interpolation.draw(&registers(6), &unit(1.0), None, true).is_none());
+        assert!(interpolation.draw(&registers(3), &unit(0.0), None, Some(0.5)).is_none(), "nothing before");
+        assert!(interpolation.draw(&registers(3), &unit(4.0), None, Some(0.5)).is_none());
+        assert!(interpolation.draw(&registers(6), &unit(1.0), None, Some(0.5)).is_none());
         let first = interpolation.frame_done();
         assert_eq!(first, Matches { draws: 3, matched: 0, moved: 0, jumped: 0, jumping: 0 });
         assert!(!first.smooth());
 
-        let between = interpolation.draw(&registers(3), &unit(0.5), None, true).expect("moved");
+        let between = interpolation.draw(&registers(3), &unit(0.5), None, Some(0.5)).expect("moved");
         assert_eq!(between[0], [1.0, 0.0, 0.0, 0.25]);
         assert_eq!(between[1], [0.0, 1.0, 0.0, 2.0]);
         interpolation.give_back(between);
-        let between = interpolation.draw(&registers(3), &unit(4.2), None, true).expect("the second matches the second");
+        let between = interpolation.draw(&registers(3), &unit(4.2), None, Some(0.5)).expect("the second matches the second");
         assert!((between[0][3] - 4.1).abs() < 1e-6);
         interpolation.give_back(between);
-        assert!(interpolation.draw(&registers(6), &unit(1.0), None, true).is_none(), "stayed");
-        assert!(interpolation.draw(&registers(9), &unit(1.0), None, true).is_none(), "new");
+        assert!(interpolation.draw(&registers(6), &unit(1.0), None, Some(0.5)).is_none(), "stayed");
+        assert!(interpolation.draw(&registers(9), &unit(1.0), None, Some(0.5)).is_none(), "new");
         let second = interpolation.frame_done();
         assert_eq!(second, Matches { draws: 4, matched: 3, moved: 2, jumped: 0, jumping: 0 });
         assert!(second.smooth());
+    }
+    /// in-between uniforms blend at any t in [0, 1], with t=0 matching the
+    /// frame before and t=1 matching the newest frame, while t=0.5 matches
+    /// the halfway blend. jumped, restless or unmatched draws yield no
+    /// in-between at any t.
+    #[test]
+    fn draws_blend_at_any_t_including_endpoints() {
+        for (t, expected_x) in [
+            (0.0, 0.0),
+            (0.2, 0.1),
+            (0.5, 0.25),
+            (0.8, 0.4),
+            (1.0, 0.5),
+        ] {
+            let mut interpolation = Interpolation::default();
+            interpolation.draw(&registers(3), &unit(0.0), None, Some(t));
+            interpolation.frame_done();
+
+            let between = interpolation.draw(&registers(3), &unit(0.5), None, Some(t)).expect("moved");
+            assert_eq!(between[0][0], 1.0);
+            assert_eq!(between[0][1], 0.0);
+            assert_eq!(between[0][2], 0.0);
+            assert!((between[0][3] - expected_x).abs() < 1e-6, "t={t} expected {expected_x}, got {}", between[0][3]);
+            assert_eq!(between[1], [0.0, 1.0, 0.0, 2.0], "unmodified uniforms stay unchanged");
+            interpolation.give_back(between);
+        }
+
+        // jumped, restless, and unmatched draws yield no in-between at any t
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let mut interpolation = Interpolation::default();
+            // first frame
+            interpolation.draw(&registers(3), &unit(100.0), None, Some(t));
+            interpolation.draw(&registers(4), &unit(0.0), None, Some(t));
+            interpolation.frame_done();
+
+            // second frame: draw with key 4 jumps from 0.0 to 1.0
+            assert!(interpolation.draw(&registers(4), &unit(1.0), None, Some(t)).is_none(), "jumped draw gives no in-between at t={t}");
+            // new / unmatched draw
+            assert!(interpolation.draw(&registers(5), &unit(10.0), None, Some(t)).is_none(), "unmatched draw gives no in-between at t={t}");
+        }
     }
 
     /// a uniform the coordinates may read too that jumps is as the frame has
@@ -354,17 +402,17 @@ mod tests {
         };
         let mut interpolation = Interpolation::default();
         for (x, shared) in [(0.0, 0.3), (0.1, 5.0)] {
-            if let Some(between) = interpolation.draw(&registers, &at(x, shared), None, true) {
+            if let Some(between) = interpolation.draw(&registers, &at(x, shared), None, Some(0.5)) {
                 interpolation.give_back(between);
             }
             interpolation.frame_done();
         }
-        let between = interpolation.draw(&registers, &at(0.2, -5.0), None, true).expect("its place moved");
+        let between = interpolation.draw(&registers, &at(0.2, -5.0), None, Some(0.5)).expect("its place moved");
         assert!((between[0][3] - 0.15).abs() < 1e-6);
         assert_eq!(between[20][0], -5.0, "the shared one as the frame has it");
         interpolation.give_back(between);
         assert_eq!(interpolation.frame_done().jumped, 0);
-        assert!(interpolation.draw(&registers, &at(0.2, 6.0), None, true).is_none(), "only the shared one changed, and jumped");
+        assert!(interpolation.draw(&registers, &at(0.2, 6.0), None, Some(0.5)).is_none(), "only the shared one changed, and jumped");
     }
 
     /// a model going on as it went moves in between however fast, through
@@ -374,7 +422,7 @@ mod tests {
         let mut interpolation = Interpolation::default();
         let mut moved = Vec::new();
         for x in [-16.3, -5.7, 5.1, 16.2, 27.5] {
-            let between = interpolation.draw(&registers(3), &unit(x), None, true);
+            let between = interpolation.draw(&registers(3), &unit(x), None, Some(0.5));
             moved.push(between.is_some());
             if let Some(between) = between {
                 interpolation.give_back(between);
@@ -392,8 +440,8 @@ mod tests {
     fn draws_that_keep_jumping_count_apart() {
         let mut interpolation = Interpolation::default();
         let mut frame = |batch: f32, model: f32| {
-            let batch = interpolation.draw(&registers(3), &unit(batch), None, true);
-            let model = interpolation.draw(&registers(4), &unit(model), None, true);
+            let batch = interpolation.draw(&registers(3), &unit(batch), None, Some(0.5));
+            let model = interpolation.draw(&registers(4), &unit(model), None, Some(0.5));
             for between in [batch, model].into_iter().flatten() {
                 interpolation.give_back(between);
             }
@@ -410,7 +458,7 @@ mod tests {
         let jumps: Vec<(u32, u32)> = [0.0, 0.0, 5.0, 5.0, 10.0, 10.0, 15.0]
             .into_iter()
             .map(|x| {
-                if let Some(between) = interpolation.draw(&registers(3), &unit(x), None, true) {
+                if let Some(between) = interpolation.draw(&registers(3), &unit(x), None, Some(0.5)) {
                     interpolation.give_back(between);
                 }
                 let matches = interpolation.frame_done();
@@ -424,17 +472,25 @@ mod tests {
     /// next frame, matches the draw nearest it, not the one in its place.
     #[test]
     fn draws_drawn_the_other_way_round_match_the_nearest() {
-        let mut interpolation = Interpolation::default();
-        interpolation.draw(&registers(3), &unit(-3.7), None, true);
-        interpolation.draw(&registers(3), &unit(3.7), None, true);
-        interpolation.frame_done();
-        let right = interpolation.draw(&registers(3), &unit(3.8), None, true).expect("the right eye");
-        assert!((right[0][3] - 3.75).abs() < 1e-6);
-        interpolation.give_back(right);
-        let left = interpolation.draw(&registers(3), &unit(-3.6), None, true).expect("the left eye");
-        assert!((left[0][3] + 3.65).abs() < 1e-6);
-        interpolation.give_back(left);
-        assert_eq!(interpolation.frame_done(), Matches { draws: 2, matched: 2, moved: 2, jumped: 0, jumping: 0 });
+        for (t, exp_right, exp_left) in [
+            (0.0, 3.7, -3.7),
+            (0.25, 3.725, -3.675),
+            (0.5, 3.75, -3.65),
+            (0.75, 3.775, -3.625),
+            (1.0, 3.8, -3.6),
+        ] {
+            let mut interpolation = Interpolation::default();
+            interpolation.draw(&registers(3), &unit(-3.7), None, Some(t));
+            interpolation.draw(&registers(3), &unit(3.7), None, Some(t));
+            interpolation.frame_done();
+            let right = interpolation.draw(&registers(3), &unit(3.8), None, Some(t)).expect("the right eye");
+            assert!((right[0][3] - exp_right).abs() < 1e-6);
+            interpolation.give_back(right);
+            let left = interpolation.draw(&registers(3), &unit(-3.6), None, Some(t)).expect("the left eye");
+            assert!((left[0][3] - exp_left).abs() < 1e-6);
+            interpolation.give_back(left);
+            assert_eq!(interpolation.frame_done(), Matches { draws: 2, matched: 2, moved: 2, jumped: 0, jumping: 0 });
+        }
     }
 
     /// a draw whose uniforms jump, as a matrix does when the camera cuts or
@@ -443,16 +499,16 @@ mod tests {
     #[test]
     fn jumps_are_not_drawn_in_between() {
         let mut interpolation = Interpolation::default();
-        interpolation.draw(&registers(3), &unit(100.0), None, true);
-        interpolation.draw(&registers(4), &unit(0.0), None, true);
+        interpolation.draw(&registers(3), &unit(100.0), None, Some(0.5));
+        interpolation.draw(&registers(4), &unit(0.0), None, Some(0.5));
         interpolation.frame_done();
-        let between = interpolation.draw(&registers(3), &unit(120.0), None, true).expect("a fifth of its distance");
+        let between = interpolation.draw(&registers(3), &unit(120.0), None, Some(0.5)).expect("a fifth of its distance");
         interpolation.give_back(between);
-        assert!(interpolation.draw(&registers(4), &unit(1.0), None, true).is_none(), "a flag flipped");
+        assert!(interpolation.draw(&registers(4), &unit(1.0), None, Some(0.5)).is_none(), "a flag flipped");
         let matches = interpolation.frame_done();
         assert_eq!(matches, Matches { draws: 2, matched: 2, moved: 1, jumped: 1, jumping: 0 });
         assert!(!matches.smooth());
-        interpolation.draw(&registers(3), &unit(200.0), None, true);
+        interpolation.draw(&registers(3), &unit(200.0), None, Some(0.5));
         assert_eq!(interpolation.frame_done().jumped, 1, "five sixths of its distance");
     }
 
@@ -462,10 +518,10 @@ mod tests {
     fn geometry_shaders_are_drawn_as_they_are() {
         let mut interpolation = Interpolation::default();
         let geometry = unit(0.0);
-        interpolation.draw(&registers(3), &unit(0.0), Some(&geometry), true);
+        interpolation.draw(&registers(3), &unit(0.0), Some(&geometry), Some(0.5));
         interpolation.frame_done();
-        assert!(interpolation.draw(&registers(3), &unit(0.2), None, true).is_none(), "no geometry stage");
-        assert!(interpolation.draw(&registers(3), &unit(0.2), Some(&geometry), true).is_none());
+        assert!(interpolation.draw(&registers(3), &unit(0.2), None, Some(0.5)).is_none(), "no geometry stage");
+        assert!(interpolation.draw(&registers(3), &unit(0.2), Some(&geometry), Some(0.5)).is_none());
         assert_eq!(interpolation.frame_done(), Matches { draws: 2, matched: 1, moved: 0, jumped: 0, jumping: 0 });
     }
 
@@ -492,17 +548,23 @@ mod tests {
             unit.float_uniforms[1] = [sprite, 0.0, 0.0, 0.0];
             unit
         };
+        for (t, exp_x) in [(0.0, 0.0), (0.25, 0.1), (0.5, 0.2), (0.75, 0.3), (1.0, 0.4)] {
+            let mut interpolation = Interpolation::default();
+            interpolation.draw(&registers, &at(0.0, 0.25), None, Some(t));
+            interpolation.frame_done();
+            let between = interpolation.draw(&registers, &at(0.4, 0.5), None, Some(t)).expect("moved");
+            assert!((between[0][3] - exp_x).abs() < 1e-6);
+            assert_eq!(between[1], [0.5, 0.0, 0.0, 0.0], "the next sprite, not half of each");
+            interpolation.give_back(between);
+        }
         let mut interpolation = Interpolation::default();
-        interpolation.draw(&registers, &at(0.0, 0.25), None, true);
+        interpolation.draw(&registers, &at(0.0, 0.25), None, Some(0.5));
         interpolation.frame_done();
-        let between = interpolation.draw(&registers, &at(0.4, 0.5), None, true).expect("moved");
-        assert_eq!(between[0], [1.0, 0.0, 0.0, 0.2]);
-        assert_eq!(between[1], [0.5, 0.0, 0.0, 0.0], "the next sprite, not half of each");
+        let between = interpolation.draw(&registers, &at(0.4, 0.5), None, Some(0.5)).expect("moved");
         interpolation.give_back(between);
+        assert!(interpolation.draw(&registers, &at(0.4, 0.75), None, Some(0.5)).is_none(), "only the sprite changed");
         interpolation.frame_done();
-        assert!(interpolation.draw(&registers, &at(0.4, 0.75), None, true).is_none(), "only the sprite changed");
-        interpolation.frame_done();
-        assert!(interpolation.draw(&registers, &at(0.6, 9.0), None, true).is_some(), "the sprite's jump does not count");
+        assert!(interpolation.draw(&registers, &at(0.6, 9.0), None, Some(0.5)).is_some(), "the sprite's jump does not count");
     }
 
     /// uniforms the coordinates may read through an address register too,
@@ -527,13 +589,16 @@ mod tests {
             unit
         };
         let mut interpolation = Interpolation::default();
-        interpolation.draw(&registers, &at(0.25), None, true);
+        interpolation.draw(&registers, &at(0.25), None, Some(0.5));
         interpolation.frame_done();
-        assert!(interpolation.draw(&registers, &at(0.5), None, true).is_none(), "a step between round values");
+        assert!(interpolation.draw(&registers, &at(0.5), None, Some(0.5)).is_none(), "a step between round values");
         interpolation.frame_done();
-        interpolation.draw(&registers, &at(0.3), None, true);
-        interpolation.frame_done();
-        let between = interpolation.draw(&registers, &at(0.4), None, true).expect("a move");
-        assert!((between[20][3] - 0.35).abs() < 1e-6);
+        for (t, exp_x) in [(0.0, 0.3), (0.25, 0.325), (0.5, 0.35), (0.75, 0.375), (1.0, 0.4)] {
+            let mut interpolation = Interpolation::default();
+            interpolation.draw(&registers, &at(0.3), None, Some(t));
+            interpolation.frame_done();
+            let between = interpolation.draw(&registers, &at(0.4), None, Some(t)).expect("a move");
+            assert!((between[20][3] - exp_x).abs() < 1e-6);
+        }
     }
 }
