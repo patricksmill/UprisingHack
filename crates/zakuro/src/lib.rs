@@ -1663,9 +1663,10 @@ impl App {
             self.emulate();
             self.spent.emulating.add(start.elapsed());
             self.follow_pause_menu();
-            // the pair the pictures in between come from: the frame just
-            // started and the one before it, drawn over the next interval
-            self.shown_host = self.older_frame_host;
+            // the picture clock goes on across the console's frames, a
+            // host refresh at a time, so an interval that is not a whole
+            // number of refreshes keeps its phase instead of starting over
+            // at the older frame on every frame.
             self.next_frame += FRAME_TIME;
         }
         let now = Instant::now();
@@ -1717,6 +1718,7 @@ impl App {
         let host_clock = self.host_time(Instant::now());
         self.older_frame_host = self.frame_host;
         self.frame_host = host_clock;
+        let high_refresh = self.high_refresh();
         let Some(game) = &mut self.game else { return };
         game.system.host_clock = host_clock;
         // Kid Icarus: Uprising draws a view as wide as the top screen shows
@@ -1732,8 +1734,15 @@ impl App {
             recorder.record(input);
         }
         game.system.set_input(input);
+        let pictures = game.system.pictures();
         let outcome = game.system.run_frame();
-        game.count_frame();
+        // the game's own frames are the pictures it drew, which a title
+        // drawing every other console refresh has half as often. without
+        // High Refresh Mode the console's frames are all the readout counts,
+        // as they always have been.
+        if !high_refresh || game.system.pictures() != pictures {
+            game.count_frame();
+        }
         let sound = game.system.take_audio();
         // fast forward plays no sound, there is too much of it too soon
         if let (Some(audio), false) = (&self.audio, self.fast_forwarding) {

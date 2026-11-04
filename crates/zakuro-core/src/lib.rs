@@ -219,9 +219,13 @@ struct Pacing {
     between: bool,
     /// the refreshes that showed pictures in between so far.
     shown: u64,
-    /// the host time the last new picture was shown at, when pacing knows it.
+    /// the new pictures the top screen has shown, for the frontend's readout
+    /// of the game's own frames. a title drawing every other refresh has one
+    /// every other console refresh.
+    pictures: u64,
+    /// the host time the last new picture arrived at, when pacing knows it.
     newer_host_time: Option<std::time::Duration>,
-    /// the host time the picture before that was shown at, when pacing knows it.
+    /// the host time the picture before that arrived at, when pacing knows it.
     older_host_time: Option<std::time::Duration>,
 }
 
@@ -229,10 +233,11 @@ impl Pacing {
     /// the kind of picture the title's frames show at a host time, without
     /// the picture. the title's own at a frame's time, or one in between
     /// when it draws every other refresh and the host time falls between its
-    /// frames. a title that stalled, more than two refreshes without a new
-    /// picture, shows its own. it is the pictures' kind and not an eye's:
-    /// both eyes of a 3D picture come from the same two frames, so both are
-    /// this one, at this one t.
+    /// frames. the older frame's at the older time, t=0, and the newest at
+    /// its own, t=1. a title that stalled, more than two refreshes without
+    /// a new picture, shows its own. it is the pictures' kind and not an
+    /// eye's: both eyes of a 3D picture come from the same two frames, so
+    /// both are this one, at this one t.
     fn kind_at_host_time(&self, host_time: std::time::Duration) -> PictureKind {
         if self.refreshes - self.new_at > 2 {
             return PictureKind::Real;
@@ -249,7 +254,12 @@ impl Pacing {
         }
         let elapsed = host_time.saturating_sub(older).as_secs_f32();
         let t = (elapsed / total).clamp(0.0, 1.0);
-        if t <= 0.0 || t >= 1.0 {
+        if t <= 0.0 {
+            // the older picture's time is the picture before the newest,
+            // not the newest one's
+            return PictureKind::InBetween(0.0);
+        }
+        if t >= 1.0 {
             return PictureKind::Real;
         }
         PictureKind::InBetween(t)
@@ -857,10 +867,6 @@ impl System {
         let start = self.host_timings.as_ref().map(|_| std::time::Instant::now());
         self.idle_interrupted(false);
         self.frames += 1;
-        // remember when this frame finished on the host's clock, so a
-        // picture in between the last two can be shown at a host time.
-        self.pacing.older_host_time = self.pacing.newer_host_time;
-        self.pacing.newer_host_time = Some(self.host_clock);
         if self.frames.is_multiple_of(hints::SAVE_EVERY) {
             if let Some(hints) = &mut self.hints {
                 hints.save();
@@ -885,9 +891,9 @@ impl System {
         // pick up any buffer swap the game queued directly in GSP shared
         // memory before the LCDs latch whatever is currently configured.
         services::gsp::refresh(self);
-        if self.pacing.on {
-            self.pace();
-        }
+        // the top screen's new pictures are counted at every refresh, and
+        // High Refresh Mode paces the ones in between.
+        self.pace();
 
         // both LCDs finish scanning out, in that order.
         services::gsp::signal_interrupt(self, services::gsp::InterruptId::Pdc0);
@@ -897,13 +903,15 @@ impl System {
         }
     }
 
-    /// High Refresh Mode's pacing at a refresh. while a title sets a new
-    /// picture every refresh, or every other one, the GPU draws a picture in
-    /// between along with each, from the frame before's draws and this
-    /// one's, see zakuro_gpu's interpolation. the host's presenter picks the
-    /// title's own or one in between at the host time it shows it at. a
-    /// title that stalled, more than two refreshes without a new picture,
-    /// draws none in between.
+    /// the top screen's picture at a console refresh. a new one is counted,
+    /// with the host time it arrived at, for the game's frame rate and for
+    /// the pictures in between. while High Refresh Mode is on and a title
+    /// sets a new picture every refresh, or every other one, the GPU draws a
+    /// picture in between along with each, from the frame before's draws and
+    /// this one's, see zakuro_gpu's interpolation. the host's presenter
+    /// picks the title's own or one in between at the host time it shows it
+    /// at. a title that stalled, more than two refreshes without a new
+    /// picture, draws none in between.
     fn pace(&mut self) {
         let pacing = &mut self.pacing;
         pacing.refreshes += 1;
@@ -911,7 +919,7 @@ impl System {
         let top = self.screen_ref(zakuro_common::Screen::Top, false);
         let pacing = &mut self.pacing;
         if top.is_none() || top == pacing.last {
-            if pacing.refreshes - pacing.new_at > 2 {
+            if pacing.on && pacing.refreshes - pacing.new_at > 2 {
                 // the title slowed down or stopped, the pictures in between
                 // of its next frame would be shown too late
                 self.gpu.set_twins(false);
@@ -921,6 +929,16 @@ impl System {
         let gap = pacing.refreshes - pacing.new_at;
         pacing.new_at = pacing.refreshes;
         pacing.last = top;
+        pacing.pictures += 1;
+        // the host times the two newest pictures arrived at, which a picture
+        // in between is drawn at a fraction of. a title drawing every other
+        // refresh keeps its two-refresh interval, rather than the console's
+        // one-refresh interval between its frames.
+        pacing.older_host_time = pacing.newer_host_time;
+        pacing.newer_host_time = Some(self.host_clock);
+        if !pacing.on {
+            return;
+        }
         let matches = self.gpu.frame_done();
         let pacing = &mut self.pacing;
         pacing.matches = matches;
@@ -955,6 +973,13 @@ impl System {
     /// whether the screens show the pictures in between at this refresh.
     pub fn shows_between(&self) -> bool {
         self.pacing.between && !self.real_frames_only()
+    }
+
+    /// how many new pictures the top screen has shown, which is the game's
+    /// own frame rate counted in pictures: a title drawing every other
+    /// refresh has one every other console refresh.
+    pub fn pictures(&self) -> u64 {
+        self.pacing.pictures
     }
 
     /// the DSP finishing an audio frame, it plays its voices one frame on and
@@ -2165,8 +2190,9 @@ mod tests {
             ..Default::default()
         };
 
-        // at the older picture's time, the title's own shows
-        assert_eq!(pacing.kind_at_host_time(Duration::ZERO), PictureKind::Real);
+        // at the older picture's time, the older picture shows, the frame
+        // before, rather than jumping to the newest one early
+        assert_eq!(pacing.kind_at_host_time(Duration::ZERO), PictureKind::InBetween(0.0));
         // halfway between the two, the picture in between at t=0.5 shows
         match pacing.kind_at_host_time(half) {
             PictureKind::InBetween(t) => assert!((t - 0.5).abs() < 1e-5, "t was {t}"),
@@ -2194,9 +2220,10 @@ mod tests {
         pacing.new_at = 7;
         assert_eq!(pacing.kind_at_host_time(frame_time / 2), PictureKind::Real);
 
-        // host times outside the two pictures clamp to the title's own
+        // host times before the two pictures clamp to the older one, and
+        // after them to the newest
         pacing.new_at = 9;
-        assert_eq!(pacing.kind_at_host_time(Duration::from_millis(0)), PictureKind::Real);
+        assert_eq!(pacing.kind_at_host_time(Duration::from_millis(0)), PictureKind::InBetween(0.0));
         assert_eq!(pacing.kind_at_host_time(frame_time), PictureKind::Real);
         assert_eq!(pacing.kind_at_host_time(frame_time + Duration::from_millis(1)), PictureKind::Real);
     }
@@ -2248,18 +2275,18 @@ mod tests {
             ..Default::default()
         };
 
-        // the refreshes inside one frame: its own picture, then two in
-        // between it and the next
+        // the refreshes inside one frame: the older picture at t=0, then
+        // two in between it and the next
         let mut shown = Vec::new();
         let mut host = Duration::ZERO;
         while host < frame_time {
             shown.push(pacing.kind_at_host_time(host));
             host += host_step;
         }
-        assert_eq!(shown.first(), Some(&PictureKind::Real), "{shown:?}");
+        assert_eq!(shown.first(), Some(&PictureKind::InBetween(0.0)), "{shown:?}");
         let between: Vec<f32> = shown.iter().filter_map(PictureKind::t).collect();
-        assert_eq!(between.len(), 2, "{shown:?}");
-        for (t, expected) in between.iter().zip([60.0 / 144.0, 120.0 / 144.0]) {
+        assert_eq!(between.len(), 3, "{shown:?}");
+        for (t, expected) in between.iter().zip([0.0, 60.0 / 144.0, 120.0 / 144.0]) {
             assert!((t - expected).abs() < 1e-4, "t was {t}, expected {expected}");
             assert!((0.0..=1.0).contains(t), "t was {t}");
         }
@@ -2318,11 +2345,15 @@ mod tests {
             match pair.left.kind {
                 PictureKind::Real => own += 1,
                 PictureKind::InBetween(t) => {
-                    assert!(t > 0.0 && t < 1.0, "t was {t} at {host:?}");
+                    assert!((0.0..1.0).contains(&t), "t was {t} at {host:?}");
                     between += 1;
                 }
             }
-            host += step;
+            if host >= frame {
+                break;
+            }
+            // the last sample lands on the frame's own time, its own picture
+            host = (host + step).min(frame);
         }
         assert!(own > 0 && between > 0, "{own} of the title's own pictures and {between} in between");
     }

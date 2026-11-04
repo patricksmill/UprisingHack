@@ -181,6 +181,10 @@ fn main() {
     let host_step = std::time::Duration::from_secs_f64(1.0 / host_hz);
     let console_step = std::time::Duration::from_secs_f64(1.0 / 59.83);
     let mut frame_clock = std::time::Duration::ZERO;
+    // the simulated host's clock goes on across the console's frames, a
+    // refresh at a time, so an interval that is not a whole number of
+    // refreshes keeps its phase.
+    let mut host_clock = std::time::Duration::ZERO;
 
     // what gets typed when a title opens the software keyboard,
     // ZAKURO_KEYBOARD=Link.
@@ -323,16 +327,12 @@ fn main() {
         system.host_clock = frame_clock;
         outcome = system.run_frame();
         executed = frame + 1;
-        // report the pictures the host's refreshes between the last two
-        // frames show, as PictureKind and t.
-        let older = frame_clock.saturating_sub(console_step);
-        let mut sample = older;
-        while sample < frame_clock {
-            let kind = system.picture_kind_at_host_time(sample);
-            if !kind.is_real() {
-                println!("frame {executed}: host {sample:?} shows {kind:?}");
-            }
-            sample += host_step;
+        // report every refresh the host's simulated clock shows, the real
+        // pictures and the ones in between alike, with their t.
+        while host_clock <= frame_clock {
+            let kind = system.picture_kind_at_host_time(host_clock);
+            println!("frame {executed}: host {host_clock:?} shows {kind:?}");
+            host_clock += host_step;
         }
         frame_clock += console_step;
         betweens += system.shows_between() as u64;
