@@ -175,9 +175,38 @@ pub struct HostPicture {
     pub kind: PictureKind,
 }
 
+/// the top screen's pictures for both eyes at a host time, and what they
+/// are. the kind is decided once for the pair, so both eyes are the title's
+/// own or the same picture in between at the same t, and the 3D image never
+/// tears between eyes.
+#[derive(Debug, Clone)]
+pub struct StereoPicture {
+    /// the picture the left eye shows.
+    pub left: HostPicture,
+    /// the picture the right eye shows, when the title draws in 3D.
+    pub right: Option<HostPicture>,
+}
+
+/// the top screen's pictures for both eyes on the host's GPU at a host
+/// time, and what they are, for a presenter sharing the device. the kind is
+/// the pair's, as StereoPicture has it, so neither eye is shown at a t the
+/// other is not.
+#[derive(Debug, Clone, Copy)]
+pub struct GpuStereoPicture {
+    /// the picture the left eye shows on the GPU, as gpu_screen gives it.
+    pub left: Option<zakuro_gpu::GpuScreen>,
+    /// the picture the right eye shows, when the title draws in 3D.
+    pub right: Option<zakuro_gpu::GpuScreen>,
+    /// the title's own at a frame's time, or one in between at another.
+    pub kind: PictureKind,
+}
+
 /// frame interpolation's count of the refreshes, see System::pace.
 #[derive(Default)]
 struct Pacing {
+    /// high refresh mode is on, from set_interpolation. the pacer decides
+    /// the pictures only while it is, and one decision is the pair of eyes'.
+    on: bool,
     refreshes: u64,
     /// the refresh the top screen got its last new picture at, and that
     /// picture.
@@ -201,7 +230,9 @@ impl Pacing {
     /// the picture. the title's own at a frame's time, or one in between
     /// when it draws every other refresh and the host time falls between its
     /// frames. a title that stalled, more than two refreshes without a new
-    /// picture, shows its own.
+    /// picture, shows its own. it is the pictures' kind and not an eye's:
+    /// both eyes of a 3D picture come from the same two frames, so both are
+    /// this one, at this one t.
     fn kind_at_host_time(&self, host_time: std::time::Duration) -> PictureKind {
         if self.refreshes - self.new_at > 2 {
             return PictureKind::Real;
@@ -854,7 +885,7 @@ impl System {
         // pick up any buffer swap the game queued directly in GSP shared
         // memory before the LCDs latch whatever is currently configured.
         services::gsp::refresh(self);
-        if self.gpu.interpolates() {
+        if self.pacing.on {
             self.pace();
         }
 
@@ -905,7 +936,11 @@ impl System {
     /// whether it does, it takes the host's GPU showing the screens.
     pub fn set_interpolation(&mut self, on: bool) -> bool {
         self.pacing = Pacing::default();
-        self.gpu.set_interpolation(on)
+        let on = self.gpu.set_interpolation(on);
+        // the pacer decides the pictures only while the mode is really on,
+        // which takes the host's GPU showing the screens
+        self.pacing.on = on;
+        on
     }
 
     /// how the draws of the last frame matched the frame before's, for frame
@@ -1149,10 +1184,20 @@ impl System {
     /// a title that stalled, more than two refreshes without a new picture,
     /// or a frontend with interpolation off, shows its own.
     pub fn picture_kind_at_host_time(&self, host_time: std::time::Duration) -> PictureKind {
-        if !self.gpu.interpolates() {
+        if !self.pacing.on {
             return PictureKind::Real;
         }
         self.pacing.kind_at_host_time(host_time)
+    }
+
+    /// a screen's picture for an eye at a given kind, a screen's own or one
+    /// in between. the picture in between is the GPU's when it draws the
+    /// screens straight from its device, the title's own otherwise.
+    fn picture_of_kind(&mut self, screen: zakuro_common::Screen, right: bool, kind: PictureKind) -> Screen {
+        match kind {
+            PictureKind::Real => self.read_scaled(screen, right),
+            PictureKind::InBetween(_) => self.upright_screen_at(screen, right, true).unwrap_or_else(|| self.read_scaled(screen, right)),
+        }
     }
 
     /// a screen's picture at a host time, and whether it is the title's own or
@@ -1160,11 +1205,24 @@ impl System {
     /// screens straight from its device, the title's own otherwise.
     pub fn picture_at_host_time(&mut self, screen: zakuro_common::Screen, host_time: std::time::Duration) -> HostPicture {
         let kind = self.picture_kind_at_host_time(host_time);
-        let picture = match kind {
-            PictureKind::Real => self.read_screen_scaled(screen),
-            PictureKind::InBetween(_) => self.upright_screen(screen, true).unwrap_or_else(|| self.read_screen_scaled(screen)),
-        };
+        let picture = self.picture_of_kind(screen, false, kind);
         HostPicture { kind, screen: picture }
+    }
+
+    /// the top screen's pictures for both eyes at a host time, and whether
+    /// they are the title's own or one in between. the one kind is decided
+    /// here for the pair, so both eyes are the same picture at the same t,
+    /// and a 3D picture never tears between them. the right eye's picture is
+    /// none when the title does not draw in 3D.
+    pub fn stereo_picture_at_host_time(&mut self, host_time: std::time::Duration) -> StereoPicture {
+        let kind = self.picture_kind_at_host_time(host_time);
+        let left = HostPicture { kind, screen: self.picture_of_kind(zakuro_common::Screen::Top, false, kind) };
+        let right = if self.draws_in_3d() {
+            Some(HostPicture { kind, screen: self.picture_of_kind(zakuro_common::Screen::Top, true, kind) })
+        } else {
+            None
+        };
+        StereoPicture { left, right }
     }
 
     /// a screen's picture at a host time on the host's GPU, and whether it is
@@ -1173,22 +1231,39 @@ impl System {
     /// itself or did not draw what the screen shows.
     pub fn gpu_picture_at_host_time(&mut self, screen: zakuro_common::Screen, right: bool, host_time: std::time::Duration) -> (Option<zakuro_gpu::GpuScreen>, PictureKind) {
         let kind = self.picture_kind_at_host_time(host_time);
-        let picture = match kind {
+        (self.gpu_picture_of_kind(screen, right, kind), kind)
+    }
+
+    /// the top screen's pictures for both eyes at a host time on the host's
+    /// GPU, and whether they are the title's own or one in between, for a
+    /// presenter sharing the device to draw straight from. the one kind is
+    /// decided here for the pair, so both eyes are the same picture at the
+    /// same t, as stereo_picture_at_host_time has it, and neither can be
+    /// drawn in between at a t the other is not.
+    pub fn gpu_stereo_picture_at_host_time(&mut self, host_time: std::time::Duration) -> GpuStereoPicture {
+        let kind = self.picture_kind_at_host_time(host_time);
+        let left = self.gpu_picture_of_kind(zakuro_common::Screen::Top, false, kind);
+        let right = if self.draws_in_3d() { self.gpu_picture_of_kind(zakuro_common::Screen::Top, true, kind) } else { None };
+        GpuStereoPicture { left, right, kind }
+    }
+
+    /// a screen's picture for an eye at a given kind, as a presenter sharing
+    /// the GPU's device draws it. both eyes take this same path, the eye
+    /// only choosing which buffer's picture it is.
+    fn gpu_picture_of_kind(&mut self, screen: zakuro_common::Screen, right: bool, kind: PictureKind) -> Option<zakuro_gpu::GpuScreen> {
+        match kind {
             PictureKind::Real => self.gpu_picture(screen, right),
             PictureKind::InBetween(_) => {
-                let now = self.screen_ref(screen, right);
-                if let Some(now) = now {
-                    if let Some(between) = self.gpu.between_image(now) {
-                        Some(between)
-                    } else {
-                        self.gpu.screen_image(now)
-                    }
-                } else {
-                    None
+                if !self.gpu.shows_directly() {
+                    return None;
+                }
+                let now = self.screen_ref(screen, right)?;
+                match self.gpu.between_image(now) {
+                    Some(between) => Some(between),
+                    None => self.gpu.screen_image(now),
                 }
             }
-        };
-        (picture, kind)
+        }
     }
 
     /// the top screen's picture for the right eye on the host's GPU, as
@@ -1216,9 +1291,15 @@ impl System {
 
     /// a screen's picture as the GPU showing the screens has it, or the
     /// picture in between it and the one before, see pace, for saving it.
-    /// it waits for the GPU.
+    /// the left eye's of the top screen. it waits for the GPU.
     pub fn upright_screen(&mut self, screen: zakuro_common::Screen, between: bool) -> Option<Screen> {
-        let now = self.screen_ref(screen, false)?;
+        self.upright_screen_at(screen, false, between)
+    }
+
+    /// the same, for the eye given, so each eye of a stereo picture can be
+    /// saved as the picture the GPU drew for it.
+    fn upright_screen_at(&mut self, screen: zakuro_common::Screen, right: bool, between: bool) -> Option<Screen> {
+        let now = self.screen_ref(screen, right)?;
         let (image, scale) = self.gpu.upright_picture(now, between)?;
         Some((image, screen.width() * scale, screen.height() * scale))
     }
@@ -2082,5 +2163,147 @@ mod tests {
         assert_eq!(pacing.kind_at_host_time(Duration::from_millis(0)), PictureKind::Real);
         assert_eq!(pacing.kind_at_host_time(frame_time), PictureKind::Real);
         assert_eq!(pacing.kind_at_host_time(frame_time + Duration::from_millis(1)), PictureKind::Real);
+    }
+
+    /// the top screen as a title drawing in 3D has it, with a buffer for the
+    /// right eye, and the pacer as pace leaves it for a title drawing every
+    /// other refresh, two console refreshes apart.
+    fn stereo_system() -> (System, std::time::Duration) {
+        use std::time::Duration;
+
+        let mut system = System::new(Config::default());
+        // bit 5 set and bit 6 clear ask for the screen's two buffers
+        system.gpu.framebuffers[0].format = 0x20;
+        system.gpu.framebuffers[0].address_a_right = 0x1834_6500;
+        assert!(system.draws_in_3d(), "the top screen has a buffer for each eye");
+        let frame = Duration::from_secs_f64(2.0 / 59.83);
+        system.pacing.on = true;
+        system.pacing.refreshes = 10;
+        system.pacing.new_at = 9;
+        system.pacing.between = true;
+        system.pacing.older_host_time = Some(Duration::ZERO);
+        system.pacing.newer_host_time = Some(frame);
+        (system, frame)
+    }
+
+    /// with 3D on, both eyes show the same kind of picture at the same t for
+    /// every host time, as the pacer decides it once for the pair: a host
+    /// at 120 Hz alternates the title's own pictures with the ones in
+    /// between at t = ½, and neither eye is ever at a t the other is not.
+    #[test]
+    fn both_eyes_show_the_same_picture_in_between_at_host_times() {
+        use std::time::Duration;
+
+        let (mut system, frame) = stereo_system();
+        let step = Duration::from_secs_f64(1.0 / 120.0);
+        let (mut own, mut between) = (0, 0);
+        let mut host = Duration::ZERO;
+        while host <= frame {
+            let pair = system.stereo_picture_at_host_time(host);
+            let right = pair.right.as_ref().expect("the title draws in 3D");
+            assert_eq!(pair.left.kind, right.kind, "the eyes' kind at {host:?}");
+            assert_eq!(pair.left.kind.t(), right.kind.t(), "the eyes' t at {host:?}");
+
+            // the presenter's queries at the same host time agree with the
+            // pair, one kind for both eyes
+            let gpu = system.gpu_stereo_picture_at_host_time(host);
+            let (_, left_kind) = system.gpu_picture_at_host_time(zakuro_common::Screen::Top, false, host);
+            let (_, right_kind) = system.gpu_picture_at_host_time(zakuro_common::Screen::Top, true, host);
+            assert_eq!(left_kind, right_kind, "the eyes' kinds at {host:?}");
+            assert_eq!(gpu.kind, left_kind);
+            assert_eq!(pair.left.kind, left_kind);
+
+            match pair.left.kind {
+                PictureKind::Real => own += 1,
+                PictureKind::InBetween(t) => {
+                    assert!(t > 0.0 && t < 1.0, "t was {t} at {host:?}");
+                    between += 1;
+                }
+            }
+            host += step;
+        }
+        assert!(own > 0 && between > 0, "{own} of the title's own pictures and {between} in between");
+    }
+
+    /// the eyes never part as the frames and the host's refreshes advance: a
+    /// host at 144 Hz asks for a new t each refresh, and every time both
+    /// eyes are given the same kind and t.
+    #[test]
+    fn the_eyes_never_part_as_the_host_times_advance() {
+        use std::time::Duration;
+
+        let (mut system, _) = stereo_system();
+        let frame = Duration::from_secs_f64(1.0 / 59.83);
+        let step = Duration::from_secs_f64(1.0 / 144.0);
+        let mut older = Duration::ZERO;
+        let mut between = 0;
+        for _ in 0..8 {
+            let newer = older + frame;
+            system.pacing.refreshes += 1;
+            system.pacing.new_at = system.pacing.refreshes;
+            system.pacing.older_host_time = Some(older);
+            system.pacing.newer_host_time = Some(newer);
+            let mut host = older;
+            while host < newer {
+                let pair = system.gpu_stereo_picture_at_host_time(host);
+                let (_, left_kind) = system.gpu_picture_at_host_time(zakuro_common::Screen::Top, false, host);
+                let (_, right_kind) = system.gpu_picture_at_host_time(zakuro_common::Screen::Top, true, host);
+                assert_eq!(left_kind, right_kind, "the eyes' kinds at {host:?}");
+                assert_eq!(pair.kind, left_kind);
+                if let Some(t) = left_kind.t() {
+                    assert!((0.0..1.0).contains(&t), "t was {t} at {host:?}");
+                    between += 1;
+                }
+                host += step;
+            }
+            older = newer;
+        }
+        assert!(between > 0, "144 Hz asks for pictures in between");
+    }
+
+    /// the right eye's picture comes from its own buffer, not the left's, so
+    /// a stereo picture shows both eyes as the title drew them.
+    #[test]
+    fn each_eye_shows_its_own_picture() {
+        use memory::{MemoryState, Permission};
+
+        let mut system = System::new(Config::default());
+        // a top screen's buffer for each eye, each filled with its own pixel
+        let size = zakuro_common::Screen::Top.width() * zakuro_common::Screen::Top.height() * 4;
+        let mut buffer = |at: u32, pixel: [u8; 4]| {
+            let block = system.memory.phys.allocate(memory::MemoryRegion::Application, size).unwrap();
+            system.memory.map(at, block.addr, size, Permission::RW, MemoryState::Private);
+            let mut bytes = vec![0u8; size as usize];
+            for chunk in bytes.chunks_exact_mut(4) {
+                chunk.copy_from_slice(&pixel);
+            }
+            system.memory.write_bytes(at, &bytes);
+            at
+        };
+        let left = buffer(0x0100_0000, [1, 2, 3, 4]);
+        let right = buffer(0x0200_0000, [5, 6, 7, 8]);
+        let config = &mut system.gpu.framebuffers[0];
+        config.format = 0x20;
+        config.address_a_left = left;
+        config.address_a_right = right;
+        assert!(system.draws_in_3d());
+
+        let pair = system.stereo_picture_at_host_time(std::time::Duration::ZERO);
+        let right = pair.right.expect("the title draws in 3D");
+        assert_eq!(pair.left.kind, right.kind);
+        assert_ne!(pair.left.screen.0[..4], right.screen.0[..4], "each eye reads its own buffer");
+    }
+
+    /// a title not drawing in 3D has no right eye to show, and the pair is
+    /// the left eye alone.
+    #[test]
+    fn without_3d_there_is_no_right_eye_picture() {
+        let mut system = System::new(Config::default());
+        assert!(!system.draws_in_3d());
+        let pair = system.stereo_picture_at_host_time(std::time::Duration::ZERO);
+        assert!(pair.right.is_none());
+        let gpu = system.gpu_stereo_picture_at_host_time(std::time::Duration::ZERO);
+        assert!(gpu.right.is_none());
+        assert_eq!(gpu.kind, pair.left.kind);
     }
 }
