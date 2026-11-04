@@ -8,7 +8,10 @@
 use crate::System;
 
 mod menu_top;
+mod screen_transform;
 use menu_top::MenuTop;
+pub use screen_transform::{PauseRules, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
+use screen_transform::{Activate, QuadRole, ScreenTransform};
 
 /// Kid Icarus: Uprising, the USA cartridge.
 pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
@@ -19,7 +22,8 @@ pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 77] = [
+pub const PLACES: [u32; 131] = [
+    SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
     0x002A3374, 0x002A3470, 0x002A34C8, 0x002A3378, 0x002A3474, 0x002A34CC,
@@ -64,32 +68,47 @@ pub const PLACES: [u32; 77] = [
     menu_top::START,
     menu_top::FINISHED,
     MENU_NO_TOUCH,
-    MENU_SCREENS[0].update,
-    MENU_SCREENS[1].update,
-    MENU_SCREENS[2].update,
-    MENU_SCREENS[3].update,
-    MENU_SCREENS[4].update,
-    MENU_SCREENS[5].update,
-    MENU_SCREENS[6].update,
-    MENU_SCREENS[7].update,
-    MENU_SCREENS[8].update,
-    MENU_SCREENS[9].update,
-    MENU_SCREENS[10].update,
-    MENU_SCREENS[11].update,
-    MENU_SCREENS[12].update,
-    MENU_SCREENS[13].update,
-    MENU_SCREENS[14].update,
-    MENU_SCREENS[15].update,
-    MENU_SCREENS[16].update,
-    MENU_SCREENS[17].update,
-    MENU_SCREENS[18].update,
-    MENU_SCREENS[19].update,
-    MENU_SCREENS[20].update,
-    MENU_SCREENS[21].update,
-    MENU_SCREENS[22].update,
-    MENU_SCREENS[23].update,
-    MENU_SCREENS[24].update,
-    MENU_SCREENS[25].update,
+    screen_transform::SCRIPTED_UPDATES[0],
+    screen_transform::SCRIPTED_UPDATES[1],
+    screen_transform::SCRIPTED_UPDATES[2],
+    screen_transform::SCRIPTED_UPDATES[3],
+    screen_transform::SCRIPTED_UPDATES[4],
+    screen_transform::SCRIPTED_UPDATES[5],
+    screen_transform::SCRIPTED_UPDATES[6],
+    screen_transform::SCRIPTED_UPDATES[7],
+    screen_transform::SCRIPTED_UPDATES[8],
+    screen_transform::SCRIPTED_UPDATES[9],
+    screen_transform::SCRIPTED_UPDATES[10],
+    screen_transform::SCRIPTED_UPDATES[11],
+    screen_transform::SCRIPTED_UPDATES[12],
+    screen_transform::SCRIPTED_UPDATES[13],
+    screen_transform::SCRIPTED_UPDATES[14],
+    screen_transform::SCRIPTED_UPDATES[15],
+    screen_transform::SCRIPTED_UPDATES[16],
+    screen_transform::SCRIPTED_UPDATES[17],
+    screen_transform::SCRIPTED_UPDATES[18],
+    screen_transform::SCRIPTED_UPDATES[19],
+    screen_transform::SCRIPTED_UPDATES[20],
+    screen_transform::SCRIPTED_UPDATES[21],
+    screen_transform::SCRIPTED_UPDATES[22],
+    screen_transform::SCRIPTED_UPDATES[23],
+    screen_transform::SCRIPTED_UPDATES[24],
+    screen_transform::SCRIPTED_UPDATES[25],
+    0x003506C4,
+    0x00321720, 0x0032178C, 0x003217F8, 0x00321864,
+    0x0026E0A0, 0x0026E114, 0x0026E18C, 0x0026E204,
+    0x00284898, 0x00284948, 0x002849F8, 0x00284AA8,
+    0x00219A64, 0x00219AD8, 0x00219B50, 0x00219BC8,
+    0x0023C1AC, 0x0023C238, 0x0023C2C8, 0x0023C384,
+    0x002E135C, 0x002E1854, 0x00293848, 0x002938CC,
+    0x002474B0, 0x0024751C, 0x00247588, 0x002475F4,
+    0x0019560C, 0x0019568C, 0x0019570C, 0x00195784,
+    0x002535C0, 0x00253610, 0x00253660, 0x002536B0,
+    0x002D590C, 0x002D5B40, 0x002D5D74, 0x002D699C,
+    0x00241368,
+    0x002BC5A4, 0x002BC618, 0x002BC688, 0x002BC6CC,
+    0x002B75E4, 0x002B7638, 0x002B7688, 0x002B76E0,
+    0x001C66CC,
 ];
 
 /// the Fiend's Cauldron's pot (a task, vtable 0x00CF9AEC), the update it
@@ -130,18 +149,6 @@ const PART_KEY: u32 = 0x00D71744;
 const PART_DESCRIPTOR: u32 = 0x1C;
 const DESCRIPTOR_NAME: u32 = 0x18;
 
-/// a menu outside battle that the mouse moves the outline of, as its keys
-/// do, by its own code: its object's vtable, the place the task loop runs
-/// its update from with it in r0, the calls of its own functions that
-/// outline what the mouse is over (see Found), none when it is not one of
-/// its parts, and the function A uses what is outlined with (object).
-struct MenuScreen {
-    vtable: u32,
-    update: u32,
-    outline: fn(&mut System, u32, Found) -> Option<Vec<MenuCall>>,
-    use_outlined: u32,
-}
-
 /// a call of the game's: the function, r0 to r2.
 type MenuCall = (u32, [u32; 3]);
 
@@ -155,6 +162,40 @@ struct Found {
     part: u32,
 }
 
+/// the four directions the menus' keys navigate in. the game's native
+/// direction codes are up 7, down 1, left 3, right 5; the even codes are
+/// diagonals and are not separate editor choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum NavigationDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl NavigationDirection {
+    /// the direction whose native code this is, when it is a cardinal one.
+    fn from_native_code(code: u32) -> Option<Self> {
+        match code {
+            7 => Some(Self::Up),
+            1 => Some(Self::Down),
+            3 => Some(Self::Left),
+            5 => Some(Self::Right),
+            _ => None,
+        }
+    }
+}
+
+/// Explicit directional destination keyed by the same Screen/layer indices
+/// as editor placements. Missing links retain the game's native route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NavigationLink {
+    pub screen: usize,
+    pub from: usize,
+    pub direction: NavigationDirection,
+    pub to: usize,
+}
+
 /// A menu press waits for release to click, or becomes a native touch
 /// when held for 200 ms or moved four bottom-screen pixels.
 struct MenuPress {
@@ -163,41 +204,6 @@ struct MenuPress {
     since: u64,
     dragging: Option<u64>,
 }
-
-/// a screen's click that is its own touch, for a screen whose parts act on
-/// touches and not on A (Idol Toss's bowl, its Back): the hover still
-/// outlines, and the press over a part touches it there, as unmapped
-/// controls do.
-const CLICK_TOUCHES: u32 = u32::MAX;
-
-const MENU_SCREENS: [MenuScreen; 26] = [
-    MenuScreen { vtable: 0x00CEC3F4, update: 0x002A3EC4, outline: outline_file, use_outlined: 0x003374D0 },
-    MenuScreen { vtable: 0x00CF243C, update: 0x002A3FCC, outline: outline_chapter, use_outlined: 0x003675C0 },
-    MenuScreen { vtable: 0x00CFBD9C, update: 0x002A3F9C, outline: outline_buttons, use_outlined: 0x0036F59C },
-    MenuScreen { vtable: 0x00CEAE98, update: 0x00224BA0, outline: outline_queued, use_outlined: 0x002FB9E0 },
-    MenuScreen { vtable: 0x00CF2368, update: 0x001ECB4C, outline: outline_other, use_outlined: 0x002D50FC },
-    MenuScreen { vtable: 0x00CF84DC, update: 0x00224C18, outline: outline_controls, use_outlined: 0x003186E8 },
-    MenuScreen { vtable: 0x00CF9B60, update: 0x001B4C74, outline: outline_queued, use_outlined: 0x0029B26C },
-    MenuScreen { vtable: 0x00CFA034, update: 0x001ECBBC, outline: outline_subtitles, use_outlined: 0x002E5448 },
-    MenuScreen { vtable: 0x00CF2390, update: 0x00224BD4, outline: outline_volume, use_outlined: 0x002D56CC },
-    MenuScreen { vtable: 0x00CF8E8C, update: 0x001ECBF4, outline: outline_profile, use_outlined: 0x002E2F4C },
-    MenuScreen { vtable: 0x00CEC41C, update: 0x0016756C, outline: outline_yes_no, use_outlined: 0x001C16D4 },
-    MenuScreen { vtable: 0x00CF8270, update: 0x002A4070, outline: outline_dialog, use_outlined: 0x00314DF8 },
-    MenuScreen { vtable: 0x00CFC3D0, update: 0x002ECCF4, outline: outline_solo, use_outlined: 0x00370300 },
-    MenuScreen { vtable: 0x00CFCA28, update: 0x002A1FD8, outline: outline_altar, use_outlined: 0x00322C34 },
-    MenuScreen { vtable: 0x00CEC2B8, update: 0x002B6DB8, outline: outline_armory, use_outlined: 0 },
-    MenuScreen { vtable: 0x00CEFCA8, update: 0x00238CBC, outline: outline_armory, use_outlined: 0 },
-    MenuScreen { vtable: 0x00CEEBFC, update: 0x001C9734, outline: outline_armory, use_outlined: 0 },
-    MenuScreen { vtable: 0x00CEE148, update: 0x00230B5C, outline: outline_armory, use_outlined: 0 },
-    MenuScreen { vtable: 0x00CEC2E0, update: 0x002BB14C, outline: outline_armory, use_outlined: 0 },
-    MenuScreen { vtable: 0x00CEE1E8, update: 0x0019CDC8, outline: outline_armory, use_outlined: 0 },
-    MenuScreen { vtable: 0x00CEE1C0, update: 0x0019BDC4, outline: outline_armory, use_outlined: 0 },
-    MenuScreen { vtable: 0x00CF0154, update: 0x0023A9FC, outline: outline_practice, use_outlined: 0x0030B5B4 },
-    MenuScreen { vtable: 0x00CF9400, update: 0x001B4D58, outline: outline_idol, use_outlined: CLICK_TOUCHES },
-    MenuScreen { vtable: 0x00CEEDD8, update: 0x0018AF44, outline: outline_treasure, use_outlined: CLICK_TOUCHES },
-    MenuScreen { vtable: 0x00CF8248, update: 0x00224B80, outline: outline_vault, use_outlined: 0x00345FDC },
-    MenuScreen { vtable: 0x00CF9400, update: 0x001B4D4C, outline: outline_idol, use_outlined: CLICK_TOUCHES },
-];
 
 
 /// The Vault's Idols, Music Gallery, Power Portrait, Offering, Idol Toss,
@@ -411,6 +417,12 @@ fn outline_solo(system: &mut System, object: u32, found: Found) -> Option<Vec<Me
     system.memory.write_bytes(object + 0x150, &[flags[0] | 1]);
     Some(vec![(LEAVE_PART, [object + 0x4C, found.name, 0]), (QUEUE_PART, [object + 0xFC, found.name, 0])])
 }
+const SOLO_CAMERA: u32 = 0x00321D28;
+const SOLO_CAMERA_RET1: u32 = 0x002ECE08;
+const SOLO_CAMERA_RET2: u32 = 0x002EDEC0;
+const HASH_PRACTICE_RANGE: u32 = 0x94CE_5E14;
+const HASH_IDOL_TOSS: u32 = 0x4F73_A4C0;
+
 
 /// Arms Altar's buttons: keys and touches both move the outline, sound
 /// and animations by 0x00322DB0(object, &name, repeat), keeping the
@@ -447,6 +459,16 @@ fn list_row(system: &mut System, list: u32, y: f32) -> Option<u32> {
     (visible >= 0.0 && row < read_word(system, list + 0xD0)).then_some(row)
 }
 
+/// A weapon category tile, 0 (All) to 9, or 10 (Back), the game lets the
+/// cursor reach: a category's weapon counts are in the save at +0x6474.
+fn category_unlocked(system: &mut System, category: u32) -> bool {
+    if !(1..10).contains(&category) { return true; }
+    let singleton = read_word(system, 0x001FC76C);
+    let save = read_word(system, singleton);
+    let counts = save + 0x6474 + (category - 1) * 0x30;
+    save != 0 && (0..12).any(|item| read_word(system, counts + item * 4) != 0)
+}
+
 fn outline_armory(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
     let vtable = read_word(system, object);
     if vtable == 0x00CEC2B8 {
@@ -457,13 +479,7 @@ fn outline_armory(system: &mut System, object: u32, found: Found) -> Option<Vec<
     if vtable == 0x00CEE1C0 {
         let actor = kept_of_kind(system, found.part, 0x00D7681C);
         let category = actor.checked_sub(3)?;
-        if category > 10 { return None; }
-        if (1..10).contains(&category) {
-            let singleton = read_word(system, 0x001FC76C);
-            let save = read_word(system, singleton);
-            let counts = save + 0x6474 + (category - 1) * 0x30;
-            if save == 0 || !(0..12).any(|item| read_word(system, counts + item * 4) != 0) { return None; }
-        }
+        if category > 10 || !category_unlocked(system, category) { return None; }
         let old = read_word(system, object + 0xDC);
         if old == category { return Some(vec![]); }
         system.memory.write_bytes(object + 0xE0, &old.to_le_bytes());
@@ -900,6 +916,7 @@ const TOP_UI_AFTER_HUD: u32 = 0x0060D66C;
 /// a bottom screen call the top screen makes too, in the same frame's top
 /// pass of the 2D context it draws through, with what the last bottom pass
 /// gave it.
+#[derive(Clone, Copy, Debug)]
 struct ToTop {
     /// the call's bl in the bottom pass.
     site: u32,
@@ -1124,12 +1141,12 @@ impl Drawing {
     /// where in the top pass it is drawn, and comes back to.
     fn place(self) -> u32 {
         match self {
-            Drawing::PauseMenu(index) => PAUSE_MENU[index].place,
+            Drawing::PauseMenu(index) => ScreenTransform::pause_call(index).place,
             Drawing::Cauldron(_) => TOP_SCENE_DRAWN,
             Drawing::MenuTop(_) => menu_top::FINISHED,
             Drawing::CauldronCursor(_) => CAULDRON_CURSOR_KEYS_DONE,
             Drawing::Viewport(place) | Drawing::MenuClip(place) => place,
-            Drawing::Menu(_, screen) => MENU_SCREENS[screen].update,
+            Drawing::Menu(_, screen) => ScreenTransform::scripted(screen).update().expect("a Scripted Menu has an update"),
             _ => TOP_UI_AFTER_HUD,
         }
     }
@@ -1247,19 +1264,19 @@ struct Hovering {
 /// drawn as before.
 #[derive(Clone, Copy)]
 pub struct CauldronLayout {
-    pub top: CauldronPlace,
+    pub top: Placement,
     /// the top picture's intensity panel, drawn on its own over the bar,
     /// sliding along it with the dial as it slides under the picture: from's
     /// x is where it has slid to under the picture and to's where over the
     /// bar, both set each frame.
-    pub panel: CauldronPlace,
-    pub bar: CauldronPlace,
+    pub panel: Placement,
+    pub bar: Placement,
     /// the bar's dial, under the bar, drawn on its own at this size against
     /// the bar's, its arrow still at the bar's value.
     pub dial: f32,
-    pub back: CauldronPlace,
-    pub move_out: CauldronPlace,
-    pub rest: CauldronPlace,
+    pub back: Placement,
+    pub move_out: Placement,
+    pub rest: Placement,
 }
 
 impl CauldronLayout {
@@ -1274,7 +1291,7 @@ impl CauldronLayout {
         let place = |to: [f32; 4], from: [f32; 4], right: bool, down: bool| {
             let x = to[0] * scale + if right { width - WIDTH * scale } else { 0.0 };
             let y = to[1] * scale + if down { 240.0 * (1.0 - scale) } else { 0.0 };
-            CauldronPlace { from, to: [x, y, to[2] * scale, to[3] * scale] }
+            Placement { from, to: [x, y, to[2] * scale, to[3] * scale] }
         };
         CauldronLayout {
             top: place([16.0, 24.0, 258.0, 172.0], [36.0, 22.0, 328.0, 218.0], false, false),
@@ -1286,24 +1303,6 @@ impl CauldronLayout {
             rest: place([188.0, 47.0, 237.4, 178.1], [0.0, 0.0, 320.0, 240.0], true, true),
         }
     }
-}
-
-impl CauldronPlace {
-    /// where a box of from's screen, x, y, width and height, shows.
-    fn to_box(&self, part: [f32; 4]) -> [f32; 4] {
-        let (scale_x, scale_y) = (self.to[2] / self.from[2], self.to[3] / self.from[3]);
-        [self.to[0] + (part[0] - self.from[0]) * scale_x, self.to[1] + (part[1] - self.from[1]) * scale_y, part[2] * scale_x, part[3] * scale_y]
-    }
-}
-
-/// a part of a screen, from, shown in a box of the top screen, to: x, y
-/// from the top left, width and height, in the screen's pixels, the top's
-/// 400 by 240 and the bottom's 320 by 240, and to in top screen pixels as
-/// shown, 400 by 240 times widen.
-#[derive(Clone, Copy)]
-pub struct CauldronPlace {
-    pub from: [f32; 4],
-    pub to: [f32; 4],
 }
 
 pub struct AimMouse {
@@ -1334,29 +1333,21 @@ pub struct AimMouse {
     /// whether the pause menu and the dialogs over it are drawn on the top
     /// screen too.
     pub pause_on_top: bool,
-    /// their calls from the last bottom pass, by PAUSE_MENU's order.
-    pause: [Option<Recorded>; 15],
-    /// the frame the pause menu was last drawn on the top screen in.
-    pause_drawn: Option<u64>,
+    /// the Screen Transform process: captured calls and drawn frames.
+    transform: ScreenTransform,
     /// and the last one Resume, Retreat or Remove Display was drawn by the
     /// top screen's edges in.
     edges_drawn: Option<u64>,
     /// the frame the top screen's battle UI was last drawn in, which it is
     /// in every frame of a battle and in no menu's.
     battle_drawn: Option<u64>,
-    /// the frame the Fiend's Cauldron was last shown in, and whether its pot
-    /// was pouring then.
-    cauldron_drawn: Option<u64>,
-    cauldron_pouring: bool,
-    /// the pot's task, which those updates are for.
-    cauldron_task: Option<u32>,
     /// whether the Fiend's Cauldron's bottom screen is drawn on the top
     /// screen too, and where each screen's picture goes there, when not
     /// CauldronLayout::fitting the top screen.
     pub cauldron_on_top: bool,
     pub cauldron_layout: Option<CauldronLayout>,
     /// where the bar's dial was last drawn, which moves with its value.
-    cauldron_dial: Option<CauldronPlace>,
+    cauldron_dial: Option<Placement>,
     /// the part of it a press of the mouse began in, which it stays with
     /// until let go, a drag going on past it.
     touched_part: Option<usize>,
@@ -1397,9 +1388,6 @@ pub struct AimMouse {
     cleared: Option<u32>,
     /// the pause screen's touch while a hover takes its place.
     hovering: Option<Hovering>,
-    /// whether a hover took the dialog's light off its buttons, for its
-    /// cursor's sound not to play for that.
-    dialog_cleared: bool,
     /// the menus' touch object, from where it last had no touch, and the
     /// frame.
     menu_touch: Option<(u32, u64)>,
@@ -1424,6 +1412,7 @@ pub struct AimMouse {
     menu_touched: Option<u64>,
     /// Wheel fractions, kept with the menu that received them.
     menu_wheel: Option<(u32, u64, [f32; 2])>,
+    solo_camera_back: Option<u32>,
     /// how many times wider than the console's 5:3 the top screen shows,
     /// 1 for its own shape: the view is that much wider and the top
     /// screen's 2D that much narrower, so it shows the right shape stretched.
@@ -1436,6 +1425,10 @@ pub struct AimMouse {
     /// tan of half the view's width at the aspect the game gave, 0.69 in
     /// battle.
     half_width: f32,
+    /// explicit directional links set through the editor, by screen and
+    /// from part. when one matches a key's direction on its screen, the
+    /// game's own navigation is told to go to its target instead.
+    pub navigation_links: Vec<NavigationLink>,
 }
 
 impl Default for AimMouse {
@@ -1452,13 +1445,9 @@ impl Default for AimMouse {
             recorded: [None; MIRRORED.len()],
             extras_pass: 0,
             pause_on_top: false,
-            pause: [None; 15],
-            pause_drawn: None,
+            transform: ScreenTransform::default(),
             edges_drawn: None,
             battle_drawn: None,
-            cauldron_drawn: None,
-            cauldron_pouring: false,
-            cauldron_task: None,
             cauldron_on_top: false,
             cauldron_layout: None,
             cauldron_dial: None,
@@ -1478,7 +1467,6 @@ impl Default for AimMouse {
             paused: None,
             cleared: None,
             hovering: None,
-            dialog_cleared: false,
             menu_touch: None,
             menu_screen: None,
             menus_open: Vec::new(),
@@ -1491,9 +1479,11 @@ impl Default for AimMouse {
             menu_touched: None,
             menu_wheel: None,
             widen: 1.0,
+            solo_camera_back: None,
             screens: Vec::new(),
             lenses: Vec::new(),
             half_width: (std::f32::consts::FRAC_PI_8).tan() * 5.0 / 3.0,
+            navigation_links: Vec::new(),
         }
     }
 }
@@ -1506,6 +1496,17 @@ impl AimMouse {
     /// by the mouse over them when menu_hover.
     pub fn new(hud_scale: f32, narration_on_top: bool, portrait_scale: f32, mirror_bottom: bool, pause_on_top: bool, menu_hover: bool) -> AimMouse {
         AimMouse { hud_scale, narration_on_top, portrait_scale, mirror_bottom, pause_on_top, menu_hover, ..AimMouse::default() }
+    }
+
+    /// the explicit directional links set through the editor, by screen
+    /// and from part. when one matches a key's direction on its screen,
+    /// the game's own navigation is told to go to its target instead.
+    pub fn editor_navigation(&self) -> Vec<NavigationLink> {
+        self.navigation_links.clone()
+    }
+
+    pub fn set_editor_navigation(&mut self, links: Vec<NavigationLink>) {
+        self.navigation_links = links;
     }
 
     /// the mouse moved to the bottom screen's pixel, or off it: menus light
@@ -1526,7 +1527,9 @@ impl AimMouse {
 
     fn menu_clickable(&self, frame: u64) -> bool {
         if self.native_menu_on_top(frame) { return false; }
-        let shown = self.menu_screen.is_some_and(|(screen, _, seen)| frame <= seen + self.menu_age() && MENU_SCREENS[screen].use_outlined != CLICK_TOUCHES);
+        let shown = self.menu_screen.is_some_and(|(screen, _, seen)| {
+            frame <= seen + self.menu_age() && ScreenTransform::scripted(screen).activate != Activate::Touch
+        });
         self.menu_hover && shown && self.menu_part.is_some() && self.pointer.is_some() && self.pointer == self.menu_looked.map(|(pointer, _)| pointer)
     }
 
@@ -1619,7 +1622,38 @@ impl AimMouse {
     /// screen lately, by frame, the frames the System counts: at 30 FPS the
     /// game draws in every other one, and in a slow one a little less.
     pub fn pause_menu_shown(&self, frame: u64) -> bool {
-        self.pause_drawn.is_some_and(|drawn| frame <= drawn + 3)
+        self.transform.shown(frame)
+    }
+
+    /// the pause screen's editable placement rules.
+    pub fn pause_rules(&self) -> PauseRules {
+        self.transform.pause_rules()
+    }
+
+    pub fn set_pause_rules(&mut self, rules: PauseRules) {
+        self.transform.set_pause_rules(rules);
+    }
+
+    /// caps a Screen at 60, the title's own frames only, or returns it to
+    /// the host's rate. Any Screen may be capped this way.
+    pub fn set_screen_rate(&mut self, screen: Screen, rate: ScreenRate) {
+        self.transform.set_rate(screen, rate);
+    }
+
+    /// the Screen's High Refresh Mode rate: its row's, unless overridden.
+    pub fn screen_rate(&self, screen: Screen) -> ScreenRate {
+        self.transform.rate(screen)
+    }
+
+    /// marks the Screen the top screen drew, on a completed frame.
+    pub fn show_screen(&mut self, screen: Screen, frame: u64) {
+        self.transform.mark_active(screen, frame);
+    }
+
+    /// whether the Screen at `frame` is capped at 60, so the presenter must
+    /// show the title's own frames only.
+    pub fn real_frames_only(&self, frame: u64) -> bool {
+        self.transform.real_frames_only(frame)
     }
 
     /// whether a battle is being played, not paused, frame as for
@@ -1630,7 +1664,7 @@ impl AimMouse {
 
     /// whether the Fiend's Cauldron is shown, frame as for pause_menu_shown.
     pub fn cauldron_shown(&self, frame: u64) -> bool {
-        self.cauldron_drawn.is_some_and(|drawn| frame <= drawn + 3)
+        self.transform.cauldron_shown(frame)
     }
 
     /// the Fiend's Cauldron's layout on the top screen, none when it is not
@@ -1657,7 +1691,7 @@ impl AimMouse {
         // by the order they are drawn over each other, the dial first
         let parts = [self.cauldron_dial, Some(layout.bar), Some(layout.back), Some(layout.move_out), Some(layout.rest)];
         let button = layout.move_out.to_box(MOVE_OUT_BUTTON);
-        let inside = |place: &CauldronPlace| {
+        let inside = |place: &Placement| {
             let [left, top, width, height] = if place.from == layout.move_out.from { button } else { place.to };
             (left..left + width).contains(&x) && (top..top + height).contains(&y)
         };
@@ -1684,7 +1718,7 @@ impl AimMouse {
     /// whether the Fiend's Cauldron's pot pours, after Move Out, the bar
     /// gone and the pan lifted, frame as for pause_menu_shown.
     pub fn cauldron_pouring(&self, frame: u64) -> bool {
-        self.cauldron_shown(frame) && self.cauldron_pouring
+        self.transform.cauldron_pouring(frame)
     }
 
     /// uses the current power, as touching its box does, in the battle UI's
@@ -1696,31 +1730,43 @@ impl AimMouse {
 
     /// the bottom screen pixel a touch of the top screen's pixel x, y
     /// touches while the pause menu is shown there, frame as for
-    /// pause_menu_shown. none off the bottom screen, or beside Resume,
+    /// pause_menu_shown. none off the bottom screen, beside Resume,
     /// Retreat or Remove Display by the top screen's edges, where the
-    /// bottom screen has them but the top screen does not.
+    /// bottom screen has them but the top screen does not, or where a rule
+    /// hidden from the top screen's drawing keeps its group.
     pub fn pause_menu_touch(&self, frame: u64, x: f32, y: f32) -> Option<(f32, f32)> {
+        self.pause_menu_touch_shown(frame, x, y, crate::PictureKind::Real)
+    }
+
+    /// as pause_menu_touch, for a presenter showing `shown`: the placements
+    /// are seated from the newest completed frame, so a picture in between
+    /// its t changes and hit-testing reads the same Controls either way.
+    pub fn pause_menu_touch_shown(&self, frame: u64, x: f32, y: f32, shown: crate::PictureKind) -> Option<(f32, f32)> {
         let edges = self.edges_drawn.is_some_and(|drawn| frame <= drawn + 3);
-        let right = 2.0 * PAUSE_MENU_OFFSET;
-        // where it would be with the top screen its own shape, by the left
-        // edge, the right one or the middle, see place_pause_menu
-        let k = self.widen;
-        let (by_left, by_right, middle) = (x * k, 400.0 - (400.0 - x) * k, 200.0 + (x - 200.0) * k);
+        // the same placements drawing uses, read backwards, see
+        // place_pause_menu
+        let layout = self.transform.layout_for(frame, self.widen, shown);
+        debug_assert_eq!(layout.frame(), frame, "placements are seated on a completed frame");
+        let (left, right, middle, corner) = (
+            layout.place(QuadRole::LeftButton),
+            layout.place(QuadRole::RightButton),
+            layout.place(QuadRole::Center),
+            layout.place(QuadRole::Corner),
+        );
         let x = if edges && PAUSE_BUTTON_ROWS.contains(&y) {
-            if by_left < RESUME_RIGHT {
-                by_left
-            } else if by_right >= RETREAT_LEFT + right {
-                by_right - right
-            } else {
+            match (left.map(|place| place.unmap_x(x)), right.map(|place| place.unmap_x(x))) {
+                (Some(left), _) if left < RESUME_RIGHT => left,
+                (_, Some(right)) if right >= RETREAT_LEFT => right,
+                _ => return None,
+            }
+        } else if edges && y >= REMOVE_DISPLAY_CORNER[1] {
+            let corner = corner?.unmap_x(x);
+            if corner < REMOVE_DISPLAY_CORNER[0] {
                 return None;
             }
-        } else if edges && y >= REMOVE_DISPLAY_CORNER[1] && by_right >= REMOVE_DISPLAY_CORNER[0] + PAUSE_MENU_OFFSET {
-            if by_right < REMOVE_DISPLAY_CORNER[0] + right {
-                return None;
-            }
-            by_right - right
+            corner
         } else {
-            middle - PAUSE_MENU_OFFSET
+            middle?.unmap_x(x)
         };
         ((0.0..320.0).contains(&x) && (0.0..240.0).contains(&y)).then_some((x, y))
     }
@@ -1731,7 +1777,22 @@ impl AimMouse {
 /// ground, the HUD's and the reticle's size where they are drawn.
 pub(crate) fn apply(system: &mut System, pc: u32) {
     menu_top::physics(system, pc);
+    menu_top::navigate(system, pc);
     match pc {
+        SOLO_CAMERA => {
+            let object = system.cpu.regs[0];
+            if read_word(system, object + 0x5C) == HASH_IDOL_TOSS {
+                system.memory.write_bytes(object + 0x5C, &HASH_PRACTICE_RANGE.to_le_bytes());
+                if let Some(mouse) = &mut system.aim_mouse {
+                    mouse.solo_camera_back = Some(object);
+                }
+            }
+        }
+        SOLO_CAMERA_RET1 | SOLO_CAMERA_RET2 => {
+            if let Some(object) = system.aim_mouse.as_mut().and_then(|m| m.solo_camera_back.take()) {
+                system.memory.write_bytes(object + 0x5C, &HASH_IDOL_TOSS.to_le_bytes());
+            }
+        }
         AFTER_AIM_DELTA => add_delta(system),
         BEFORE_CAMERA_TURN => close_box(system),
         PROJECTION => widen_view(system),
@@ -1808,24 +1869,23 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
                 }
             }
         }
-        _ if MENU_SCREENS.iter().any(|screen| screen.update == pc) => outline_menu(system, pc),
-        _ if CAULDRON.contains(&pc) => {
+        _ if ScreenTransform::scripted_at_update(pc).is_some() => outline_menu(system, pc),
+        _ if ScreenTransform::cauldron_site(pc).is_some() => {
             let (frame, task) = (system.frames, system.cpu.regs[0]);
+            let pouring = ScreenTransform::cauldron_site(pc).unwrap_or(false);
             if let Some(aim_mouse) = &mut system.aim_mouse {
-                aim_mouse.cauldron_drawn = Some(frame);
-                aim_mouse.cauldron_task = Some(task);
-                aim_mouse.cauldron_pouring = pc == CAULDRON[1];
+                aim_mouse.transform.mark_cauldron(frame, task, pouring);
             }
         }
         DIALOG_CURSOR_SOUND => {
-            if system.aim_mouse.as_mut().is_some_and(|aim_mouse| std::mem::take(&mut aim_mouse.dialog_cleared)) {
+            if system.aim_mouse.as_mut().is_some_and(|aim_mouse| aim_mouse.transform.take_dialog_cleared()) {
                 system.cpu.regs[5] = 0;
             }
         }
-        _ if PAUSE_MENU.iter().any(|to_top| to_top.site == pc || to_top.place == pc) => {
-            if let Some(index) = PAUSE_MENU.iter().position(|to_top| to_top.site == pc) {
+        _ if ScreenTransform::pause_site(pc) => {
+            if let Some(index) = ScreenTransform::pause_call_at(pc) {
                 let mut recorded = recorded_call(system, pc);
-                if let Some(recorded) = recorded.as_mut().filter(|_| PAUSE_MENU[index].projection) {
+                if let Some(recorded) = recorded.as_mut().filter(|_| ScreenTransform::pause_call(index).projection) {
                     let mut bytes = [0u8; 0x70];
                     system.memory.read_bytes(system.cpu.regs[1], &mut bytes[..0x40]);
                     system.memory.read_bytes(system.cpu.regs[2], &mut bytes[0x40..]);
@@ -1835,14 +1895,10 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
                     recorded.matrices = Some(matrices);
                 }
                 if let Some(aim_mouse) = &mut system.aim_mouse {
-                    for (kept, to_top) in aim_mouse.pause.iter_mut().zip(&PAUSE_MENU) {
-                        if to_top.site == pc {
-                            *kept = recorded;
-                        }
-                    }
+                    aim_mouse.transform.record(index, recorded);
                 }
             }
-            if PAUSE_MENU.iter().any(|to_top| to_top.place == pc) {
+            if ScreenTransform::pause_place_at(pc).is_some() {
                 top_screen_pause_menu(system, pc);
             }
         }
@@ -2090,7 +2146,7 @@ fn hover_dialog(system: &mut System) {
     system.memory.read_bytes(dialog + DIALOG_BUTTONS, &mut boxes[..count as usize * 8]);
     let cursor = read_word(system, dialog + DIALOG_CURSOR) as i32;
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
-    aim_mouse.dialog_cleared = false;
+    aim_mouse.transform.set_dialog_cleared(false);
     if key != -1 {
         aim_mouse.mouse_mode = false;
     }
@@ -2106,7 +2162,7 @@ fn hover_dialog(system: &mut System) {
     });
     let option = under.map_or(-1, |under| under as i32);
     if option != cursor {
-        aim_mouse.dialog_cleared = option == -1;
+        aim_mouse.transform.set_dialog_cleared(option == -1);
         system.memory.write_bytes(dialog + DIALOG_CURSOR, &option.to_le_bytes());
     }
 }
@@ -2222,11 +2278,13 @@ fn top_screen_pause_menu(system: &mut System, place: u32) {
     if !aim_mouse.pause_on_top {
         return;
     }
-    let Some(index) = (next..PAUSE_MENU.len()).find(|&index| PAUSE_MENU[index].place == place && aim_mouse.pause[index].is_some()) else {
+    let Some(index) = (next..ScreenTransform::pause_calls().len())
+        .find(|&index| ScreenTransform::pause_call(index).place == place && aim_mouse.transform.has(index))
+    else {
         return;
     };
-    let Some(recorded) = aim_mouse.pause[index].take() else { return };
-    aim_mouse.pause_drawn = Some(system.frames);
+    let Some(recorded) = aim_mouse.transform.take(index) else { return };
+    aim_mouse.transform.mark_drawn(system.frames, index);
     call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::PauseMenu(index), Vec::new());
     system.cpu.regs[2] = recorded.regs[2];
     system.cpu.regs[3] = recorded.regs[3];
@@ -2409,8 +2467,8 @@ fn light_cauldron_cursor(system: &mut System) {
 /// comes back here, the CPU put back between them. off its parts what is
 /// outlined stays, and keys move it from there.
 fn outline_menu(system: &mut System, pc: u32) {
-    let Some(index) = MENU_SCREENS.iter().position(|screen| screen.update == pc) else { return };
-    let screen = &MENU_SCREENS[index];
+    let Some(index) = ScreenTransform::scripted_at_update(pc) else { return };
+    let screen = ScreenTransform::scripted(index);
     let frame = system.frames;
     let back = system.aim_mouse.as_mut().and_then(|aim_mouse| aim_mouse.saved.take_if(|saved| matches!(saved.drawing, Drawing::Menu(..))));
     if let Some(back) = back {
@@ -2442,7 +2500,7 @@ fn outline_menu(system: &mut System, pc: u32) {
                     let layer = read_word(system, at);
                     let found = Found { hash: read_word(system, descriptor + DESCRIPTOR_NAME), name: descriptor + DESCRIPTOR_NAME, element: read_word(system, at + 0xC), part: read_word(system, layer + LAYER_PART) };
                     if !menu_top::accept_hit(system, Some(found.hash)) { outline_menu(system, pc); return; }
-                    if let Some(calls) = (screen.outline)(system, object, found) {
+                    if let Some(calls) = screen.outline.expect("a Scripted Menu has an outline")(system, object, found) {
                         if let Some(aim_mouse) = &mut system.aim_mouse {
                             aim_mouse.menu_part = Some(found);
                             aim_mouse.menu_calls = calls;
@@ -2461,7 +2519,7 @@ fn outline_menu(system: &mut System, pc: u32) {
         return;
     }
     let object = system.cpu.regs[0];
-    if read_word(system, object) != screen.vtable {
+    if Some(read_word(system, object)) != screen.vtable() {
         return;
     }
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
@@ -2498,7 +2556,7 @@ fn outline_menu(system: &mut System, pc: u32) {
             for axis in 0..2 { wheel[axis] -= steps[axis] as f32; }
             aim_mouse.menu_wheel = Some((owner, last, wheel));
             if steps != [0, 0] {
-                if !matches!(screen.vtable, 0x00CEE1C0 | 0x00CEFCA8) {
+                if !matches!(screen.vtable(), Some(0x00CEE1C0 | 0x00CEFCA8)) {
                     aim_mouse.menu_looked = None;
                     aim_mouse.menu_part = None;
                 }
@@ -2515,7 +2573,7 @@ fn outline_menu(system: &mut System, pc: u32) {
             aim_mouse.menu_click = false;
             return;
         };
-        let calls = (screen.outline)(system, object, found).unwrap_or_default();
+        let calls = screen.outline.expect("a Scripted Menu has an outline")(system, object, found).unwrap_or_default();
         if let Some(aim_mouse) = &mut system.aim_mouse {
             aim_mouse.menu_calls = calls;
         }
@@ -2547,17 +2605,22 @@ fn outline_menu(system: &mut System, pc: u32) {
 /// then, after a click, its A, coming back to its update.
 fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
-    if aim_mouse.menu_calls.is_empty() && aim_mouse.menu_click && MENU_SCREENS[index].use_outlined == CLICK_TOUCHES {
+    let activate = ScreenTransform::scripted(index).activate;
+    if aim_mouse.menu_calls.is_empty() && aim_mouse.menu_click && activate == Activate::Touch {
         aim_mouse.menu_click = false;
         return;
     }
-    if aim_mouse.menu_calls.is_empty() && aim_mouse.menu_click && MENU_SCREENS[index].use_outlined == 0 {
+    if aim_mouse.menu_calls.is_empty() && aim_mouse.menu_click && activate == Activate::None {
         aim_mouse.menu_click = false;
         activate_armory(system, object);
         return;
     }
     let call = match aim_mouse.menu_calls.is_empty() {
-        true => std::mem::take(&mut aim_mouse.menu_click).then_some((MENU_SCREENS[index].use_outlined, [object, 0, 0])),
+        true => {
+            if !std::mem::take(&mut aim_mouse.menu_click) { return; }
+            let Activate::Call(function) = activate else { return };
+            Some((function, [object, 0, 0]))
+        }
         false => Some(aim_mouse.menu_calls.remove(0)),
     };
     let Some((function, [r0, r1, r2])) = call else { return };
@@ -2570,7 +2633,7 @@ fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
 /// the value on the Fiend's Cauldron's bar, the intensity, from the pot's
 /// task.
 fn cauldron_value(system: &mut System) -> Option<f32> {
-    let task = system.aim_mouse.as_ref()?.cauldron_task?;
+    let task = system.aim_mouse.as_ref()?.transform.cauldron_task()?;
     let value = f32::from_bits(read_word(system, task + CAULDRON_VALUE));
     (0.0..=10.0).contains(&value).then_some(value)
 }
@@ -2579,8 +2642,8 @@ fn cauldron_value(system: &mut System) -> Option<f32> {
 /// the value the pot's task has, its arrow's tip at the top, in a box
 /// dial times the bar's size with that tip on the bar's lower edge. none
 /// with no value.
-fn dial_place(system: &mut System, layout: CauldronLayout) -> CauldronPlace {
-    let none = CauldronPlace { from: [0.0, 0.0, 1.0, 1.0], to: [0.0, 0.0, 0.0, 0.0] };
+fn dial_place(system: &mut System, layout: CauldronLayout) -> Placement {
+    let none = Placement { from: [0.0, 0.0, 1.0, 1.0], to: [0.0, 0.0, 0.0, 0.0] };
     let Some(value) = cauldron_value(system) else { return none };
     let x = DIAL_ZERO + value * DIAL_STEP;
     let [bar_x, bar_y, bar_width, bar_height] = layout.bar.to;
@@ -2588,7 +2651,7 @@ fn dial_place(system: &mut System, layout: CauldronLayout) -> CauldronPlace {
     let (scale_x, scale_y) = (bar_width / from_width, bar_height / from_height);
     let (width, height) = (DIAL_SIZE[0] * scale_x * layout.dial, DIAL_SIZE[1] * scale_y * layout.dial);
     let middle = bar_x + (x - from_x) * scale_x;
-    CauldronPlace {
+    Placement {
         from: [x - DIAL_SIZE[0] * 0.5, DIAL_TOP, DIAL_SIZE[0], DIAL_SIZE[1]],
         to: [middle - width * 0.5, bar_y + (DIAL_TOP - from_y) * scale_y, width, height],
     }
@@ -2634,7 +2697,7 @@ fn cropped_projection(system: &mut System, camera: u32, from: [f32; 4], size: [f
 /// camera showing the panel's part, and only the panel's node of the
 /// picture's models shown, then (see top_screen_cauldron) its 3D, without
 /// the hint (see top_text_viewport).
-fn top_panel(system: &mut System, top: u32, place: CauldronPlace) {
+fn top_panel(system: &mut System, top: u32, place: Placement) {
     let scene = read_word(system, top + 0x40);
     let layers = read_word(system, scene + SCENE_LAYERS);
     let list = read_word(system, layers + TOP_LAYER * LAYER_SIZE + 4);
@@ -3101,6 +3164,7 @@ fn place_mirrored(system: &mut System, mirrored: &Mirrored, widen: f32) {
     let (below, size) = apart.map_or((mirrored.below, mirrored.size), |apart| (apart.below, apart.size));
     let down = if to[1] == 0.0 { below * scale } else { -below * scale };
     let scale = scale * size;
+    let place = |x: f32, y: f32| (to[0] + (x - from[0]) * scale / widen, to[1] + down + (y - from[1]) * scale);
     for quad in (0..quads.len()).step_by(0x60) {
         let middle = (0..4).map(|corner| get(&quads, quad + corner * 0x18 + 4)).sum::<f32>() / 4.0;
         let moved = match mirrored.swap_rows {
@@ -3108,19 +3172,47 @@ fn place_mirrored(system: &mut System, mirrored: &Mirrored, widen: f32) {
             None => 0.0,
         };
         for corner in (quad..quad + 0x60).step_by(0x18) {
-            let (x, y) = if hide {
-                (-10000.0, -10000.0)
-            } else {
-                (
-                    to[0] + (get(&quads, corner) - from[0]) * scale / widen,
-                    to[1] + down + (get(&quads, corner + 4) + moved - from[1]) * scale,
-                )
-            };
+            let (x, y) = if hide { (-10000.0, -10000.0) } else { place(get(&quads, corner), get(&quads, corner + 4) + moved) };
             set(&mut quads, corner, x);
             set(&mut quads, corner + 4, y);
         }
     }
     system.memory.write_bytes(at, &quads);
+    if !hide {
+        place_scissor(system, place);
+    }
+}
+
+/// A flush with flag 0x08 also sets the GPU scissor from context +0xFC/+0x100,
+/// a rectangle the game computed in bottom-screen coordinates. Left as is it
+/// clips the moved sprites away, so it is moved with them; the original goes
+/// back when the replayed call returns.
+fn place_scissor(system: &mut System, place: impl Fn(f32, f32) -> (f32, f32)) {
+    let context = system.cpu.regs[0];
+    if read_word(system, context + 0x50) & 0x08 == 0 {
+        return;
+    }
+    let (low, high) = (read_word(system, context + 0xFC), read_word(system, context + 0x100));
+    if low == 0 && high == 0 {
+        return;
+    }
+    // The framebuffer is the screen turned: its x runs up the screen's y,
+    // its y down the screen's x, both inclusive.
+    let width = read_word(system, context + 0x104) as f32;
+    let field = |word: u32, shift: u32| (word >> shift & 0x3FF) as f32;
+    let (left, right) = (width - 1.0 - field(high, 16), width - field(low, 16));
+    let (top, bottom) = (239.0 - field(high, 0), 240.0 - field(low, 0));
+    let (left, top) = place(left, top);
+    let (right, bottom) = place(right, bottom);
+    let along = |value: f32, limit: f32| value.clamp(0.0, limit) as u32;
+    let low_placed = along(width - right.ceil(), width - 1.0) << 16 | along(240.0 - bottom.ceil(), 239.0);
+    let high_placed = along(width - 1.0 - left.floor(), width - 1.0) << 16 | along(239.0 - top.floor(), 239.0);
+    let mut moved = Vec::new();
+    change(system, &mut moved, context + 0xFC, &low_placed.to_le_bytes());
+    change(system, &mut moved, context + 0x100, &high_placed.to_le_bytes());
+    if let Some(saved) = system.aim_mouse.as_mut().and_then(|aim_mouse| aim_mouse.saved.as_mut()) {
+        saved.moved.extend(moved);
+    }
 }
 
 /// puts the pause menu or a dialog, drawn for the bottom screen, in the
@@ -3133,27 +3225,32 @@ fn place_pause_menu(system: &mut System, widen: f32) {
     let caller = system.cpu.regs[14];
     let (buttons, corner) = (PAUSE_BUTTONS.contains(&caller), REMOVE_DISPLAY.contains(&caller));
     let Some((at, mut quads)) = flushed_quads(system) else { return };
+    let frame = system.frames;
+    let rules = system.aim_mouse.as_ref().map_or_else(PauseRules::default, |aim_mouse| aim_mouse.transform.pause_rules());
+    let layout = rules.layout(frame, widen);
     for quad in (0..quads.len()).step_by(0x60) {
         let xs = (0..4).map(|corner| get(&quads, quad + corner * 0x18));
         let (left, right) = xs.fold((f32::MAX, f32::MIN), |(left, right), x| (left.min(x), right.max(x)));
         let across = left <= 0.5 && right >= 319.5;
         // Resume on the left, Retreat on the right
         let by_right = corner || (buttons && left + right >= 320.0);
-        let offset = match (buttons || corner, by_right) {
-            (false, _) => PAUSE_MENU_OFFSET,
-            (true, false) => 0.0,
-            (true, true) => 2.0 * PAUSE_MENU_OFFSET,
+        let role = if across {
+            QuadRole::Span
+        } else if corner {
+            QuadRole::Corner
+        } else if buttons {
+            if by_right { QuadRole::RightButton } else { QuadRole::LeftButton }
+        } else {
+            QuadRole::Center
         };
-        // and narrower on a wider top screen, toward the edge it is by or
-        // the middle
-        let anchor = match (buttons || corner, by_right) {
-            (false, _) => 200.0,
-            (true, false) => 0.0,
-            (true, true) => 400.0,
+        let Some(place) = layout.place(role) else {
+            // a hidden rule draws its group nowhere, and pause_menu_touch
+            // finds nothing there either
+            hide_ui(&mut quads[quad..quad + 0x60]);
+            continue;
         };
         for corner in (quad..quad + 0x60).step_by(0x18) {
-            let x = get(&quads, corner);
-            let x = if across { x * 400.0 / 320.0 } else { anchor + (x + offset - anchor) / widen };
+            let x = place.map_x(get(&quads, corner));
             set(&mut quads, corner, x);
         }
     }
@@ -3488,7 +3585,9 @@ mod tests {
     /// went to them.
     #[test]
     fn pause_menu_touches_follow_the_edges() {
-        let mut aim_mouse = AimMouse { pause_drawn: Some(10), ..AimMouse::default() };
+        let mut transform = ScreenTransform::default();
+        transform.mark_drawn(10, 0);
+        let mut aim_mouse = AimMouse { transform, ..AimMouse::default() };
         // the main page drawn by the edges, Resume, Retreat, Options, Remove Display
         aim_mouse.edges_drawn = Some(10);
         assert_eq!(aim_mouse.pause_menu_touch(11, 60.0, 83.0), Some((60.0, 83.0)));
@@ -3501,6 +3600,48 @@ mod tests {
         // a page of Options, all of it in the middle
         assert_eq!(aim_mouse.pause_menu_touch(20, 60.0, 83.0), Some((20.0, 83.0)));
         assert_eq!(aim_mouse.pause_menu_touch(20, 20.0, 83.0), None);
+    }
+
+    /// a rule hidden from the top screen's drawing takes no touches there,
+    /// and showing it puts its Control back.
+    #[test]
+    fn hidden_pause_rules_take_no_touches() {
+        let mut transform = ScreenTransform::default();
+        transform.mark_drawn(10, 0);
+        let mut aim_mouse = AimMouse { transform, edges_drawn: Some(10), ..AimMouse::default() };
+        let mut rules = aim_mouse.pause_rules();
+        rules.left.visible = false;
+        rules.right.visible = false;
+        rules.corner.visible = false;
+        aim_mouse.set_pause_rules(rules);
+        // Resume, Retreat and Remove Display are drawn nowhere, so a touch
+        // where they show touches nothing, while Options' page keeps its own.
+        assert_eq!(aim_mouse.pause_menu_touch(11, 60.0, 83.0), None);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 330.0, 83.0), None);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 340.0, 222.0), None);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 200.0, 134.0), Some((160.0, 134.0)));
+
+        let mut rules = aim_mouse.pause_rules();
+        rules.left.visible = true;
+        rules.right.visible = true;
+        rules.corner.visible = true;
+        aim_mouse.set_pause_rules(rules);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 60.0, 83.0), Some((60.0, 83.0)));
+        assert_eq!(aim_mouse.pause_menu_touch(11, 330.0, 83.0), Some((250.0, 83.0)));
+        assert_eq!(aim_mouse.pause_menu_touch(11, 340.0, 222.0), Some((260.0, 222.0)));
+
+        // hiding one edge Control leaves the other one touchable.
+        let mut rules = aim_mouse.pause_rules();
+        rules.left.visible = false;
+        aim_mouse.set_pause_rules(rules);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 60.0, 83.0), None);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 330.0, 83.0), Some((250.0, 83.0)));
+
+        // and a hidden middle takes the page's touches away.
+        let mut rules = aim_mouse.pause_rules();
+        rules.center.visible = false;
+        aim_mouse.set_pause_rules(rules);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 200.0, 134.0), None);
     }
 
     /// a menu takes a click while it is shown, over a part it outlines that
@@ -3677,7 +3818,8 @@ mod tests {
         let screen = 12;
         system.cpu.regs[0] = 0x1234;
         system.cpu.regs[13] = 0x1000;
-        system.cpu.regs[15] = MENU_SCREENS[screen].update;
+        let update = ScreenTransform::scripted(screen).update().expect("a Scripted Menu update");
+        system.cpu.regs[15] = update;
         system.aim_mouse = Some(AimMouse {
             menu_click: true,
             menu_calls: vec![(QUEUE_PART, [0x1330, 0x2000, 0])],
@@ -3685,13 +3827,14 @@ mod tests {
         });
         next_menu_call(&mut system, screen, 0x1234, 0xFC0);
         // Return from the last queueing call, before the game's update.
-        outline_menu(&mut system, MENU_SCREENS[screen].update);
-        assert_eq!(system.cpu.regs[15], MENU_SCREENS[screen].update);
+        outline_menu(&mut system, update);
+        assert_eq!(system.cpu.regs[15], update);
         assert!(system.aim_mouse.as_ref().unwrap().saved.is_none());
         assert!(system.aim_mouse.as_ref().unwrap().menu_click);
         // Once the update has applied it, A can use the new choice.
         next_menu_call(&mut system, screen, 0x1234, 0xFC0);
-        assert_eq!(system.cpu.regs[15], MENU_SCREENS[screen].use_outlined);
+        let Activate::Call(activate) = ScreenTransform::scripted(screen).activate else { panic!("a Scripted Menu with A") };
+        assert_eq!(system.cpu.regs[15], activate);
         assert!(!system.aim_mouse.as_ref().unwrap().menu_click);
     }
 
@@ -3699,7 +3842,9 @@ mod tests {
     /// its own: the press over a part touches it there instead.
     #[test]
     fn a_touching_screen_is_not_clickable_and_still_outlines() {
-        let idols = MENU_SCREENS.iter().position(|screen| screen.use_outlined == CLICK_TOUCHES).expect("a screen that touches");
+        let idols = (0..ScreenTransform::scripted_len())
+            .find(|&screen| ScreenTransform::scripted(screen).activate == Activate::Touch)
+            .expect("a screen that touches");
         let mut mouse = clickable_menu();
         mouse.menu_screen = Some((idols, 0x1405_0000, 10));
         assert!(!mouse.menu_clickable(11));
@@ -3744,7 +3889,9 @@ mod tests {
     /// there.
     #[test]
     fn pause_menu_touches_follow_a_wider_top_screen() {
-        let mut aim_mouse = AimMouse { pause_drawn: Some(10), edges_drawn: Some(10), widen: 1.4, ..AimMouse::default() };
+        let mut transform = ScreenTransform::default();
+        transform.mark_drawn(10, 0);
+        let mut aim_mouse = AimMouse { transform, edges_drawn: Some(10), widen: 1.4, ..AimMouse::default() };
         let near = |touch: Option<(f32, f32)>, x: f32| touch.is_some_and(|(at, _)| (at - x).abs() < 0.01);
         // Resume's 70 by the left edge drawn at 50, Retreat's 330 at 350
         assert!(near(aim_mouse.pause_menu_touch(11, 50.0, 83.0), 70.0));
@@ -3780,7 +3927,82 @@ mod tests {
         aim_mouse.battle_drawn = Some(10);
         assert!(aim_mouse.in_battle(13));
         assert!(!aim_mouse.in_battle(14));
-        aim_mouse.pause_drawn = Some(10);
+        aim_mouse.transform.mark_drawn(10, 0);
         assert!(!aim_mouse.in_battle(11));
+    }
+
+    /// a title drawing every other refresh, as the pacer has it while it
+    /// decides a picture in between, and the console's frame time.
+    fn showing_a_picture_in_between(system: &mut System) -> std::time::Duration {
+        use std::time::Duration;
+        let frame = Duration::from_secs_f64(2.0 / 59.83);
+        system.pacing.on = true;
+        system.pacing.refreshes = 10;
+        system.pacing.new_at = 9;
+        system.pacing.between = true;
+        system.pacing.older_host_time = Some(Duration::ZERO);
+        system.pacing.newer_host_time = Some(frame);
+        frame
+    }
+
+    /// the Pause screen's clicks and Hovers find the same Controls with High
+    /// Refresh Mode on and off, because hit-testing reads the newest real
+    /// frame's Placements and never the picture in between.
+    #[test]
+    fn pause_clicks_and_hovers_read_the_same_real_placements_with_the_mode_on_and_off() {
+        use crate::PictureKind;
+
+        let mut on = System::new(crate::Config::default());
+        let mut off = System::new(crate::Config::default());
+        for system in [&mut on, &mut off] {
+            let mut transform = ScreenTransform::default();
+            transform.mark_drawn(10, 0);
+            system.aim_mouse = Some(AimMouse { transform, edges_drawn: Some(10), ..AimMouse::default() });
+        }
+        let frame = showing_a_picture_in_between(&mut on);
+        assert_eq!(off.picture_kind_at_host_time(frame / 2), PictureKind::Real);
+        assert!(matches!(on.picture_kind_at_host_time(frame / 2), PictureKind::InBetween(t) if (t - 0.5).abs() < 1e-5));
+
+        // Resume, Retreat, Options and Remove Display, by the edges and in
+        // the middle; the gap between Resume and Retreat is no Control.
+        for (x, y, expected) in [
+            (60.0, 83.0, Some((60.0, 83.0))),
+            (330.0, 83.0, Some((250.0, 83.0))),
+            (200.0, 134.0, Some((160.0, 134.0))),
+            (340.0, 222.0, Some((260.0, 222.0))),
+            (200.0, 83.0, None),
+        ] {
+            let off_hit = off.aim_mouse.as_ref().unwrap().pause_menu_touch(11, x, y);
+            assert_eq!(off_hit, expected, "off at {x}, {y}");
+            assert_eq!(on.aim_mouse.as_ref().unwrap().pause_menu_touch(11, x, y), off_hit, "the mode must not move a hit at {x}, {y}");
+            // and no t of the picture in between moves it either
+            for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                assert_eq!(
+                    on.aim_mouse.as_ref().unwrap().pause_menu_touch_shown(11, x, y, PictureKind::InBetween(t)),
+                    off_hit,
+                    "t {t} at {x}, {y}",
+                );
+            }
+        }
+    }
+
+    /// the placements a hit test reads are seated from a completed frame,
+    /// and the frame is the one the title is on; no picture in between seats
+    /// a Placement of its own.
+    #[test]
+    fn pause_hit_testing_reads_a_real_frames_placement() {
+        use crate::PictureKind;
+
+        let mut transform = ScreenTransform::default();
+        transform.mark_drawn(10, 0);
+        let mouse = AimMouse { transform, edges_drawn: Some(10), ..AimMouse::default() };
+        let layout = mouse.transform.layout(11, mouse.widen);
+        assert_eq!(layout.frame(), 11);
+        let place = layout.place(QuadRole::LeftButton).unwrap();
+        let top = place.map_x(70.0);
+        assert_eq!(mouse.pause_menu_touch(11, top, 83.0), Some((70.0, 83.0)));
+        for t in [0.0, 0.5, 1.0] {
+            assert_eq!(mouse.pause_menu_touch_shown(11, top, 83.0, PictureKind::InBetween(t)), Some((70.0, 83.0)));
+        }
     }
 }
