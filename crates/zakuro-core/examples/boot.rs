@@ -173,6 +173,15 @@ fn main() {
     // direct for one whose presenter shares the renderer's device.
     let present = std::env::var("ZAKURO_PRESENT").is_ok();
 
+    // ZAKURO_HOST_HZ=120 simulates a host refreshing at 120 Hz for the
+    // headless picture at host time, 60 by default. the console's frame
+    // lasts 1/59.83 s, so a faster host shows pictures in between the
+    // title's own.
+    let host_hz: f64 = std::env::var("ZAKURO_HOST_HZ").ok().and_then(|v| v.parse().ok()).unwrap_or(60.0);
+    let host_step = std::time::Duration::from_secs_f64(1.0 / host_hz);
+    let console_step = std::time::Duration::from_secs_f64(1.0 / 59.83);
+    let mut frame_clock = std::time::Duration::ZERO;
+
     // what gets typed when a title opens the software keyboard,
     // ZAKURO_KEYBOARD=Link.
     let typed = std::env::var("ZAKURO_KEYBOARD").unwrap_or_else(|_| "Zakuro".to_owned());
@@ -311,8 +320,21 @@ fn main() {
         }
         let frame_start = std::time::Instant::now();
         let faults = system.memory.fault_summary().len();
+        system.host_clock = frame_clock;
         outcome = system.run_frame();
         executed = frame + 1;
+        // report the pictures the host's refreshes between the last two
+        // frames show, as PictureKind and t.
+        let older = frame_clock.saturating_sub(console_step);
+        let mut sample = older;
+        while sample < frame_clock {
+            let kind = system.picture_kind_at_host_time(sample);
+            if !kind.is_real() {
+                println!("frame {executed}: host {sample:?} shows {kind:?}");
+            }
+            sample += host_step;
+        }
+        frame_clock += console_step;
         betweens += system.shows_between() as u64;
         // when a new unmapped page is touched, which frame it was
         if system.memory.fault_summary().len() != faults {
