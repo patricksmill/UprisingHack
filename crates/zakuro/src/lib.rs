@@ -106,6 +106,7 @@ pub fn run(linked: Option<Linked>) {
         fast_forward_key: false,
         fast_forwarding: false,
         next_shown: Instant::now(),
+        display_step: Duration::from_nanos(1_000_000_000_000 / 60_000),
         host_step: Duration::from_nanos(1_000_000_000_000 / 60_000),
         next_host: Instant::now(),
         host_epoch: Instant::now(),
@@ -411,8 +412,10 @@ struct App {
     /// when fast forward shows its next frame, on a grid at the console's
     /// frame rate.
     next_shown: Instant,
-    /// the display's refresh interval, the rate High Refresh Mode shows a
-    /// picture at.
+    /// the display's own refresh interval, before the High Refresh Mode cap.
+    display_step: Duration,
+    /// the refresh interval High Refresh Mode shows a picture at, the
+    /// display's own or the cap's, whichever is slower.
     host_step: Duration,
     /// when High Refresh Mode shows its next picture.
     next_host: Instant,
@@ -566,7 +569,8 @@ impl ApplicationHandler for App {
                 backend.set_scaling(self.settings.filter.screens(), self.settings.integer_scale);
                 backend.set_stereo(self.settings.stereo());
                 self.gui = Some(Gui::new(&window));
-                self.host_step = monitor_step(&window);
+                self.display_step = monitor_step(&window);
+                self.host_step = self.settings.high_refresh_cap.step(self.display_step);
                 self.next_host = Instant::now();
                 self.window = Some(window);
                 self.backend = Some(backend);
@@ -849,7 +853,8 @@ impl App {
         self.paused = false;
         self.next_frame = Instant::now();
         if let Some(window) = &self.window {
-            self.host_step = monitor_step(window);
+            self.display_step = monitor_step(window);
+            self.host_step = self.settings.high_refresh_cap.step(self.display_step);
         }
         self.high_refresh_applied = self.settings.high_refresh_mode;
         self.reset_host_pace();
@@ -1157,7 +1162,8 @@ impl App {
     /// reads the display's refresh rate again, after moving to another.
     fn measure_host_step(&mut self) {
         let Some(window) = &self.window else { return };
-        self.host_step = monitor_step(window);
+        self.display_step = monitor_step(window);
+        self.host_step = self.settings.high_refresh_cap.step(self.display_step);
         self.next_host = Instant::now();
     }
 
@@ -1172,6 +1178,14 @@ impl App {
     /// saves the settings and puts to use what can change right away.
     fn apply_settings(&mut self) {
         self.settings.save();
+        // a cap change takes effect at once, and the pacer starts over so
+        // no picture keeps the old pace
+        let host_step = self.settings.high_refresh_cap.step(self.display_step);
+        if host_step != self.host_step {
+            self.host_step = host_step;
+            self.reset_host_pace();
+            log::info!("High Refresh Mode cap {}", self.settings.high_refresh_cap.name());
+        }
         if self.high_refresh_applied != self.settings.high_refresh_mode {
             self.high_refresh_applied = self.settings.high_refresh_mode;
             self.reset_host_pace();
