@@ -17,6 +17,20 @@ pub enum Renderer {
     OpenGl,
 }
 
+/// why High Refresh Mode can't run with the renderer and rasterizer in use,
+/// none when it can. the in-between pictures are the host GPU's, shown
+/// straight from its device, so it takes the Vulkan presenter and the 3D
+/// drawn on the GPU.
+pub fn high_refresh_blocker(hardware_rasterizer: bool, vulkan: bool) -> Option<&'static str> {
+    if !hardware_rasterizer {
+        return Some("High Refresh Mode needs the 3D drawn on the GPU. Turn on \"Draw the 3D on the GPU\" to use it.");
+    }
+    if !vulkan {
+        return Some("High Refresh Mode needs the Vulkan presenter, which isn't in use.");
+    }
+    None
+}
+
 /// how the screens are arranged in the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -466,8 +480,11 @@ pub struct Settings {
     pub resolution: u32,
     /// draw the texture packs put in games' mods folders.
     pub texture_packs: bool,
-    /// draw a picture in between each two of a game at 30 frames a second.
-    pub frame_interpolation: bool,
+    /// a new picture on every refresh of the display, drawn in between the
+    /// last two the game made. older settings called it frame interpolation,
+    /// which only lifted a 30 FPS game to 60, and loaded as on.
+    #[serde(alias = "frame_interpolation")]
+    pub high_refresh_mode: bool,
     /// run a game's recompiled code when it has some, rather than
     /// interpreting everything.
     pub recompiled: bool,
@@ -526,7 +543,7 @@ impl Default for Settings {
             hardware_rasterizer: true,
             resolution: 3,
             texture_packs: true,
-            frame_interpolation: false,
+            high_refresh_mode: false,
             recompiled: true,
             scale: 2,
             layout: Screens::Stacked,
@@ -668,5 +685,32 @@ mod tests {
             layout = layout.next();
         }
         assert_eq!(layout, Screens::Stacked);
+    }
+
+    /// a settings file from before High Refresh Mode turns it on when it
+    /// had frame interpolation on, and only the new key is written back.
+    #[test]
+    fn old_frame_interpolation_settings_switch_high_refresh_mode_on() {
+        let settings: Settings = toml::from_str("frame_interpolation = true\n").unwrap();
+        assert!(settings.high_refresh_mode, "the old setting carried over");
+        let settings: Settings = toml::from_str("frame_interpolation = false\n").unwrap();
+        assert!(!settings.high_refresh_mode);
+        let settings: Settings = toml::from_str("high_refresh_mode = true\n").unwrap();
+        assert!(settings.high_refresh_mode);
+        let text = toml::to_string_pretty(&Settings::default()).unwrap();
+        assert!(!text.contains("frame_interpolation"), "only the new key is written:\n{text}");
+        assert!(text.contains("high_refresh_mode"), "the new key is written:\n{text}");
+    }
+
+    /// the mode needs the 3D drawn on the GPU and shown with Vulkan, and
+    /// says which of them is missing.
+    #[test]
+    fn high_refresh_mode_is_blocked_without_vulkan_or_the_gpu() {
+        assert!(high_refresh_blocker(true, true).is_none());
+        let software = high_refresh_blocker(false, true).expect("software 3D blocks it");
+        assert!(software.contains("GPU"), "{software}");
+        let opengl = high_refresh_blocker(true, false).expect("OpenGL blocks it");
+        assert!(opengl.contains("Vulkan"), "{opengl}");
+        assert!(high_refresh_blocker(false, false).is_some());
     }
 }

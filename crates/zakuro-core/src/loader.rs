@@ -211,8 +211,8 @@ pub fn load(path: impl AsRef<std::path::Path>, mut config: Config) -> Result<Sys
     }
     if system.config.interpolate {
         match system.set_interpolation(true) {
-            true => log::info!("frame interpolation on"),
-            false => log::warn!("frame interpolation takes the 3D drawn on the GPU and shown with Vulkan, it is off"),
+            true => log::info!("High Refresh Mode on"),
+            false => log::warn!("High Refresh Mode takes the 3D drawn on the GPU and shown with Vulkan, it is off"),
         }
     }
     if let Some(data_dir) = system.config.data_dir.as_deref().filter(|_| system.config.texture_packs) {
