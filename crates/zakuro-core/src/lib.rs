@@ -891,9 +891,9 @@ impl System {
         // pick up any buffer swap the game queued directly in GSP shared
         // memory before the LCDs latch whatever is currently configured.
         services::gsp::refresh(self);
-        // the top screen's new pictures are counted at every refresh, and
-        // High Refresh Mode paces the ones in between.
-        self.pace();
+        if self.pacing.on {
+            self.pace();
+        }
 
         // both LCDs finish scanning out, in that order.
         services::gsp::signal_interrupt(self, services::gsp::InterruptId::Pdc0);
@@ -903,15 +903,15 @@ impl System {
         }
     }
 
-    /// the top screen's picture at a console refresh. a new one is counted,
+    /// High Refresh Mode's pacing at a refresh. a new picture is counted,
     /// with the host time it arrived at, for the game's frame rate and for
-    /// the pictures in between. while High Refresh Mode is on and a title
-    /// sets a new picture every refresh, or every other one, the GPU draws a
-    /// picture in between along with each, from the frame before's draws and
-    /// this one's, see zakuro_gpu's interpolation. the host's presenter
-    /// picks the title's own or one in between at the host time it shows it
-    /// at. a title that stalled, more than two refreshes without a new
-    /// picture, draws none in between.
+    /// the pictures in between. while a title sets a new picture every
+    /// refresh, or every other one, the GPU draws a picture in between along
+    /// with each, from the frame before's draws and this one's, see
+    /// zakuro_gpu's interpolation. the host's presenter picks the title's
+    /// own or one in between at the host time it shows it at. a title that
+    /// stalled, more than two refreshes without a new picture, draws none in
+    /// between.
     fn pace(&mut self) {
         let pacing = &mut self.pacing;
         pacing.refreshes += 1;
@@ -919,7 +919,7 @@ impl System {
         let top = self.screen_ref(zakuro_common::Screen::Top, false);
         let pacing = &mut self.pacing;
         if top.is_none() || top == pacing.last {
-            if pacing.on && pacing.refreshes - pacing.new_at > 2 {
+            if pacing.refreshes - pacing.new_at > 2 {
                 // the title slowed down or stopped, the pictures in between
                 // of its next frame would be shown too late
                 self.gpu.set_twins(false);
@@ -936,9 +936,6 @@ impl System {
         // one-refresh interval between its frames.
         pacing.older_host_time = pacing.newer_host_time;
         pacing.newer_host_time = Some(self.host_clock);
-        if !pacing.on {
-            return;
-        }
         let matches = self.gpu.frame_done();
         let pacing = &mut self.pacing;
         pacing.matches = matches;
@@ -975,9 +972,9 @@ impl System {
         self.pacing.between && !self.real_frames_only()
     }
 
-    /// how many new pictures the top screen has shown, which is the game's
-    /// own frame rate counted in pictures: a title drawing every other
-    /// refresh has one every other console refresh.
+    /// how many new pictures the top screen has shown in High Refresh Mode,
+    /// which is the game's own frame rate counted in pictures: a title
+    /// drawing every other refresh has one every other console refresh.
     pub fn pictures(&self) -> u64 {
         self.pacing.pictures
     }
