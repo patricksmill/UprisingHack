@@ -2,6 +2,7 @@
 //! used to place their controls and to undo that placement for input.
 
 use super::*;
+use super::screen_transform::LayoutKind;
 
 pub(super) const SCISSOR: u32 = 0x009164A8;
 pub(super) const SCISSOR_DONE: u32 = 0x00916580;
@@ -16,12 +17,17 @@ pub(super) const FONT_DONE: [u32; 7] = [0x00A36E68, 0x00A36ECC, 0x00A36EE8, 0x00
 pub(super) struct MenuTop {
     drawn: Option<(u64, usize, u32, f32)>,
     idol_dialog: bool,
+    controls_more: bool,
     physics: Option<PhysicsCall>,
     drag_target: Option<(u32, [f32; 2])>,
     parts: Vec<Part>,
+    /// dev editor moves, by screen index and part index.
+    overrides: Vec<(usize, usize, [f32; 4])>,
+    /// hidden editor items, by stable Screen and part index.
+    hidden: Vec<(usize, usize)>,
     draw_order: Vec<usize>,
     native: Vec<(u32, Vec<u8>)>,
-    clip: Option<(CauldronPlace, bool)>,
+    clip: Option<(Placement, bool)>,
     scissor_back: Option<(u32, [u8; 16])>,
     pointer: Option<[f32; 2]>,
     hit_frame: Option<u64>,
@@ -56,7 +62,11 @@ impl IdolGroup {
 
 #[derive(Clone)]
 struct Part {
-    place: CauldronPlace,
+    place: Placement,
+    visible: bool,
+    /// the game's own top-screen drawing: the details card or the scene
+    /// behind a menu. it is placed by `begin`, not drawn as a Control.
+    backdrop: bool,
     top: bool,
     model: Option<&'static str>,
     idol: Option<IdolGroup>,
@@ -64,10 +74,19 @@ struct Part {
 }
 
 impl Part {
+    fn file_book(&self) -> Option<usize> {
+        match self.model {
+            Some("MenSelfileBt0000") => Some(0),
+            Some("MenSelfileBt0001") => Some(1),
+            Some("MenSelfileBt0002") => Some(2),
+            _ => None,
+        }
+    }
+
     fn hit(&self, point: [f32; 2]) -> bool {
         if !inside(point, self.place.to) { return false; }
         if self.idol == Some(IdolGroup::Dialog) {
-            let (x, y) = mapped(point, self.place.to, self.place.from);
+            let [x, y] = self.place.unmap_point(point);
             return inside([x, y], [15.0, 20.0, 290.0, 200.0]);
         }
         true
@@ -75,8 +94,30 @@ impl Part {
 }
 
 impl MenuTop {
+    fn file_select(&self) -> bool {
+        self.active.map(|(index, ..)| index).or_else(|| self.drawn.map(|(_, index, ..)| index))
+            .is_some_and(|index| index < ScreenTransform::scripted_len()
+                && matches!(ScreenTransform::scripted(index).layout, LayoutKind::FileSelect))
+    }
+
     fn part(&self, sequence: usize) -> Option<&Part> {
-        self.parts.get(self.draw_order.get(sequence).copied().unwrap_or(sequence))
+        let index = if self.draw_order.is_empty() && self.active.is_none() {
+            sequence
+        } else { *self.draw_order.get(sequence)? };
+        self.parts.get(index).filter(|part| self.enabled(part) && !part.backdrop)
+    }
+
+    fn enabled(&self, part: &Part) -> bool {
+        part.visible && self.available(part)
+    }
+
+    fn available(&self, part: &Part) -> bool {
+        match part.model {
+            Some("MenOptionControlBt0001" | "MenOptionControlBt0002" | "MenOptionControlBt0006") => !self.controls_more,
+            Some("MenOptionControlBt0003" | "MenOptionControlBt0004" | "MenOptionControlBt0005" |
+                "MenOptionControlBt0007" | "MenOptionControlBt0008") => self.controls_more,
+            _ => true,
+        }
     }
 }
 
@@ -89,10 +130,15 @@ fn draw_order(system: &mut System, bottom: u32, parts: &[Part]) -> Vec<usize> {
         if list == 0 { continue; }
         let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
         if end >= start && end - start <= 0x1000 {
-            for at in (start..end).step_by(4) { let model = read_word(system, at); names.push(model_name(system, model)); }
+            for at in (start..end).step_by(4) {
+                let model = read_word(system, at);
+                let name = model_name(system, model);
+                names.push(name);
+            }
         }
     }
-    let mut order: Vec<usize> = (0..parts.len()).collect();
+    let mut order: Vec<usize> = (0..parts.len()).filter(|&index| !parts[index].backdrop
+        && system.aim_mouse.as_ref().is_none_or(|mouse| mouse.menu_top.enabled(&parts[index]))).collect();
     order.sort_by_key(|&index| {
         let part = &parts[index];
         if part.top { return if part.model.is_some() { 0 } else { usize::MAX }; }
@@ -101,10 +147,10 @@ fn draw_order(system: &mut System, bottom: u32, parts: &[Part]) -> Vec<usize> {
     order
 }
 
-fn fitted(from: [f32; 4], area: [f32; 4]) -> CauldronPlace {
+fn fitted(from: [f32; 4], area: [f32; 4]) -> Placement {
     let scale = (area[2] / from[2]).min(area[3] / from[3]);
     let (width, height) = (from[2] * scale, from[3] * scale);
-    CauldronPlace { from, to: [area[0] + (area[2] - width) * 0.5, area[1] + (area[3] - height) * 0.5, width, height] }
+    Placement { from, to: [area[0] + (area[2] - width) * 0.5, area[1] + (area[3] - height) * 0.5, width, height] }
 }
 
 fn inside(point: [f32; 2], rect: [f32; 4]) -> bool {
@@ -112,7 +158,8 @@ fn inside(point: [f32; 2], rect: [f32; 4]) -> bool {
 }
 
 fn mapped(point: [f32; 2], from: [f32; 4], to: [f32; 4]) -> (f32, f32) {
-    (to[0] + (point[0] - from[0]) * to[2] / from[2], to[1] + (point[1] - from[1]) * to[3] / from[3])
+    let [x, y] = Placement { from, to }.map_point(point);
+    (x, y)
 }
 
 // Avoid dropping an exact native pixel to the previous row after a float
@@ -127,6 +174,9 @@ fn touch_point(point: (f32, f32)) -> (f32, f32) {
 
 fn button_hash(model: &str) -> Option<u32> {
     Some(match model {
+        "MenSelfileBt0000" => FILE_PARTS[0], "MenSelfileBt0001" => FILE_PARTS[1],
+        "MenSelfileBt0002" => FILE_PARTS[2], "MenSelfileBt0003" => FILE_PARTS[3],
+        "MenSelfileBt0004" => FILE_PARTS[4],
         "MenSgHomeBt0001" => 0x94CE5E14, "MenSgHomeBt0002" => 0x79BCE02D,
         "MenSgHomeBt0003" => 0x38C8C232, "MenSgHomeBt0004" => 0xED263933,
         "MenSgHomeBt0005" => 0x71966FCC, "MenSgHomeBt0006" => 0x4F73A4C0,
@@ -136,77 +186,69 @@ fn button_hash(model: &str) -> Option<u32> {
         "MenTopBt0006" => 0x9A07E025, "MenTopBt0007" => 0x4A7AE3E3,
         "MenAlterBt0001" => 0x1B80430F, "MenAlterBt0002" => 0xC59BD435,
         "MenAlterBt0003" => 0xE43D88E9, "MenAlterBt0004" => 0x71966FCC,
-        "MenSgHomeBt9999" | "MenAlterBt9999" => 0x9A07E025,
+        "MenOptionTopBt0001" => 0x6C7DCDF1, "MenOptionTopBt0002" => 0x53977FC2,
+        "MenOptionTopBt0003" => 0xFB57B10C,
+        "MenTrymissionBt0001" => 0xE50FA312, "MenTrymissionBt0002" => 0xADD1FD65,
+        "MenTrymissionBt0003" => 0x71966FCC,
+        "MenCollectionTopBt0001" => 0xE1D05CA4, "MenCollectionTopBt0002" => 0x0A9FA648,
+        "MenCollectionTopBt0005" => 0xABC93BCF, "MenCollectionTopBt0006" => 0x04E786EA,
+        "MenCollectionTopBt0007" => 0x84D28812, "MenCollectionTopBt0003" => 0x9EC09AD0,
+        "MenCollectionTopBt0009" => 0xBEA7E6CA,
+        "MenEquipBt0001" => 0xA754BFE8, "MenEquipBt0002" => 0xCE77C7CF,
+        "MenSgHomeBt9999" | "MenAlterBt9999" | "MenTrymissionBt9999" | "CmnBack0000" | "MenEquipBt9999" => 0x9A07E025,
+        "MenOptionTopBt9999" => 0x928BEAA4,
+        "MenOptionOtherBt0001" => 0x49C14849,
+        "MenOptionOtherBt0002" => 0xF28BAA60,
+        "MenOptionOtherBt0004" => 0x9E610C53,
+        "MenOptionControlBt0001" => 0xDE4F96DF,
+        "MenOptionControlBt0002" => 0x56866028,
+        "MenOptionControlBt0006" => 0xFB565F88,
+        "MenOptionControlBt0003" => 0x4A0F894B,
+        "MenOptionControlBt0004" => 0x8D79D12E,
+        "MenOptionControlBt0007" => 0x4A0C9579,
+        "MenOptionControlBt0008" => 0x4998C4E7,
+        "MenOptionControlBt0005" => 0x49B8FADA,
+        "MenOptionCtlTpenBt0001" => 0xE84BA0DD,
+        "MenOptionCtlTpenBt0002" => 0x21E46FF0,
+        "MenOptionOtherCaptionBt0001" => 0x6A1911BF,
+        "MenOptionOtherCaptionBt0002" => 0xE76D363A,
+        "MenOptionOtherCaptionBt0003" => 0xDD5F933C,
+        "MenOptionSoundBt0002" => 0x6AFB5539,
+        "MenOptionSoundBt0003" => 0xCD949985,
+        "MenOptionSoundBt0004" => 0x002A0EEA,
+        "MenOptionSoundBt0005" => 0x1C05D789,
+        "MenOptionNameBt0001" => 0x4A41C1D7,
+        "MenOptionNameBt9999" => 0x9A07E025,
+        "MenSelnameBt0001" => 0x3837AABD,
+        "MenSelnameBt0002" => 0x4F14658D,
+        "MenSelnameBt9999" => 0x3B8915AB,
+        "MenOptionOtherBt9999" | "MenOptionControlBt9999" |
+        "MenOptionCtlTpenBt9999" | "MenOptionSoundBt9999" => 0x928BEAA4,
+        "MenCmnWindowBt0000" => 0xB1EBC922,
         _ => return None,
     })
 }
 
-/// Hubs have individual animated models; a list or board stays one group.
-const SOLO: &[(&str, [f32; 4])] = &[
-    ("MenSgHomeBt0001", [0.0, 92.0, 88.0, 112.0]),
-    ("MenSgHomeBt0003", [188.0, 68.0, 132.0, 124.0]),
-    ("MenSgHomeBt0004", [226.0, 0.0, 94.0, 76.0]),
-    ("MenSgHomeBt0005", [178.0, 160.0, 142.0, 80.0]),
-    ("MenSgHomeBt0006", [84.0, 174.0, 96.0, 66.0]),
-    ("MenSgHomeBt9999", [0.0, 194.0, 48.0, 46.0]),
-    ("MenSgHomeBt0002", [12.0, 0.0, 242.0, 164.0]),
-];
-const ALTAR: &[(&str, [f32; 4])] = &[
-    ("MenAlterBt0002", [140.0, 28.0, 180.0, 132.0]),
-    ("MenAlterBt0003", [0.0, 88.0, 206.0, 122.0]),
-    ("MenAlterBt0004", [130.0, 150.0, 190.0, 90.0]),
-    ("MenAlterBt9999", [0.0, 192.0, 58.0, 48.0]),
-    ("MenAlterBt0001", [0.0, 0.0, 198.0, 108.0]),
-];
-const MAIN: &[(&str, [f32; 4])] = &[
-    ("MenTopBt0000", [260.0, 178.0, 60.0, 62.0]),
-    ("MenTopBt0002", [120.0, 82.0, 200.0, 98.0]),
-    ("MenTopBt0003", [0.0, 82.0, 130.0, 98.0]),
-    ("MenTopBt0004", [198.0, 0.0, 122.0, 86.0]),
-    ("MenTopBt0005", [40.0, 176.0, 188.0, 64.0]),
-    ("MenTopBt0006", [4.0, 190.0, 62.0, 50.0]),
-    ("MenTopBt0007", [220.0, 178.0, 50.0, 62.0]),
-    ("MenTopBt0001", [0.0, 0.0, 210.0, 100.0]),
-];
-const OPTIONS: &[(&str, [f32; 4])] = &[
-    ("MenOptionTopBt0001", [58.0, 0.0, 262.0, 104.0]),
-    ("MenOptionTopBt0002", [0.0, 78.0, 266.0, 102.0]),
-    ("MenOptionTopBt0003", [100.0, 148.0, 220.0, 92.0]),
-    ("MenOptionTopBt9999", [0.0, 198.0, 50.0, 42.0]),
-];
-const PRACTICE: &[(&str, [f32; 4])] = &[
-    ("MenTrymissionBt0002", [46.0, 94.0, 274.0, 122.0]),
-    ("MenTrymissionBt0003", [46.0, 192.0, 274.0, 48.0]),
-    ("MenTrymissionBt9999", [0.0, 196.0, 50.0, 44.0]),
-    ("MenTrymissionBt0001", [0.0, 0.0, 294.0, 116.0]),
-];
-const VAULT: &[(&str, [f32; 4])] = &[
-    ("MenCollectionTopBt0002", [168.0, 0.0, 130.0, 110.0]),
-    ("MenCollectionTopBt0003", [100.0, 184.0, 156.0, 56.0]),
-    ("MenCollectionTopBt0005", [0.0, 98.0, 110.0, 92.0]),
-    ("MenCollectionTopBt0006", [108.0, 98.0, 110.0, 92.0]),
-    ("MenCollectionTopBt0007", [212.0, 98.0, 108.0, 92.0]),
-    ("CmnBack0000", [0.0, 196.0, 50.0, 44.0]),
-    ("MenCollectionTopBt0009", [260.0, 194.0, 60.0, 46.0]),
-    ("MenCollectionTopBt0001", [0.0, 0.0, 170.0, 110.0]),
-];
-
-fn hint(index: usize) -> Option<[f32; 4]> {
-    if let Some(kind) = index.checked_sub(MENU_SCREENS.len()) {
-        return match kind {
-            0 | 3 | 4 => Some([0.0, 210.0, 400.0, 30.0]),
-            5 => Some([0.0, 190.0, 400.0, 50.0]),
-            6 => Some([0.0, 170.0, 400.0, 70.0]),
-            _ => None,
-        };
+fn hint_of(index: usize) -> Option<[f32; 4]> {
+    match index.checked_sub(ScreenTransform::scripted_len()) {
+        Some(kind) => hint_extra(kind),
+        None => ScreenTransform::scripted(index).layout.hint(),
     }
-    match index {
-        2..=6 | 8..=13 | 17 | 19 => Some([0.0, 210.0, 400.0, 30.0]),
-        14 | 20 => Some([0.0, 0.0, 400.0, 30.0]),
-        21 => Some([0.0, 0.0, 400.0, 108.0]),
-        22 | 25 => Some([0.0, 170.0, 400.0, 70.0]),
-        23 => Some([0.0, 190.0, 400.0, 50.0]),
-        24 => Some([0.0, 200.0, 400.0, 40.0]),
+}
+
+fn details_of(index: usize) -> bool {
+    match index.checked_sub(ScreenTransform::scripted_len()) {
+        Some(_) => true,
+        None => ScreenTransform::scripted(index).layout.details(),
+    }
+}
+
+/// Hints for the extra child pages past the registry's Scripted Menus.
+fn hint_extra(kind: usize) -> Option<[f32; 4]> {
+    match kind {
+        0 | 3 | 4 => Some([0.0, 210.0, 400.0, 30.0]),
+        5 => Some([0.0, 190.0, 400.0, 50.0]),
+        6 => Some([0.0, 170.0, 400.0, 70.0]),
         _ => None,
     }
 }
@@ -215,32 +257,62 @@ fn hint(index: usize) -> Option<[f32; 4]> {
 const CONTROL_SCALE: f32 = 0.6;
 const HINT_SCALE: f32 = 0.7 * CONTROL_SCALE;
 
-fn has_details(index: usize) -> bool {
-    matches!(index, 0 | 7 | 14..=20) || index >= MENU_SCREENS.len()
+/// Controls cut from one shared Board rather than separated meshes.
+fn board_cut(index: usize) -> bool {
+    (4..=11).contains(&index) || armory_board(index)
 }
 
-fn layout(index: usize, width: f32) -> (CauldronPlace, Vec<Part>) {
-    if index == 1 {
-        let native = CauldronPlace { from: [0.0, 0.0, 400.0, 240.0], to: [0.0, 0.0, width, 240.0] };
+/// Armory Controls keep the details card beside them.
+fn armory_board(index: usize) -> bool {
+    index < ScreenTransform::scripted_len() && matches!(ScreenTransform::scripted(index).layout, LayoutKind::Board { .. })
+}
+
+/// Armory models drawn with a Control: its cursor and the markers or
+/// pieces over it. Replaying the whole Board for each Control exhausts the
+/// game's drawing buffer.
+fn board_companions(model: &str) -> &'static [&'static str] {
+    match model {
+        "MenEquipBt0120" => &["MenEquipBt0124", "MenEquipBt0125", "MenEquipBt0130", "MenEquipBt0131"],
+        "MenEquipBt0203" => &["MenEquipBt0206", "MenEquipBt0220", "MenEquipBt0221"],
+        "MenEquipBt0211" => &["MenEquipBt0215"],
+        _ => &[],
+    }
+}
+
+/// Armory Controls that show the game's text: names, stats, rows and labels.
+const BOARD_TEXT: &[&str] = &[
+    "MenEquipBt0001",
+    "MenEquipBt0120", "MenEquipBt0121", "MenEquipBt0122", "MenEquipBt0123",
+    "MenEquipBt0204", "MenEquipBt0211", "MenEquipBt0212",
+];
+
+fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
+    let extra = index.checked_sub(ScreenTransform::scripted_len());
+    let kind = extra.is_none().then(|| ScreenTransform::scripted(index).layout);
+    if matches!(kind, Some(LayoutKind::Chapter)) {
+        let native = Placement { from: [0.0, 0.0, 400.0, 240.0], to: [0.0, 0.0, width, 240.0] };
         let scale = 0.48_f32.min((width - 16.0) / 400.0);
-        let details = CauldronPlace { from: native.from, to: [(width - 400.0 * scale) * 0.5, 4.0, 400.0 * scale, 240.0 * scale] };
-        let controls = CauldronPlace { from: [0.0, 0.0, 320.0, 240.0], to: [(width - 320.0 * scale) * 0.5, 122.0, 320.0 * scale, 240.0 * scale] };
+        let details = Placement { from: native.from, to: [(width - 400.0 * scale) * 0.5, 4.0, 400.0 * scale, 240.0 * scale] };
+        let controls = Placement { from: [0.0, 0.0, 320.0, 240.0], to: [(width - 320.0 * scale) * 0.5, 122.0, 320.0 * scale, 240.0 * scale] };
         return (native, vec![
-            Part { chapter: true, idol: None, top: true, model: None, place: details },
-            Part { chapter: true, idol: None, top: false, model: None, place: controls },
+            Part { visible: true, backdrop: false, chapter: true, idol: None, top: true, model: None, place: details },
+            Part { visible: true, backdrop: false, chapter: true, idol: None, top: false, model: None, place: controls },
         ]);
     }
-    let hint = hint(index);
+    let hint = match extra {
+        Some(kind) => hint_extra(kind),
+        None => kind.and_then(LayoutKind::hint),
+    };
     let mut area = [0.0, 0.0, width, 240.0];
     if let Some([_, y, _, height]) = hint {
         area[1] = if y == 0.0 { height * HINT_SCALE } else { 0.0 };
         area[3] -= height * HINT_SCALE;
     }
-    let groups = match index { 2 => MAIN, 3 => OPTIONS, 12 => SOLO, 13 => ALTAR, 21 => PRACTICE, 24 => VAULT, _ => &[] };
-    let details = has_details(index);
+    let groups = kind.map_or(&[][..], LayoutKind::group);
+    let details = kind.is_none_or(LayoutKind::details);
     // The original top scene is the backdrop, never a thumbnail or a
     // cropped panel. Text is replayed separately without any scene meshes.
-    let mut native = CauldronPlace { from: [0.0, 0.0, 400.0, 240.0], to: [0.0, 0.0, width, 240.0] };
+    let mut native = Placement { from: [0.0, 0.0, 400.0, 240.0], to: [0.0, 0.0, width, 240.0] };
     let mut controls = area;
     if details {
         // Actual weapon/file information remains a complete, proportional
@@ -256,11 +328,28 @@ fn layout(index: usize, width: f32) -> (CauldronPlace, Vec<Part>) {
         }
     }
     let mut parts = Vec::new();
-    if index == 12 {
-        parts.push(Part { chapter: false, idol: None, top: true, model: Some("MenCmnUpHeart0000"), place: fitted([300.0, 138.0, 100.0, 78.0], [0.0, 0.0, 70.0 * CONTROL_SCALE, 55.0 * CONTROL_SCALE]) });
+    if matches!(kind, Some(LayoutKind::FileSelect)) {
+        parts.reserve(8);
+        let mut board = fitted([0.0, 0.0, 320.0, 240.0], controls);
+        for axis in 0..2 {
+            board.to[axis] += board.to[axis + 2] * (1.0 - CONTROL_SCALE) * 0.5;
+            board.to[axis + 2] *= CONTROL_SCALE;
+        }
+        for (model, from) in groups.iter().map(|&(model, from)| (Some(model), from))
+            .chain([(Some("MenDemoBt0000"), [50.0, 195.0, 135.0, 45.0])]) {
+            let [x, y] = board.map_point([from[0], from[1]]);
+            let to = [x, y, from[2] * board.to[2] / 320.0, from[3] * board.to[3] / 240.0];
+            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model, place: Placement { from, to } });
+        }
+        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: None, place: native });
+        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: None, place: board });
+        return (native, parts);
     }
-    if !groups.is_empty() { controls = [0.0, 0.0, width, 240.0]; }
-    if matches!(index, 22 | 25) {
+    if kind.is_some_and(LayoutKind::heart) {
+        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some("MenCmnUpHeart0000"), place: fitted([300.0, 138.0, 100.0, 78.0], [0.0, 0.0, 70.0 * CONTROL_SCALE, 55.0 * CONTROL_SCALE]) });
+    }
+    if !groups.is_empty() && !armory_board(index) { controls = [0.0, 0.0, width, 240.0]; }
+    if matches!(kind, Some(LayoutKind::Idol)) {
         let counter_scale = 0.7_f32.min((width - 16.0) / 160.0);
         let launcher_scale = 0.68_f32.min(width * 0.6 / 280.0);
         for (group, from, to) in [
@@ -269,10 +358,10 @@ fn layout(index: usize, width: f32) -> (CauldronPlace, Vec<Part>) {
             (IdolGroup::Launcher, [40.0, 40.0, 240.0, 110.0],
                 [width - 8.0 - 240.0 * launcher_scale, 62.0, 240.0 * launcher_scale, 110.0 * launcher_scale]),
         ] {
-            parts.push(Part { chapter: false, idol: Some(group), top: false, model: None, place: CauldronPlace { from, to } });
+            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: Some(group), top: false, model: None, place: Placement { from, to } });
         }
     } else if groups.is_empty() {
-        parts.push(Part { chapter: false, idol: None, top: false, model: None, place: {
+        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: None, place: {
             let mut place = fitted([0.0, 0.0, 320.0, 240.0], controls);
             for axis in 0..2 {
                 place.to[axis] += place.to[axis + 2] * (1.0 - CONTROL_SCALE) * 0.5;
@@ -280,6 +369,42 @@ fn layout(index: usize, width: f32) -> (CauldronPlace, Vec<Part>) {
             }
             place
         } });
+    } else if board_cut(index) {
+        // Dynamic labels and slider pieces share native models. Crop each
+        // Control from the same Board rather than separating those meshes.
+        let mut board = fitted([0.0, 0.0, 320.0, 240.0], controls);
+        for axis in 0..2 {
+            board.to[axis] += board.to[axis + 2] * (1.0 - CONTROL_SCALE) * 0.5;
+            board.to[axis + 2] *= CONTROL_SCALE;
+        }
+        for &(name, from) in groups {
+            let [x, y] = board.map_point([from[0], from[1]]);
+            let to = [x, y, from[2] * board.to[2] / 320.0, from[3] * board.to[3] / 240.0];
+            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
+        }
+        if index == 11 { parts[0].model = None; }
+    } else if kind.is_some_and(LayoutKind::heart) {
+        let original_height = 240.0 - hint.map_or(0.0, |hint| hint[3] * 0.7);
+        let scale = (original_height / 240.0).min(controls[2] / 320.0).min(1.0) * CONTROL_SCALE;
+        let hint_scale = HINT_SCALE.min(width / 400.0);
+        let hint_height = hint.map_or(0.0, |h| h[3] * hint_scale);
+        let baseline = 240.0 - hint_height - 2.0;
+        let mo_size = [242.0 * scale, 164.0 * scale];
+        let mo_x = (width - mo_size[0]) * 0.5;
+        for &(name, from) in groups {
+            let size = [from[2] * scale, from[3] * scale];
+            let to = match name {
+                "MenSgHomeBt0002" => [mo_x, baseline - size[1], size[0], size[1]],
+                "MenSgHomeBt0001" => [mo_x - size[0] + 4.0 * scale, baseline - size[1], size[0], size[1]],
+                "MenSgHomeBt0003" => [mo_x + mo_size[0] - 14.0 * scale, baseline - size[1], size[0], size[1]],
+                "MenSgHomeBt0004" => [width - size[0], 0.0, size[0], size[1]],
+                "MenSgHomeBt0005" => [width - size[0], 240.0 - size[1], size[0], size[1]],
+                "MenSgHomeBt0006" => [48.0 * scale + 4.0, 240.0 - size[1], size[0], size[1]],
+                "MenSgHomeBt9999" => [0.0, 240.0 - size[1], size[0], size[1]],
+                _ => [0.0, 0.0, size[0], size[1]],
+            };
+            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
+        }
     } else {
         let original_height = 240.0 - hint.map_or(0.0, |hint| hint[3] * 0.7);
         let scale = (original_height / 240.0).min(controls[2] / 320.0).min(1.0) * CONTROL_SCALE;
@@ -291,29 +416,32 @@ fn layout(index: usize, width: f32) -> (CauldronPlace, Vec<Part>) {
             let bottom = if name == "MenSgHomeBt0006" { hint.map_or(0.0, |hint| hint[3] * HINT_SCALE + 4.0) } else { 0.0 };
             let to = [controls[0] + (controls[2] - size[0]) * anchor[0],
                 controls[1] + (controls[3] - bottom - size[1]) * anchor[1], size[0], size[1]];
-            parts.push(Part { chapter: false, idol: None, top: false, model: Some(name), place: CauldronPlace { from, to } });
+            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
         }
     }
     if let Some(mut from) = hint {
-        let scale = if matches!(index, 22 | 25) {
+        let scale = if matches!(kind, Some(LayoutKind::Idol)) {
             // Keep both complete hint lines readable, with room for Back
             // in narrow windows and for the dialog above the text.
             from = [0.0, 175.0, 400.0, 45.0];
             0.6_f32.min((width - 88.0) / from[2])
         } else { HINT_SCALE.min(width / from[2]) };
         let height = from[3] * scale;
-        parts.push(Part { chapter: false, idol: None, top: true, model: None, place: CauldronPlace {
+        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: None, place: Placement {
             from, to: [(width - from[2] * scale) * 0.5, if from[1] == 0.0 { 0.0 } else { 240.0 - height }, from[2] * scale, height],
         } });
     }
+    // Last, so adding it kept every other layer's saved index.
+    parts.push(Part { visible: true, backdrop: true, chapter: false, idol: None, top: true, model: None, place: native });
     (native, parts)
 }
 
-fn layout_with_dialog(index: usize, width: f32, idol_dialog: bool) -> (CauldronPlace, Vec<Part>) {
+fn layout_with_dialog(index: usize, width: f32, idol_dialog: bool) -> (Placement, Vec<Part>) {
     let (native, mut parts) = layout(if idol_dialog { 22 } else { index }, width);
     if idol_dialog {
         let place = fitted([0.0, 0.0, 320.0, 240.0], [8.0, 48.0, width - 16.0, 180.0]);
-        parts.insert(parts.len() - 1, Part { chapter: false, idol: Some(IdolGroup::Dialog), top: false, model: None, place });
+        // before the hint, which precedes the backdrop
+        parts.insert(parts.len() - 2, Part { visible: true, backdrop: false, chapter: false, idol: Some(IdolGroup::Dialog), top: false, model: None, place });
     }
     (native, parts)
 }
@@ -333,6 +461,219 @@ fn scene_has_idol(system: &mut System, scene: u32) -> bool {
     false
 }
 
+/// Screens whose graph navigation is redirected by `navigate`.
+const NAVIGABLE_SCREENS: [usize; 17] = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, 21, 24];
+
+/// A Control the editor can link: a graph node, or a weapon category
+/// tile (and Back), which the game steps by index rather than by name.
+fn navigation_control(screen: usize, part: &Part) -> bool {
+    !part.top && (part.model.and_then(button_hash).is_some() || (screen == 20 && part.model.is_some()))
+}
+
+impl AimMouse {
+    /// The native choice box is horizontal; it has no Up/Down actions.
+    pub fn editor_navigation_directions(&self) -> [bool; 4] {
+        if self.menu_screen.is_some_and(|(screen, ..)| screen == 11) {
+            [false, false, true, true]
+        } else { [true; 4] }
+    }
+
+    pub fn editor_navigation_controls(&self) -> Vec<(usize, [Option<usize>; 4])> {
+        let Some((screen, ..)) = self.menu_screen else { return Vec::new() };
+        if !NAVIGABLE_SCREENS.contains(&screen) { return Vec::new(); }
+        self.menu_top.parts.iter().enumerate().filter(|(_, part)|
+            self.menu_top.enabled(part) && navigation_control(screen, part)).map(|(index, _)| {
+            let mut targets = [None; 4];
+            for (slot, direction) in [NavigationDirection::Up, NavigationDirection::Down,
+                NavigationDirection::Left, NavigationDirection::Right].into_iter().enumerate() {
+                targets[slot] = self.navigation_links.iter().find(|link|
+                    link.screen == screen && link.from == index && link.direction == direction).map(|link| link.to);
+            }
+            (index, targets)
+        }).collect()
+    }
+
+    pub fn set_editor_navigation_link(&mut self, from: usize, direction: NavigationDirection, to: Option<usize>) {
+        let Some((screen, ..)) = self.menu_screen else { return };
+        if !NAVIGABLE_SCREENS.contains(&screen) { return; }
+        if screen == 11 && matches!(direction, NavigationDirection::Up | NavigationDirection::Down) { return; }
+        let valid = |index| self.menu_top.parts.get(index).is_some_and(|part: &Part|
+            self.menu_top.enabled(part) && navigation_control(screen, part));
+        if !valid(from) || to.is_some_and(|index| !valid(index)) { return; }
+        self.navigation_links.retain(|link| !(link.screen == screen && link.from == from && link.direction == direction));
+        if let Some(to) = to { self.navigation_links.push(NavigationLink { screen, from, direction, to }); }
+    }
+}
+
+/// The weapon category step, at its loop head: r5 the screen, r7 the
+/// direction's table, r6 the candidate tried, r4 the candidate taken at
+/// 0x001C670C, which also handles Back's return to its previous tile.
+const CATEGORY_STEP: u32 = 0x001C66CC;
+const CATEGORY_TAKE: u32 = 0x001C670C;
+const CATEGORY_NONE: u32 = 0x001C66E4;
+const CATEGORY: u32 = 0xDC;
+const CATEGORY_BEFORE: u32 = 0xE0;
+const CATEGORY_BACK: usize = 10;
+
+fn navigate_categories(system: &mut System) {
+    if system.cpu.regs[6] != 0 { return; }
+    let (object, table) = (system.cpu.regs[5], system.cpu.regs[7]);
+    let direction = match table {
+        0x00CA3180 => NavigationDirection::Left,
+        0x00CA2AA0 => NavigationDirection::Right,
+        0x00CA2730 => NavigationDirection::Up,
+        0x00CA2E10 => NavigationDirection::Down,
+        _ => return,
+    };
+    let from = read_word(system, object + CATEGORY) as usize;
+    let Some(mouse) = system.aim_mouse.as_ref().filter(|mouse| mouse.menus_on_top
+        && mouse.menu_screen.is_some_and(|(screen, owner, ..)| screen == 20 && owner == object)) else { return };
+    if !mouse.menu_top.parts.get(from).is_some_and(|part| mouse.menu_top.enabled(part)) { return; }
+    let Some(to) = mouse.navigation_links.iter().find(|link| link.screen == 20 && link.from == from && link.direction == direction)
+        .map(|link| link.to).filter(|&to| to <= CATEGORY_BACK && mouse.menu_top.parts.get(to).is_some_and(|part| mouse.menu_top.enabled(part))) else { return };
+    if to == from {
+        system.cpu.regs[15] = CATEGORY_NONE;
+        return;
+    }
+    if !category_unlocked(system, to as u32) { return; }
+    if from == CATEGORY_BACK {
+        // Back always returns to the tile saved here.
+        system.memory.write_bytes(object + CATEGORY_BEFORE, &(to as u32).to_le_bytes());
+    }
+    system.cpu.regs[4] = to as u32;
+    system.cpu.regs[15] = CATEGORY_TAKE;
+}
+
+/// Redirect the native graph lookup, not pad input. The native caller keeps
+/// its repeat, availability checks, outline updates, sound and activation.
+pub(super) fn navigate(system: &mut System, pc: u32) {
+    if pc == 0x00241368 {
+        let object = system.cpu.regs[4];
+        let Some(_) = system.aim_mouse.as_ref().filter(|mouse| mouse.menus_on_top
+            && !mouse.menu_top.idol_dialog && mouse.menu_screen.is_some_and(|(screen, owner, ..)| screen == 11 && owner == object)) else { return };
+        let direction = match system.cpu.regs[14] {
+            0x002412A4 => NavigationDirection::Left,
+            0x0024130C => NavigationDirection::Right,
+            _ => return,
+        };
+        let from = read_word(system, object + DIALOG_PICKED) as usize + 1;
+        let mouse = system.aim_mouse.as_ref().unwrap();
+        if !mouse.menu_top.parts.get(from).is_some_and(|part| mouse.menu_top.enabled(part)) { return; }
+        if let Some(link) = mouse.navigation_links.iter().find(|link|
+            link.screen == 11 && link.from == from && link.direction == direction && (1..=2).contains(&link.to)
+                && mouse.menu_top.parts.get(link.to).is_some_and(|part| mouse.menu_top.enabled(part))) {
+            system.cpu.regs[0] = link.to as u32 - 1;
+        }
+        return;
+    }
+    if matches!(pc, 0x002D590C | 0x002D5B40 | 0x002D5D74 | 0x002D699C) {
+        let direction = match pc {
+            0x002D590C => NavigationDirection::Up,
+            0x002D5B40 => NavigationDirection::Down,
+            0x002D5D74 => NavigationDirection::Left,
+            _ => NavigationDirection::Right,
+        };
+        let object = system.cpu.regs[0];
+        let hash = read_word(system, object + BUTTONS_OUTLINED);
+        let Some(mouse) = system.aim_mouse.as_ref().filter(|mouse| mouse.menus_on_top
+            && mouse.menu_screen.is_some_and(|(screen, owner, ..)| screen == 8 && owner == object)) else { return };
+        let Some(from) = mouse.menu_top.parts.iter().position(|part|
+            mouse.menu_top.enabled(part) && part.model.and_then(button_hash) == Some(hash)) else { return };
+        let Some(link) = mouse.navigation_links.iter().find(|link|
+            link.screen == 8 && link.from == from && link.direction == direction) else { return };
+        let Some(target) = mouse.menu_top.parts.get(link.to).filter(|part| mouse.menu_top.enabled(part))
+            .and_then(|part| part.model).and_then(button_hash) else { return };
+        // The native repeat controller has already selected this direction.
+        // A link replaces navigation, not the slider's value adjustment.
+        if read_word(system, system.cpu.regs[1]) & 5 == 0 {
+            system.cpu.regs[15] = system.cpu.regs[14];
+            return;
+        }
+        let owner = read_word(system, object + BUTTONS_SOUND_OWNER);
+        let descriptor = kept_of_kind(system, owner, 0x00D70ED8);
+        if descriptor == 0 { return; }
+        for offset in (0x18..0x400).step_by(4) {
+            let name = descriptor + offset;
+            if read_word(system, name) != target || read_word(system, name + 8) != 0x20 { continue; }
+            let text = read_word(system, name + 4);
+            if !system.memory.is_readable(text, 1) { continue; }
+            let flags = read_word(system, object + QUEUED);
+            system.memory.write_bytes(object + QUEUED, &[(flags as u8 & !2) | 1]);
+            system.memory.write_bytes(object + VOLUME_HELD, &[0; 8]);
+            system.cpu.regs[0] = object + QUEUED_PART;
+            system.cpu.regs[1] = name;
+            system.cpu.regs[15] = QUEUE_PART;
+            return;
+        }
+        return;
+    }
+    if pc == CATEGORY_STEP {
+        navigate_categories(system);
+        return;
+    }
+    let (direction, slot) = match pc {
+        0x003506C4 => {
+            let Some(direction) = NavigationDirection::from_native_code(system.cpu.regs[1]) else { return };
+            (direction, None)
+        }
+        // These key handlers inline the same graph lookup.
+        0x002BC5A4 | 0x00321720 | 0x0026E0A0 | 0x00284898 | 0x00219A64 | 0x0023C1AC | 0x002E135C |
+        0x002474B0 | 0x0019560C | 0x002535C0 | 0x002B75E4 => (NavigationDirection::Left, Some(0x64)),
+        0x002BC618 | 0x0032178C | 0x0026E114 | 0x00284948 | 0x00219AD8 | 0x0023C238 | 0x002E1854 |
+        0x0024751C | 0x0019568C | 0x00253610 | 0x002B7638 => (NavigationDirection::Right, Some(0x38)),
+        0x002BC688 | 0x003217F8 | 0x0026E18C | 0x002849F8 | 0x00219B50 | 0x0023C2C8 | 0x00293848 |
+        0x00247588 | 0x0019570C | 0x00253660 | 0x002B7688 => (NavigationDirection::Up, Some(0x90)),
+        0x002BC6CC | 0x00321864 | 0x0026E204 | 0x00284AA8 | 0x00219BC8 | 0x0023C384 | 0x002938CC |
+        0x002475F4 | 0x00195784 | 0x002536B0 | 0x002B76E0 => (NavigationDirection::Down, Some(0xBC)),
+        _ => return,
+    };
+    let record = system.cpu.regs[0];
+    let hash = read_word(system, record + 0xc);
+    let Some(mouse) = system.aim_mouse.as_ref().filter(|mouse| mouse.menus_on_top) else { return };
+    let Some((screen, ..)) = mouse.menu_screen else { return };
+    let Some(from) = mouse.menu_top.parts.iter().position(|part|
+        mouse.menu_top.enabled(part) && !part.top && part.model.and_then(button_hash) == Some(hash)) else { return };
+    let Some(link) = mouse.navigation_links.iter().find(|link|
+        link.screen == screen && link.from == from && link.direction == direction) else { return };
+    let Some(target) = mouse.menu_top.parts.get(link.to).filter(|part| mouse.menu_top.enabled(part))
+        .and_then(|part| part.model).and_then(button_hash) else { return };
+    // The graph is a bounded circular list; each node owns its current name
+    // at +0xc and its next/previous pointers at +4/+8.
+    let mut at = record;
+    for _ in 0..128 {
+        if at == 0 || !system.memory.is_readable(at, 0x38) { return; }
+        if read_word(system, at + 0xc) == target {
+            if matches!(pc, 0x002BC5A4 | 0x002BC618 | 0x002BC688 | 0x002BC6CC) {
+                // A graph-slot substitution is insufficient here: Left/Right
+                // also steps the book index. The native outline helper updates
+                // the destination name, book index and animation together.
+                let resume = if matches!(direction, NavigationDirection::Left | NavigationDirection::Right) {
+                    0x002BC66C
+                } else { 0x002BC6E8 };
+                if target == hash {
+                    system.cpu.regs[15] = resume;
+                } else {
+                    system.cpu.regs[0] = system.cpu.regs[5];
+                    system.cpu.regs[1] = at + 0xc;
+                    system.cpu.regs[14] = resume;
+                    system.cpu.regs[15] = OUTLINE_FILE_PART;
+                }
+                return;
+            }
+            if let Some(slot) = slot {
+                // The caller loads the name at this directional slot.
+                system.cpu.regs[0] = at + 0xc - slot;
+            } else {
+                system.cpu.regs[0] = at;
+                system.cpu.regs[1] = 9; // native self-name lookup
+            }
+            return;
+        }
+        at = read_word(system, at + 4);
+        if at == record { return; }
+    }
+}
+
 impl AimMouse {
     pub(super) fn menu_age(&self) -> u64 { 3 + if self.menus_on_top { self.menu_top.duration } else { 0 } }
 
@@ -348,7 +689,7 @@ impl AimMouse {
         let age = 3 + self.menu_top.duration;
         self.menus_on_top && self.menu_top.drawn.is_some_and(|(drawn, index, object, widen)|
             frame >= drawn && frame <= drawn + age && widen == self.widen
-                && if index >= MENU_SCREENS.len() {
+                && if index >= ScreenTransform::scripted_len() {
                     self.menu_screen.is_none_or(|(_, _, seen)| seen <= drawn)
                 } else {
                     self.menu_screen.is_some_and(|(active, owner, seen)| active == index && owner == object && frame >= seen
@@ -357,7 +698,7 @@ impl AimMouse {
     }
 
     pub(super) fn native_menu_on_top(&self, frame: u64) -> bool {
-        self.menus_on_top_shown(frame) && (self.menu_top.passthrough || self.menu_top.drawn.is_some_and(|(_, index, _, _)| index >= MENU_SCREENS.len()))
+        self.menus_on_top_shown(frame) && (self.menu_top.passthrough || self.menu_top.drawn.is_some_and(|(_, index, _, _)| index >= ScreenTransform::scripted_len()))
     }
 
     /// Frontend top-screen pixels (400 across), converted to native touch.
@@ -367,14 +708,29 @@ impl AimMouse {
         if !pressed { self.menu_top.grab = None; }
         if self.menu_top.pointer != Some(point) {
             self.menu_top.pointer = Some(point);
-            self.menu_top.candidates = self.menu_top.parts.iter().enumerate().rev()
-                .filter(|(_, part)| !part.top && (!self.menu_top.idol_dialog || part.idol == Some(IdolGroup::Dialog)) && (part.hit(point)
-                    || (inside(point, [0.0, 0.0, 400.0 * self.widen, 240.0]) && part.model.and_then(button_hash).is_some())))
-                .map(|(index, part)| (index, mapped(point, part.place.to, part.place.from))).collect();
+            let file = self.menu_top.file_select();
+            let cropped = self.menu_screen.is_some_and(|(index, ..)| board_cut(index));
+            let on_screen = inside(point, [0.0, 0.0, 400.0 * self.widen, 240.0]);
+            self.menu_top.candidates = self.menu_top.parts.iter().enumerate().rev().filter_map(|(index, part)| {
+                if !self.menu_top.enabled(part) || part.top
+                    || (self.menu_top.idol_dialog && part.idol != Some(IdolGroup::Dialog)) { return None; }
+                let addressable = part.model.and_then(button_hash).is_some();
+                if file && !addressable { return None; }
+                let hit = part.hit(point);
+                let isolated = addressable && !cropped && on_screen && (!file || part.file_book().is_some());
+                if !hit && !isolated { return None; }
+                let native = mapped(point, part.place.to, part.place.from);
+                if file && !hit && !inside([native.0, native.1], [0.0, 0.0, 320.0, 240.0]) { return None; }
+                Some((index, native))
+            }).collect();
             self.menu_top.candidate = 0;
         }
         let over = self.menu_top.candidates.get(self.menu_top.candidate).map(|&(index, _)| index);
-        let index = self.menu_top.grab.filter(|_| pressed).or(over)?;
+        let Some(index) = self.menu_top.grab.filter(|_| pressed).or(over) else {
+            self.menu_part = None;
+            self.menu_looked = None;
+            return None;
+        };
         let part = &self.menu_top.parts[index];
         let validated = part.model.and_then(button_hash).is_none_or(|expected|
             self.menu_part.is_some_and(|found| found.hash == expected)
@@ -388,18 +744,105 @@ impl AimMouse {
     /// frontend mapping in the headless harness.
     pub fn menus_top_point(&self, frame: u64, x: f32, y: f32, button: Option<u32>) -> Option<(f32, f32)> {
         if !self.menus_on_top_shown(frame) { return None; }
-        let part = self.menu_top.parts.iter().rev().find(|part| !part.top && (!self.menu_top.idol_dialog || part.idol == Some(IdolGroup::Dialog)) && (inside([x, y], part.place.from) || button.is_some()) && button.is_none_or(|button| part.model.and_then(button_hash) == Some(button)))?;
-        let (x, y) = mapped([x, y], part.place.from, part.place.to);
+        let part = self.menu_top.parts.iter().rev().find(|part| self.menu_top.enabled(part) && !part.top
+            && (!self.menu_top.file_select() || part.model.and_then(button_hash).is_some())
+            && (!self.menu_top.idol_dialog || part.idol == Some(IdolGroup::Dialog))
+            && (inside([x, y], part.place.from) || button.is_some())
+            && button.is_none_or(|button| part.model.and_then(button_hash) == Some(button)))?;
+        let [x, y] = part.place.map_point([x, y]);
         Some((x / self.widen, y))
     }
 
     pub fn hovered_menu_part(&self) -> Option<u32> { self.menu_part.map(|part| part.hash) }
 
+    /// the active Scripted Menu's editable layers: label and target box.
+    pub fn editor_layers(&self) -> Vec<(String, [f32; 4])> {
+        self.menu_top.parts.iter().enumerate().map(|(index, part)| {
+            let name = if self.menu_top.file_select() {
+                match index {
+                    0 => "Book I", 1 => "Book II", 2 => "Book III", 3 => "Back",
+                    4 => "How to Play", 5 => "HOME hint", 6 => "Player information Board", _ => "Background",
+                }.to_owned()
+            } else if part.backdrop {
+                let screen = self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen));
+                if screen.is_some_and(details_of) { "Details card" } else { "Top screen" }.to_owned()
+            } else if self.menu_screen.is_some_and(|(screen, ..)| screen == 11) && !self.menu_top.idol_dialog {
+                match index { 0 => "Dialog", 1 => "No", 2 => "Yes", _ => "hint" }.to_owned()
+            } else { part.model.map_or_else(|| if part.top { "hint" } else { "controls" }.to_owned(), str::to_owned) };
+            let inactive = if self.menu_top.available(part) { "" } else { " (inactive)" };
+            (format!("{name} #{index}{inactive}"), part.place.to)
+        }).collect()
+    }
+
+    /// the dev editor's saved moves, by screen and part index.
+    pub fn editor_overrides(&self) -> Vec<(usize, usize, [f32; 4])> {
+        self.menu_top.overrides.clone()
+    }
+
+    pub fn set_editor_overrides(&mut self, overrides: Vec<(usize, usize, [f32; 4])>) {
+        self.menu_top.overrides = overrides;
+    }
+
+    /// Visibility follows the same stable indices as `editor_layers`.
+    pub fn editor_layer_visibility(&self) -> Vec<bool> {
+        self.menu_top.parts.iter().map(|part| part.visible).collect()
+    }
+
+    pub fn editor_hidden_layers(&self) -> Vec<(usize, usize)> {
+        self.menu_top.hidden.clone()
+    }
+
+    pub fn set_editor_hidden_layers(&mut self, hidden: Vec<(usize, usize)>) {
+        self.menu_top.hidden = hidden;
+        if let Some(screen) = self.menu_screen.map(|(screen, ..)| screen)
+            .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) {
+            for (index, part) in self.menu_top.parts.iter_mut().enumerate() {
+                part.visible = !self.menu_top.hidden.contains(&(screen, index));
+            }
+        }
+        self.cancel_menu_touch();
+        self.clear_menus_top_pointer();
+    }
+
+    pub fn set_editor_layer_visible(&mut self, index: usize, visible: bool) {
+        let Some(screen) = self.menu_screen.map(|(screen, ..)| screen)
+            .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) else { return };
+        let Some(part) = self.menu_top.parts.get_mut(index) else { return };
+        part.visible = visible;
+        self.menu_top.hidden.retain(|&entry| entry != (screen, index));
+        if !visible { self.menu_top.hidden.push((screen, index)); }
+        self.cancel_menu_touch();
+        self.clear_menus_top_pointer();
+    }
+
+    /// move one Scripted Menu layer, keeping the edit for the next frame.
+    pub fn set_editor_layer(&mut self, index: usize, to: [f32; 4]) {
+        let screen = self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen));
+        if let Some(part) = self.menu_top.parts.get_mut(index) {
+            part.place.to = to;
+        }
+        self.clear_menus_top_pointer();
+        let Some(screen) = screen else { return };
+        match self.menu_top.overrides.iter_mut().find(|(kept, part, _)| *kept == screen && *part == index) {
+            Some(entry) => entry.2 = to,
+            None => self.menu_top.overrides.push((screen, index, to)),
+        }
+    }
+
+    pub fn widen(&self) -> f32 {
+        self.widen
+    }
+
     /// Host-only pointers and recorded drawings must never survive loading
     /// another console state. Enhancement settings stay with the host.
     pub(crate) fn reset_menu_after_load(&mut self) {
         self.cancel_menu_touch();
-        self.menu_top = MenuTop { blocked: self.menu_top.blocked, ..MenuTop::default() };
+        self.menu_top = MenuTop {
+            blocked: self.menu_top.blocked,
+            overrides: std::mem::take(&mut self.menu_top.overrides),
+            hidden: std::mem::take(&mut self.menu_top.hidden),
+            ..MenuTop::default()
+        };
         self.pointer = None;
         self.menu_screen = None;
         self.menus_open.clear();
@@ -413,8 +856,7 @@ impl AimMouse {
         self.top_viewport = None;
         self.top_projection = None;
         self.top_moved.clear();
-        self.pause_drawn = None;
-        self.cauldron_drawn = None;
+        self.transform.reset();
         self.battle_drawn = None;
     }
 }
@@ -472,9 +914,11 @@ fn scene(system: &mut System, top: u32) -> Option<(usize, u32, u32, bool)> {
     if read_word(system, bottom) != BOTTOM_SCENE || current == 0 || read_word(system, bottom + 0x40) != current { return None; }
     if let Some((index, object, _, native)) = rendering.filter(|&(_, _, scene, _)| scene == current) { return Some((index, object, bottom, native)); }
     if let Some((index, object, _)) = active { return Some((index, object, bottom, false)); }
-    // These child pages use native touches, rather than an A/outline
-    // adapter. Keep their sliders, steps and viewer controls accessible.
+    // Models are present during entrance and exit animations before the
+    // corresponding input update runs. Draw their layout without enabling input.
     let layers = read_word(system, current + SCENE_LAYERS);
+    let mut matched = None;
+    let mut fallback = None;
     for layer in BOTTOM_LAYERS {
         let list = read_word(system, layers + layer * LAYER_SIZE + 4);
         if list == 0 { continue; }
@@ -483,6 +927,29 @@ fn scene(system: &mut System, top: u32) -> Option<(usize, u32, u32, bool)> {
         for at in (start..end).step_by(4) {
             let model = read_word(system, at);
             let name = model_name(system, model);
+            let hub = if name.starts_with("MenSgHomeBt") { Some(12) }
+                else if name.starts_with("MenTopBt") { Some(2) }
+                else if name.starts_with("MenAlterBt") { Some(13) }
+                else if name.starts_with("MenTrymissionBt") { Some(21) }
+                else if name.starts_with("MenCollectionTopBt") { Some(24) }
+                else if name.starts_with("MenOptionOtherCaptionBt") { Some(7) }
+                else if name.starts_with("MenOptionOtherBt") { Some(4) }
+                else if name.starts_with("MenOptionControlBt") { Some(5) }
+                else if name.starts_with("MenOptionSoundBt") { Some(8) }
+                else if name.starts_with("MenOptionNameBt") { Some(9) }
+                else if name.starts_with("MenOptionCtlTpenBt") { Some(6) }
+                else if name.starts_with("MenSelnameBt") { Some(10) }
+                else if name.starts_with("MenSelfileBt") { Some(0) }
+                else if name.starts_with("MenEquipBt0001") { Some(14) }
+                else if name.starts_with("MenEquipBt0211") { Some(18) }
+                else if name.starts_with("MenEquipBt0120") { Some(19) }
+                else if name.starts_with("MenEquipBt0102") { Some(20) }
+                else if name.starts_with("MenOptionTopBt") { Some(3) }
+                else { None };
+            if let Some(index) = hub {
+                matched = Some(index);
+                continue;
+            }
             let kind = if name.starts_with("MenOption") { 0 }
                 else if name.starts_with("MenColSdtstMusic") { 1 }
                 else if name.starts_with("MenColVision") { 6 }
@@ -495,12 +962,13 @@ fn scene(system: &mut System, top: u32) -> Option<(usize, u32, u32, bool)> {
                 else { continue };
             if let Some((index, object, _)) = last.filter(|&(index, _, _)| matches!((kind, index),
                 (3, 19) | (4, 17) | (5, 23) | (6, 22 | 25) | (7, 14..=20))) {
-                return Some((index, object, bottom, true));
+                fallback.get_or_insert((index, object, bottom, true));
+            } else {
+                fallback.get_or_insert((ScreenTransform::scripted_len() + kind, current, bottom, true));
             }
-            return Some((MENU_SCREENS.len() + kind, current, bottom, true));
         }
     }
-    None
+    matched.map(|index| (index, 0, bottom, false)).or(fallback)
 }
 
 pub(super) fn begin(system: &mut System) -> bool {
@@ -517,9 +985,16 @@ pub(super) fn begin(system: &mut System) -> bool {
     };
     let current = read_word(system, top + 0x40);
     let idol_dialog = matches!(index, 10 | 11) && scene_has_idol(system, current);
+    let controls_more = index == 5 && read_word(system, object + 0x11C) & 0x100 != 0;
     log::debug!("menu begin index {index} idol dialog {idol_dialog}");
+    // the native fallback screens past the registry draw themselves and have
+    // no Screen row to cap
+    let screen = (index < ScreenTransform::scripted_len()).then(|| ScreenTransform::scripted(index).id);
     let mouse = system.aim_mouse.as_mut().unwrap();
     if mouse.saved.is_some() { return false; }
+    if let Some(screen) = screen {
+        mouse.transform.mark_active(screen, system.frames);
+    }
     if mouse.menu_top.drawn.is_some_and(|(_, old, owner, widen)| old != index || owner != object || widen != mouse.widen) {
         mouse.cancel_menu_touch();
         mouse.menu_looked = None;
@@ -527,27 +1002,54 @@ pub(super) fn begin(system: &mut System) -> bool {
         mouse.menu_top.pointer = None;
         mouse.menu_top.candidates.clear();
     }
-    let (native, parts) = layout_with_dialog(index, 400.0 * mouse.widen, idol_dialog);
+    let (mut native, mut parts) = layout_with_dialog(index, 400.0 * mouse.widen, idol_dialog);
+    for &(screen, part, to) in &mouse.menu_top.overrides {
+        if screen == index {
+            if let Some(part) = parts.get_mut(part) {
+                part.place.to = to;
+            }
+        }
+    }
+    for &(screen, part) in &mouse.menu_top.hidden {
+        if screen == index {
+            if let Some(part) = parts.get_mut(part) { part.visible = false; }
+        }
+    }
+    // The game's own top drawing follows its editable backdrop layer.
+    let backdrop = parts.iter().find(|part| part.backdrop).map(|part| (part.place.to, part.visible));
+    if let Some((to, _)) = backdrop { native.to = to; }
     mouse.menu_top.idol_dialog = idol_dialog;
+    mouse.menu_top.controls_more = controls_more;
     mouse.menu_top.active = Some((index, object, current, native_touch));
     mouse.menu_top.passthrough = native_touch;
     mouse.menu_top.started = system.frames;
     mouse.menu_top.parts = parts;
-    let parts = mouse.menu_top.parts.clone();
-    let order = draw_order(system, bottom, &parts);
+    let order = if mouse.menu_top.file_select() {
+        // Background and information first; interactive Controls above them.
+        [7, 6, 0, 1, 2, 3, 4, 5].into_iter().filter(|&index|
+            mouse.menu_top.enabled(&mouse.menu_top.parts[index])).collect()
+    } else {
+        let parts = mouse.menu_top.parts.clone();
+        draw_order(system, bottom, &parts)
+    };
     system.aim_mouse.as_mut().unwrap().menu_top.draw_order = order;
     let mut moved = Vec::new();
     place_scene(system, top, top, native, true, false, &mut moved);
+    if system.aim_mouse.as_ref().unwrap().menu_top.file_select() {
+        file_models(system, top, None, &mut moved);
+    }
     if index == 12 { filter_models(system, top, true, false, &mut moved, |name| name != "MenCmnUpHeart0000"); }
     if index == 1 { chapter_models(system, top, true, false, &mut moved); }
     let mouse = system.aim_mouse.as_mut().unwrap();
     mouse.menu_top.native = moved;
-    mouse.menu_top.clip = Some((native, true));
+    // A hidden backdrop keeps the game's pass but clips all of it away.
+    let clip = if backdrop.is_some_and(|(_, visible)| !visible) { Placement { from: native.from, to: [0.0; 4] } } else { native };
+    mouse.menu_top.clip = Some((clip, true));
     set_clip(system, Drawing::MenuClip(START), Vec::new());
     true
 }
 
-fn place_scene(system: &mut System, top: u32, drawing: u32, place: CauldronPlace, stereo: bool, isolated: bool, moved: &mut Vec<(u32, Vec<u8>)>) {
+fn place_scene(system: &mut System, top: u32, drawing: u32, place: Placement, stereo: bool, isolated: bool, moved: &mut Vec<(u32, Vec<u8>)>) {
     let scale = [place.to[2] / place.from[2], place.to[3] / place.from[3]];
     let size = [if stereo { 400.0 } else { 320.0 }, 240.0];
     let full = if isolated { place.to } else { [place.to[0] - place.from[0] * scale[0], place.to[1] - place.from[1] * scale[1], size[0] * scale[0], size[1] * scale[1]] };
@@ -581,6 +1083,32 @@ fn filter_models(system: &mut System, drawing: u32, top: bool, foreground: bool,
     }
 }
 
+// File Select's books are 3D meshes: keep their native depth and material
+// ordering. The 2D foreground override flattens their covers behind other faces.
+// Keep the original full-Board viewport too: fonts use that viewport rather
+// than the 3D projection, and off-screen book faces must stay off-screen.
+// Only the scissor expands past an individual book's nominal Control box.
+fn file_models(system: &mut System, drawing: u32, part: Option<&Part>, moved: &mut Vec<(u32, Vec<u8>)>) {
+    let scene = read_word(system, drawing + 0x40);
+    let layers = read_word(system, scene + SCENE_LAYERS);
+    for layer in 0..16 {
+        let list = read_word(system, layers + layer * LAYER_SIZE + 4);
+        if list == 0 { continue; }
+        let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
+        if end < start || end - start > 0x1000 { continue; }
+        for at in (start..end).step_by(4) {
+            let model = read_word(system, at);
+            let name = model_name(system, model);
+            let selected = part.is_some_and(|part| if part.top {
+                name == "MenSelFileUp0001"
+            } else { name == part.model.unwrap_or("MenDemoBt0000") });
+            // RotObj meshes are the native cross-screen selection connectors,
+            // not the book covers. Their geometry cannot follow edited Boards.
+            show_nodes(system, moved, model, |node| selected && !node.starts_with("RotObj"));
+        }
+    }
+}
+
 // Chapter scenery and information share a model. Select mesh nodes so
 // the scenery can fill the screen while the complete information shrinks.
 fn chapter_models(system: &mut System, drawing: u32, top: bool, details: bool, moved: &mut Vec<(u32, Vec<u8>)>) {
@@ -594,6 +1122,9 @@ fn chapter_models(system: &mut System, drawing: u32, top: bool, details: bool, m
         for at in (start..end).step_by(4) {
             let model = read_word(system, at);
             let name = model_name(system, model);
+            if std::env::var_os("KIUTRACE_MENU_MODELS").is_some() {
+                log_model_nodes(system, layer, model, &name);
+            }
             let selected = if top { name.starts_with("MenStageselectUp") } else {
                 matches!(name.as_str(), "MenStageselectBt0000" | "MenStageselectBt0002" | "MenStageselectBt0003" | "MenStageselectBt0004" | "MenStageselectBt9999")
             };
@@ -602,6 +1133,78 @@ fn chapter_models(system: &mut System, drawing: u32, top: bool, details: bool, m
                 let background = name == "MenStageselectUp0000" && node != "PN_U0002";
                 background != details
             } else { name != "MenStageselectBt0000" || node != "NN_B0000" });
+            // Experiment: the game shows only the chapters inside the list's
+            // window. Show every one of them, to see where they lie.
+            if !top && name == "MenStageselectBt0000" && std::env::var_os("KIUTRACE_CHAPTER_ALL").is_some() {
+                show_all_nodes(system, moved, model, |node| node.starts_with("ML_B"));
+            }
+            // The same for one chapter alone, the rest off: where one hidden
+            // in the list's window lies.
+            if !top && name == "MenStageselectBt0000" {
+                if let Some(one) = std::env::var_os("KIUTRACE_CHAPTER_ONLY") {
+                    let one = one.to_string_lossy().into_owned();
+                    show_all_nodes(system, moved, model, |node| node == one);
+                    hide_nodes(system, moved, model, |node| node.starts_with("ML_B") && node != one);
+                }
+                if let Some(one) = std::env::var_os("KIUTRACE_CHAPTER_HIDE") {
+                    let one = one.to_string_lossy().into_owned();
+                    hide_nodes(system, moved, model, |node| node == one);
+                }
+            }
+        }
+    }
+}
+
+/// For the harness: every mesh node of a scene model, with whether it shows.
+fn log_model_nodes(system: &mut System, layer: u32, model: u32, name: &str) {
+    let cmdl = read_word(system, model + 8);
+    let dictionary = read_word(system, cmdl + 0xD0);
+    let nodes = read_word(system, model + MODEL_NODES);
+    let mut list = Vec::new();
+    if dictionary != 0 && nodes != 0 {
+        let dictionary = cmdl + 0xD0 + dictionary;
+        let count = read_word(system, dictionary + 8).min(read_word(system, model + MODEL_NODES + 4).wrapping_sub(nodes) / 8);
+        for node in 0..count {
+            let at = dictionary + 0x24 + node * 0x10;
+            let at = at.wrapping_add(read_word(system, at));
+            let shown = read_word(system, nodes + node * 8 + 4) != 0;
+            list.push(format!("{}{}", c_string(system, at), if shown { "" } else { " (hidden)" }));
+        }
+    }
+    log::info!("model layer {layer:X} {model:08X} {name}: {}", list.join(", "));
+}
+
+/// For the harness: show the mesh nodes a predicate picks, whatever the
+/// game set, so a hidden part of a model can be seen where it lies.
+fn show_all_nodes(system: &mut System, moved: &mut Vec<(u32, Vec<u8>)>, model: u32, picked: impl Fn(&str) -> bool) {
+    let cmdl = read_word(system, model + 8);
+    let dictionary = read_word(system, cmdl + 0xD0);
+    if dictionary == 0 { return; }
+    let dictionary = cmdl + 0xD0 + dictionary;
+    let nodes = read_word(system, model + MODEL_NODES);
+    let count = read_word(system, dictionary + 8).min(read_word(system, model + MODEL_NODES + 4).wrapping_sub(nodes) / 8);
+    for node in 0..count {
+        let at = dictionary + 0x24 + node * 0x10;
+        let at = at.wrapping_add(read_word(system, at));
+        if picked(&c_string(system, at)) {
+            change(system, moved, nodes + node * 8 + 4, &[1]);
+        }
+    }
+}
+
+/// For the harness: hide the mesh nodes a predicate picks.
+fn hide_nodes(system: &mut System, moved: &mut Vec<(u32, Vec<u8>)>, model: u32, picked: impl Fn(&str) -> bool) {
+    let cmdl = read_word(system, model + 8);
+    let dictionary = read_word(system, cmdl + 0xD0);
+    if dictionary == 0 { return; }
+    let dictionary = cmdl + 0xD0 + dictionary;
+    let nodes = read_word(system, model + MODEL_NODES);
+    let count = read_word(system, dictionary + 8).min(read_word(system, model + MODEL_NODES + 4).wrapping_sub(nodes) / 8);
+    for node in 0..count {
+        let at = dictionary + 0x24 + node * 0x10;
+        let at = at.wrapping_add(read_word(system, at));
+        if picked(&c_string(system, at)) {
+            change(system, moved, nodes + node * 8 + 4, &[0]);
         }
     }
 }
@@ -653,7 +1256,10 @@ pub(super) fn scissor(system: &mut System) {
     // An isolated hub model can animate outside its nominal hit box.
     // Only grouped lists/boards need their native scrolling clips.
     let isolated = if text_clip { !mouse.menu_top.drawing_text && mouse.menu_top.text_parent.as_ref().is_some_and(|saved| !matches!(saved.drawing, Drawing::MenuClip(_))) } else if mouse.menu_top.drawing_text { false } else { match drawing(system) {
-        Some(Drawing::MenuTop(step)) => mouse.menu_top.part(step / 8).is_some_and(|part| part.model.is_some()),
+        Some(Drawing::MenuTop(step)) => (!mouse.menu_top.file_select()
+            || mouse.menu_top.part(step / 8).is_some_and(|part| part.file_book().is_some()))
+            && !mouse.menu_top.active.is_some_and(|(index, ..)| board_cut(index))
+            && mouse.menu_top.part(step / 8).is_some_and(|part| part.model.is_some()),
         _ => false,
     } };
     let mut rect = if isolated { [0.0, 0.0, 400.0 * widen, 240.0] } else { place.to };
@@ -695,7 +1301,8 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
         return true;
     }
     if place == TOP_TEXT && drawing(system).is_none()
-        && system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menu_top.active.is_some_and(|(index, _, _, _)| index == 1)
+        && system.aim_mouse.as_ref().is_some_and(|mouse| (mouse.menu_top.file_select()
+            || mouse.menu_top.active.is_some_and(|(index, _, _, _)| index == 1))
             && !mouse.menu_top.native.is_empty()) {
         system.cpu.regs[15] = TOP_TEXT_DRAWN;
         return true;
@@ -713,14 +1320,14 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
     let native_text = system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menu_top.active.is_some()
         && !mouse.menu_top.native.is_empty() && mouse.saved.is_none());
     if native_text {
-        if let Some((index, _, _, _)) = system.aim_mouse.as_ref().unwrap().menu_top.active.filter(|&(index, _, _, _)| !has_details(index)) {
+        if let Some((index, _, _, _)) = system.aim_mouse.as_ref().unwrap().menu_top.active.filter(|&(index, _, _, _)| !details_of(index)) {
             let hint_index = if system.aim_mouse.as_ref().unwrap().menu_top.idol_dialog { 22 } else { index };
-            if let Some([_, y, _, height]) = hint(hint_index) {
+            if let Some([_, y, _, height]) = hint_of(hint_index) {
                 let width = 400.0 * system.aim_mouse.as_ref().unwrap().widen;
                 let rect = if place == TOP_TEXT {
                     [0.0, if y == 0.0 { height } else { 0.0 }, width, 240.0 - height]
                 } else { [0.0, 0.0, width, 240.0] };
-                system.aim_mouse.as_mut().unwrap().menu_top.clip = Some((CauldronPlace {
+                system.aim_mouse.as_mut().unwrap().menu_top.clip = Some((Placement {
                     from: rect, to: rect,
                 }, true));
                 system.aim_mouse.as_mut().unwrap().menu_top.text_parent = Some(Box::new(Saved {
@@ -750,6 +1357,26 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
 }
 
 pub(super) fn font(system: &mut System) {
+    if let Some(Drawing::MenuTop(step)) = drawing(system) {
+        let part = system.aim_mouse.as_ref().filter(|mouse| mouse.menu_top.file_select())
+            .and_then(|mouse| mouse.menu_top.part(step / 8)).filter(|part| !part.top).cloned();
+        if let Some(part) = part {
+            let at = system.cpu.regs[0] + 0x24;
+            let x = f32::from_bits(read_word(system, at + 8));
+            let y = f32::from_bits(read_word(system, at + 12));
+            // A name's native anchor stays in its book's column while the
+            // mesh turns outside the nominal Control box. Select the whole
+            // string, including its native shadow, without clipping the book.
+            let keep = if let Some(book) = part.file_book() {
+                (0.0..320.0).contains(&x) && (0.0..190.0).contains(&y)
+                    && (x / (320.0 / 3.0)) as usize == book
+            } else { part.model == Some("MenDemoBt0000") && inside([x, y], part.place.from) };
+            if !keep {
+                system.cpu.regs[15] += 4;
+                return;
+            }
+        }
+    }
     let idol_group = match drawing(system) {
         Some(Drawing::MenuTop(step)) => system.aim_mouse.as_ref().and_then(|mouse| mouse.menu_top.part(step / 8)).and_then(|part| part.idol),
         _ => None,
@@ -822,6 +1449,24 @@ pub(super) fn bottom_translucent(system: &mut System) {
 }
 
 pub(super) fn bottom_text(system: &mut System) {
+    if system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menu_top.file_select()) {
+        if let Some(Drawing::MenuTop(step)) = drawing(system) {
+            if system.aim_mouse.as_ref().unwrap().menu_top.part(step / 8).is_some_and(|part| !part.top && part.model.is_none()) {
+                system.cpu.regs[15] = BOTTOM_TEXT + 4;
+            }
+        }
+        return;
+    }
+    let step = match drawing(system) { Some(Drawing::MenuTop(step)) => Some(step), _ => None };
+    let Some(mouse) = system.aim_mouse.as_ref() else { return };
+    if let Some((index, ..)) = mouse.menu_top.active.filter(|&(index, ..)| board_cut(index)) {
+        // Armory text is one dense pass; replay it only where a Control shows text.
+        if armory_board(index) && step.and_then(|step| mouse.menu_top.part(step / 8))
+            .is_some_and(|part| !part.top && part.model.is_some_and(|model| !BOARD_TEXT.contains(&model))) {
+            system.cpu.regs[15] = BOTTOM_TEXT + 4;
+        }
+        return;
+    }
     if let Some(Drawing::MenuTop(step)) = drawing(system) {
         if system.aim_mouse.as_ref().unwrap().menu_top.part(step / 8).is_some_and(|part| !part.top && (part.model.is_some() || part.idol.is_some_and(|group| !matches!(group, IdolGroup::Counters | IdolGroup::Dialog)))) {
             // Hub labels are textures in their button meshes. Unrelated
@@ -912,8 +1557,9 @@ pub(super) fn draw(system: &mut System) -> bool {
         let scale = [p.to[2] / p.from[2], p.to[3] / p.from[3]];
         let from = [-200.0, -120.0, 800.0, 480.0];
         let to = [p.to[0] + (from[0] - p.from[0]) * scale[0], p.to[1] + (from[1] - p.from[1]) * scale[1], from[2] * scale[0], from[3] * scale[1]];
-        place_scene(system, top, drawing, CauldronPlace { from, to }, true, true, &mut moved);
-    } else if part.model.is_some() {
+        place_scene(system, top, drawing, Placement { from, to }, true, true, &mut moved);
+    } else if part.model.is_some() && !board_cut(index)
+        && !system.aim_mouse.as_ref().unwrap().menu_top.file_select() {
         let widen = system.aim_mouse.as_ref().unwrap().widen;
         let canvas = [400.0 * widen, 240.0];
         let scale = [part.place.to[2] / part.place.from[2], part.place.to[3] / part.place.from[3]];
@@ -921,11 +1567,13 @@ pub(super) fn draw(system: &mut System) -> bool {
             part.place.from[1] - part.place.to[1] / scale[1], canvas[0] / scale[0], canvas[1] / scale[1]];
         // Put the transform in the projection so the viewport never cuts
         // an animated mesh at its original screen or nominal button box.
-        place_scene(system, top, drawing, CauldronPlace { from: source, to: [0.0, 0.0, canvas[0], canvas[1]] }, part.top, true, &mut moved);
+        place_scene(system, top, drawing, Placement { from: source, to: [0.0, 0.0, canvas[0], canvas[1]] }, part.top, true, &mut moved);
     } else {
         place_scene(system, top, drawing, part.place, part.top, false, &mut moved);
     }
-    if part.chapter {
+    if system.aim_mouse.as_ref().unwrap().menu_top.file_select() {
+        file_models(system, drawing, Some(&part), &mut moved);
+    } else if part.chapter {
         chapter_models(system, drawing, part.top, true, &mut moved);
     } else if part.top {
         // Keep the layers present so their text renderers still run, but
@@ -960,7 +1608,10 @@ pub(super) fn draw(system: &mut System) -> bool {
             }
         }
     } else {
-        filter_models(system, drawing, part.top, !part.top, &mut moved, |name| part.model.is_none_or(|model| name == model));
+        let slider = matches!(part.model, Some("MenOptionSoundBt0002" | "MenOptionSoundBt0003" | "MenOptionSoundBt0004"));
+        filter_models(system, drawing, part.top, !part.top, &mut moved, |name|
+            part.model.is_none_or(|model| name == model || board_companions(model).contains(&name))
+                || (slider && matches!(name, "MenOptionSoundBt0001" | "MenOptionSoundBt0006")));
     }
     if !part.top { change(system, &mut moved, bottom + 0x60, &[0; 4]); }
     system.aim_mouse.as_mut().unwrap().menu_top.clip = Some((part.place, part.top));
@@ -974,10 +1625,10 @@ mod tests {
 
     #[test]
     fn layouts_preserve_shapes_and_fit_all_window_sizes() {
-        for index in 0..MENU_SCREENS.len() + 9 {
+        for index in 0..ScreenTransform::scripted_len() + 9 {
             for width in [240.0, 320.0, 400.0, 240.0 * 16.0 / 9.0, 560.0, 800.0] {
                 let (native, parts) = layout(index, width);
-                if !has_details(index) {
+                if !details_of(index) {
                     assert_eq!(native.from, [0.0, 0.0, 400.0, 240.0], "keep the whole top scene");
                     assert_eq!(native.to, [0.0, 0.0, width, 240.0], "background fills the viewport");
                 }
@@ -1062,7 +1713,7 @@ mod tests {
         for width in [240.0, 400.0, 560.0] {
             let (native, parts) = layout_with_dialog(11, width, true);
             assert_eq!(native.to, [0.0, 0.0, width, 240.0]);
-            assert_eq!(parts.iter().filter(|part| part.top && part.model.is_none()).count(), 1);
+            assert_eq!(parts.iter().filter(|part| part.top && part.model.is_none() && !part.backdrop).count(), 1);
             let coin = parts.iter().find(|part| part.idol == Some(IdolGroup::Counters)).unwrap().place;
             let back = parts.iter().find(|part| part.idol == Some(IdolGroup::Back)).unwrap().place;
             let mut mouse = shown(11);
@@ -1101,19 +1752,64 @@ mod tests {
     #[test]
     fn smaller_hub_controls_keep_their_original_screen_edges() {
         for width in [240.0, 400.0, 240.0 * 16.0 / 9.0, 560.0] {
-            let parts = layout(12, width).1;
-            for &(name, from) in SOLO {
+            let parts = layout(13, width).1;
+            for &(name, from) in super::super::screen_transform::ALTAR {
                 let to = parts.iter().find(|part| part.model == Some(name)).unwrap().place.to;
                 let scale = (width / 320.0).min((240.0 - 30.0 * 0.7) / 240.0) * CONTROL_SCALE;
                 assert!((to[2] - from[2] * scale).abs() < 0.001);
                 assert!((to[3] - from[3] * scale).abs() < 0.001);
                 for (axis, limit, native) in [(0, width, 320.0), (1, 240.0, 240.0)] {
                     if from[axis] == 0.0 { assert!(to[axis].abs() < 0.001); }
-                    if from[axis] + from[axis + 2] == native && !(axis == 1 && name == "MenSgHomeBt0006") {
+                    if from[axis] + from[axis + 2] == native {
                         assert!((to[axis] + to[axis + 2] - limit).abs() < 0.001);
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn solo_menu_places_arrows_above_hint_and_options_on_bottom() {
+        for width in [240.0, 400.0, 240.0 * 16.0 / 9.0, 560.0] {
+            let (_, parts) = layout(12, width);
+            let find = |model: &str| parts.iter().find(|part| part.model == Some(model)).unwrap().place.to;
+            let hint_scale = HINT_SCALE.min(width / 400.0);
+            let hint_height = 30.0 * hint_scale;
+            let baseline = 240.0 - hint_height - 2.0;
+
+            let move_out = find("MenSgHomeBt0002");
+            let practice = find("MenSgHomeBt0001");
+            let altar = find("MenSgHomeBt0003");
+            let idols = find("MenSgHomeBt0006");
+            let gear = find("MenSgHomeBt0005");
+            let back = find("MenSgHomeBt9999");
+            let treasure = find("MenSgHomeBt0004");
+
+            // Move Out is centered horizontally
+            assert!(((move_out[0] + move_out[2] * 0.5) - width * 0.5).abs() < 0.001);
+            // Move Out, Practice Range, Arms Altar sit right above the hint text
+            assert!((move_out[1] + move_out[3] - baseline).abs() < 0.001);
+            assert!((practice[1] + practice[3] - baseline).abs() < 0.001);
+            assert!((altar[1] + altar[3] - baseline).abs() < 0.001);
+
+            // Practice Range is to the left of Move Out, Arms Altar is to the right
+            assert!(practice[0] < move_out[0]);
+            assert!(altar[0] > move_out[0]);
+
+            // Extra options on the bottom: Back, Idol Toss, Gear sit on the bottom edge (y + height = 240)
+            assert!((back[1] + back[3] - 240.0).abs() < 0.001);
+            assert!((idols[1] + idols[3] - 240.0).abs() < 0.001);
+            assert!((gear[1] + gear[3] - 240.0).abs() < 0.001);
+
+            // Back is at the bottom-left edge, Gear at the bottom-right edge
+            assert!(back[0].abs() < 0.001);
+            assert!((gear[0] + gear[2] - width).abs() < 0.001);
+            // Idol Toss is placed to the right of Back
+            assert!(idols[0] >= back[0] + back[2]);
+
+            // Treasure Hunt is in the top-right corner
+            assert!(treasure[1].abs() < 0.001);
+            assert!((treasure[0] + treasure[2] - width).abs() < 0.001);
         }
     }
 
@@ -1226,6 +1922,70 @@ mod tests {
     }
 
     #[test]
+    fn hiding_a_moved_control_removes_input_until_it_is_shown_again() {
+        let mut mouse = shown(0);
+        mouse.set_editor_layer(0, [0.0, 0.0, 125.0, 190.0]);
+        assert_eq!(mouse.menus_top_touch(11, 50.0, 80.0, false), Some((50.0, 80.0)));
+        mouse.set_editor_layer_visible(0, false);
+        assert_eq!(mouse.menus_top_touch(11, 50.0, 80.0, false), None);
+        assert!(mouse.editor_navigation_controls().iter().all(|(index, _)| *index != 0));
+        mouse.set_editor_layer_visible(0, true);
+        assert_eq!(mouse.menus_top_touch(11, 50.0, 80.0, false), Some((50.0, 80.0)));
+        assert!(mouse.editor_navigation_controls().iter().any(|(index, _)| *index == 0));
+    }
+
+    #[test]
+    fn file_select_decoration_cannot_steal_moved_book_input_or_keep_a_stale_hover() {
+        let mut mouse = shown(0);
+        mouse.set_editor_layer(0, [20.0, 20.0, 125.0, 190.0]);
+        for index in [5, 6, 7] {
+            mouse.set_editor_layer(index, [0.0, 0.0, 400.0, 240.0]);
+        }
+        let pointer = mouse.menus_top_touch(11, 70.0, 120.0, false);
+        assert_eq!(pointer, Some((50.0, 100.0)));
+        mouse.menu_part = Some(Found { hash: FILE_PARTS[0], name: 0, element: 0, part: 0 });
+        assert_eq!(mouse.menus_top_touch(11, 350.0, 220.0, false), None);
+        assert_eq!(mouse.hovered_menu_part(), None);
+    }
+
+    #[test]
+    fn turning_file_books_keep_input_outside_the_nominal_box() {
+        let mut mouse = shown(0);
+        mouse.set_editor_layer(2, [200.0, 20.0, 69.0, 102.0]);
+        // Book III's turned cover reaches left of its original 205px box.
+        let point = mouse.menu_top.parts[2].place.map_point([203.0, 85.0]);
+        let native = mouse.menus_top_touch(11, point[0], point[1], false).unwrap();
+        assert!((native.0 - 203.0).abs() < 0.001);
+        assert!((native.1 - 85.0).abs() < 0.001);
+        assert_eq!(mouse.menus_top_touch(11, 500.0, point[1], false), None);
+    }
+
+    #[test]
+    fn editor_moves_a_scripted_layer() {
+        let mut mouse = shown(13);
+        mouse.menu_top.active = Some((13, 0x1405_0000, 0, false));
+        let before = mouse.editor_layers();
+        assert!(!before.is_empty());
+        let mut moved = before[0].1;
+        moved[0] += 7.0;
+        mouse.set_editor_layer(0, moved);
+        assert_eq!(mouse.editor_layers()[0].1, moved);
+        assert_eq!(mouse.menu_top.overrides, vec![(13, 0, moved)]);
+    }
+
+    #[test]
+    fn loading_state_keeps_host_layout_but_clears_recorded_screen() {
+        let mut mouse = shown(13);
+        let moved = [23.0, 42.0, 150.0, 80.0];
+        mouse.set_editor_layer(0, moved);
+        mouse.reset_menu_after_load();
+        assert_eq!(mouse.editor_overrides(), vec![(13, 0, moved)]);
+        assert!(mouse.editor_layers().is_empty());
+        assert!(mouse.menu_screen.is_none());
+        assert!(mouse.menu_top.drawn.is_none());
+    }
+
+    #[test]
     fn only_visible_controls_take_input_and_drags_keep_their_transform() {
         let mut mouse = shown(18);
         let part = mouse.menu_top.parts.iter().find(|part| !part.top).unwrap().place;
@@ -1251,7 +2011,8 @@ mod tests {
         mouse.widen = 16.0 / 9.0 / (5.0 / 3.0);
         mouse.menu_top.parts = layout(19, 400.0 * mouse.widen).1;
         mouse.menu_top.drawn.as_mut().unwrap().3 = mouse.widen;
-        for y in 0..240 {
+        // Every row pixel of the weapon list Control, the densest target.
+        for y in 22..152 {
             let (x, top_y) = mouse.menus_top_point(11, 36.0, y as f32, None).unwrap();
             assert_eq!(mouse.menus_top_touch(11, x, top_y, false), Some((36.0, y as f32)));
         }
@@ -1349,6 +2110,61 @@ mod tests {
         assert!(mouse.menus_on_top_shown(18));
         assert!(!mouse.menus_on_top_shown(20));
     }
+
+    /// a title drawing every other refresh, as the pacer has it while it
+    /// decides a picture in between, and the console's frame time.
+    fn showing_a_picture_in_between(system: &mut System) -> std::time::Duration {
+        use std::time::Duration;
+        let frame = Duration::from_secs_f64(2.0 / 59.83);
+        system.pacing.on = true;
+        system.pacing.refreshes = 10;
+        system.pacing.new_at = 9;
+        system.pacing.between = true;
+        system.pacing.older_host_time = Some(Duration::ZERO);
+        system.pacing.newer_host_time = Some(frame);
+        frame
+    }
+
+    /// every Scripted Menu's Hovers and clicks find the same Controls with
+    /// High Refresh Mode on and off: the parts were seated on the newest
+    /// real frame, and hit-testing never reads a picture in between.
+    #[test]
+    fn menu_hovers_and_clicks_read_the_same_real_placements_with_the_mode_on_and_off() {
+        let mut off = System::new(crate::Config::default());
+        let mut on = System::new(crate::Config::default());
+        let frame = showing_a_picture_in_between(&mut on);
+        assert_eq!(off.picture_kind_at_host_time(frame / 2), crate::PictureKind::Real);
+        assert!(matches!(on.picture_kind_at_host_time(frame / 2), crate::PictureKind::InBetween(t) if (t - 0.5).abs() < 1e-5));
+
+        let mut checked = 0;
+        for index in 0..ScreenTransform::scripted_len() {
+            off.aim_mouse = Some(shown(index));
+            on.aim_mouse = Some(shown(index));
+            let places: Vec<_> = {
+                let menu = &on.aim_mouse.as_ref().unwrap().menu_top;
+                menu.parts.iter()
+                    .filter(|part| !part.top && menu.enabled(part) && part.model.and_then(button_hash).is_some())
+                    .map(|part| part.place)
+                    .collect()
+            };
+            for place in places {
+                let top = place.map_point([place.from[0] + place.from[2] * 0.5, place.from[1] + place.from[3] * 0.5]);
+                for pressed in [false, true] {
+                    let off_hit = off.aim_mouse.as_mut().unwrap().menus_top_touch(11, top[0], top[1], pressed);
+                    let on_hit = on.aim_mouse.as_mut().unwrap().menus_top_touch(11, top[0], top[1], pressed);
+                    assert_eq!(on_hit, off_hit, "screen {index} at {top:?}, pressed {pressed}");
+                    assert_eq!(
+                        on.aim_mouse.as_ref().unwrap().menu_top.candidates,
+                        off.aim_mouse.as_ref().unwrap().menu_top.candidates,
+                        "screen {index} candidate Control at {top:?}",
+                    );
+                    assert!(off_hit.is_some(), "screen {index} has a Control at its part's centre");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 26, "every Scripted Menu with a Control was checked, {checked} hits");
+    }
 }
 
 // Collision solving uses a shared, unscaled canvas. Each rendered button's
@@ -1359,12 +2175,13 @@ struct PhysicsCall {
     bounds: Vec<(u32, Vec<u8>)>,
 }
 
-fn collision_delta(system: &mut System, body: u32, parts: &[Part]) -> Option<([f32; 2], f32)> {
+fn collision_delta(system: &mut System, body: u32) -> Option<([f32; 2], f32)> {
     if body == 0 || !system.memory.is_readable(body, 0xdc) { return None; }
     let part = read_word(system, body + 0x50);
     let name_at = read_word(system, part + 0x24);
     let name = c_string(system, name_at);
-    let place = parts.iter().find(|part| !part.top && part.model == Some(name.as_str()))?.place;
+    let place = system.aim_mouse.as_ref()?.menu_top.parts.iter()
+        .find(|part| !part.top && part.model == Some(name.as_str()))?.place;
     let scale = place.to[2] / place.from[2];
     Some(([(place.to[0] - place.from[0] * scale) / (10.0 * scale),
         -(place.to[1] - place.from[1] * scale) / (10.0 * scale)], scale))
@@ -1417,7 +2234,7 @@ pub(super) fn physics(system: &mut System, pc: u32) {
     if matches!(pc, 0x00A390EC | 0x00A38728 | 0x00A38510) {
         log::debug!("drag hook {pc:08X}, screen {:?}", system.aim_mouse.as_ref().and_then(|mouse| mouse.menu_screen));
         let Some(mouse) = system.aim_mouse.as_ref().filter(|mouse| mouse.menus_on_top
-            && mouse.menu_screen.is_some_and(|(index, _, _)| index == 12)) else { return; };
+            && mouse.menu_screen.is_some() && !mouse.menu_top.parts.is_empty()) else { return; };
         let host = if mouse.menu_top.grab.is_some() {
             if pc == 0x00A390EC || pc == 0x00A38728 {
                 mouse.menu_press.as_ref().map(|press| press.pointer).or(mouse.pointer)
@@ -1434,8 +2251,7 @@ pub(super) fn physics(system: &mut System, pc: u32) {
         let body = read_word(system, input + 0x5fc);
         let joint = read_word(system, input + 0x600);
         if body == 0 || joint == 0 { return; }
-        let parts = layout(12, 400.0).1;
-        if collision_delta(system, body, &parts).is_none() { return; }
+        if collision_delta(system, body).is_none() { return; }
         let target = [(point.0 - 160.0) * 0.1, (120.0 - point.1) * 0.1];
         log::debug!("drag target {point:?} => {target:?}, body {body:08X}");
         let previous = system.aim_mouse.as_ref().unwrap().menu_top.drag_target;
@@ -1466,15 +2282,14 @@ pub(super) fn physics(system: &mut System, pc: u32) {
     }
     if !matches!(pc, 0x002F0770 | 0x002F0DEC) { return; }
     let Some(mouse) = system.aim_mouse.as_ref().filter(|mouse| mouse.menus_on_top
-        && mouse.menu_top.physics.is_none() && mouse.menu_screen.is_some_and(|(index, _, _)| index == 12)) else { return };
+        && mouse.menu_top.physics.is_none() && mouse.menu_screen.is_some()) else { return };
     let width = 400.0 * mouse.widen;
-    let parts = layout(12, width).1;
     let first = system.cpu.regs[1];
-    let Some((delta, scale)) = collision_delta(system, first, &parts) else { return };
+    let Some((delta, scale)) = collision_delta(system, first) else { return };
     let mut call = PhysicsCall { return_pc, bodies: vec![(first, delta)], bounds: Vec::new() };
     if pc == 0x002F0770 {
         let second = system.cpu.regs[2];
-        let Some((delta, other_scale)) = collision_delta(system, second, &parts) else { return };
+        let Some((delta, other_scale)) = collision_delta(system, second) else { return };
         if (scale - other_scale).abs() > 0.0001 { return; }
         call.bodies.push((second, delta));
     } else {
@@ -1502,10 +2317,105 @@ mod collision_tests {
     use super::*;
 
     #[test]
+    fn explicit_navigation_uses_native_names_and_restores_defaults() {
+        let mut system = System::new(crate::Config::default());
+        system.memory.map(0x14000000, 0x20000000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        let mut mouse = AimMouse { menus_on_top: true, menu_screen: Some((2, 1, 0)), ..AimMouse::default() };
+        mouse.menu_top.parts = layout(2, 400.0).1;
+        mouse.set_editor_navigation_link(7, NavigationDirection::Right, Some(2));
+        system.aim_mouse = Some(mouse);
+        for (node, next, hash) in [(0x14000100_u32, 0x14000300_u32, 0x2E49363F_u32),
+            (0x14000300, 0x14000100, 0xE250C577)] {
+            system.memory.write_bytes(node + 4, &next.to_le_bytes());
+            system.memory.write_bytes(node + 0xc, &hash.to_le_bytes());
+        }
+        system.cpu.regs[0] = 0x14000100;
+        system.cpu.regs[1] = 5;
+        navigate(&mut system, 0x003506C4);
+        assert_eq!((system.cpu.regs[0], system.cpu.regs[1]), (0x14000300, 9));
+        system.aim_mouse.as_mut().unwrap().set_editor_navigation_link(7, NavigationDirection::Right, Some(7));
+        system.cpu.regs[0] = 0x14000100;
+        system.cpu.regs[1] = 5;
+        navigate(&mut system, 0x003506C4);
+        assert_eq!((system.cpu.regs[0], system.cpu.regs[1]), (0x14000100, 9));
+        let mouse = system.aim_mouse.as_mut().unwrap();
+        mouse.set_editor_navigation_link(7, NavigationDirection::Right, None);
+        system.cpu.regs[0] = 0x14000100;
+        system.cpu.regs[1] = 5;
+        navigate(&mut system, 0x003506C4);
+        assert_eq!((system.cpu.regs[0], system.cpu.regs[1]), (0x14000100, 5));
+    }
+
+    #[test]
+    fn category_links_keep_back_return_and_locked_tiles() {
+        let mut system = System::new(crate::Config::default());
+        system.memory.map(0x14000000, 0x20000000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        let object = 0x14000100;
+        let mut mouse = AimMouse { menus_on_top: true, menu_screen: Some((20, object, 0)), ..AimMouse::default() };
+        mouse.menu_top.parts = layout(20, 400.0).1;
+        mouse.set_editor_navigation_link(CATEGORY_BACK, NavigationDirection::Up, Some(0));
+        mouse.set_editor_navigation_link(0, NavigationDirection::Right, Some(1));
+        mouse.set_editor_navigation_link(0, NavigationDirection::Down, Some(0));
+        system.aim_mouse = Some(mouse);
+        let step = |system: &mut System, from: u32, table: u32| {
+            system.memory.write_bytes(object + CATEGORY, &from.to_le_bytes());
+            system.cpu.regs[4] = u32::MAX;
+            system.cpu.regs[5] = object;
+            system.cpu.regs[6] = 0;
+            system.cpu.regs[7] = table;
+            system.cpu.regs[15] = CATEGORY_STEP;
+            navigate(system, CATEGORY_STEP);
+            (system.cpu.regs[4], system.cpu.regs[15])
+        };
+        // Back returns to its saved tile natively, so the link replaces that tile.
+        assert_eq!(step(&mut system, CATEGORY_BACK as u32, 0x00CA2730), (0, CATEGORY_TAKE));
+        assert_eq!(read_word(&mut system, object + CATEGORY_BEFORE), 0);
+        // A tile the save has no weapons for stays unreachable.
+        assert_eq!(step(&mut system, 0, 0x00CA2AA0), (u32::MAX, CATEGORY_STEP));
+        assert_eq!(step(&mut system, 0, 0x00CA2E10), (u32::MAX, CATEGORY_NONE));
+        assert_eq!(step(&mut system, 0, 0x00CA3180), (u32::MAX, CATEGORY_STEP));
+    }
+
+    #[test]
+    fn main_board_collision_and_drag_follow_edited_placements() {
+        let mut system = System::new(crate::Config::default());
+        system.memory.map(0x14000000, 0x20000000, 0x10000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        let mut mouse = AimMouse { menus_on_top: true, menu_screen: Some((2, 1, 0)), ..AimMouse::default() };
+        mouse.menu_top.parts = layout(2, 400.0).1;
+        let index = mouse.menu_top.parts.iter().position(|part| part.model == Some("MenTopBt0001")).unwrap();
+        let mut place = mouse.menu_top.parts[index].place;
+        place.to[0] += 100.0;
+        mouse.set_editor_layer(index, place.to);
+        system.aim_mouse = Some(mouse);
+        let (body, part, name_at, joint, input, point) = (0x14000100, 0x14001000, 0x14002000, 0x14003000, 0x14004000, 0x14005000);
+        system.memory.write_bytes(body + 0x50, &u32::to_le_bytes(part));
+        system.memory.write_bytes(part + 0x24, &u32::to_le_bytes(name_at));
+        system.memory.write_bytes(name_at, b"MenTopBt0001\0");
+        system.memory.write_bytes(body + 0x74, &2.0_f32.to_le_bytes());
+        system.cpu.regs[1] = body;
+        system.cpu.regs[2] = body;
+        system.cpu.regs[14] = 0x002A34CC;
+        physics(&mut system, 0x002A34C8);
+        let delta = (place.to[0] - place.from[0] * place.to[2] / place.from[2]) / (10.0 * place.to[2] / place.from[2]);
+        assert!((f32::from_bits(read_word(&mut system, body + 0x74)) - 2.0 - delta).abs() < 0.001,
+            "collision must use the edited Main Menu placement");
+        physics(&mut system, 0x002A34CC);
+        system.memory.write_bytes(input + 0x5fc, &u32::to_le_bytes(body));
+        system.memory.write_bytes(input + 0x600, &u32::to_le_bytes(joint));
+        system.memory.write_bytes(point, &681.0_f32.to_le_bytes());
+        system.memory.write_bytes(point + 4, &122.0_f32.to_le_bytes());
+        system.cpu.regs[0] = input;
+        system.cpu.regs[1] = point;
+        physics(&mut system, 0x00A3872C);
+        assert!((f32::from_bits(read_word(&mut system, input + 0x5d8)) - 52.1).abs() < 0.001,
+            "Main Menu drags must extend beyond the native bottom screen");
+    }
+    #[test]
     fn collision_space_matches_artwork_and_preserves_solver_motion() {
         let mut system = System::new(crate::Config::default());
         system.memory.map(0x14000000, 0x20000000, 0x10000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
         system.aim_mouse = Some(AimMouse { menus_on_top: true, menu_screen: Some((12, 1, 0)), ..AimMouse::default() });
+        system.aim_mouse.as_mut().unwrap().menu_top.parts = layout(12, 400.0).1;
         for (body, part, name_at, name) in [(0x14000100, 0x14001000, 0x14002000, "MenSgHomeBt0001"), (0x14000300, 0x14001200, 0x14002200, "MenSgHomeBt0003")] {
             system.memory.write_bytes(body + 0x50, &u32::to_le_bytes(part));
             system.memory.write_bytes(part + 0x24, &u32::to_le_bytes(name_at));
@@ -1518,9 +2428,8 @@ mod collision_tests {
         system.cpu.regs[2] = 0x14000300;
         system.cpu.regs[14] = 0x002A3378;
         physics(&mut system, 0x002A3374);
-        let parts = layout(12, 400.0).1;
         for body in [0x14000100, 0x14000300] {
-            let (delta, _) = collision_delta(&mut system, body, &parts).unwrap();
+            let (delta, _) = collision_delta(&mut system, body).unwrap();
             assert!((f32::from_bits(read_word(&mut system, body + 0x74)) - 2.0 - delta[0]).abs() < 0.0001);
         }
         let moved = f32::from_bits(read_word(&mut system, 0x14000174)) + 3.0;

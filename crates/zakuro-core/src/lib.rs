@@ -954,7 +954,7 @@ impl System {
 
     /// whether the screens show the pictures in between at this refresh.
     pub fn shows_between(&self) -> bool {
-        self.pacing.between
+        self.pacing.between && !self.real_frames_only()
     }
 
     /// the DSP finishing an audio frame, it plays its voices one frame on and
@@ -1187,10 +1187,17 @@ impl System {
     /// a title that stalled, more than two refreshes without a new picture,
     /// or a frontend with interpolation off, shows its own.
     pub fn picture_kind_at_host_time(&self, host_time: std::time::Duration) -> PictureKind {
-        if !self.pacing.on {
+        if !self.pacing.on || self.real_frames_only() {
             return PictureKind::Real;
         }
         self.pacing.kind_at_host_time(host_time)
+    }
+
+    /// whether the Screen on the top is capped at 60, the title's own frames
+    /// only. A Screen found to misbehave under interpolation takes the cap
+    /// instead of being excluded from High Refresh Mode by category.
+    fn real_frames_only(&self) -> bool {
+        self.aim_mouse.as_ref().is_some_and(|mouse| mouse.real_frames_only(self.frames))
     }
 
     /// a screen's picture for an eye at a given kind, a screen's own or one
@@ -1309,7 +1316,8 @@ impl System {
         }
         let now = self.screen_ref(screen, right)?;
         // frame interpolation's picture in between, where the screen has one
-        if self.pacing.between {
+        // and the Screen on it may be drawn in between
+        if self.pacing.between && !self.real_frames_only() {
             if let Some(between) = self.gpu.between_image(now) {
                 return Some(between);
             }
@@ -2191,6 +2199,34 @@ mod tests {
         assert_eq!(pacing.kind_at_host_time(Duration::from_millis(0)), PictureKind::Real);
         assert_eq!(pacing.kind_at_host_time(frame_time), PictureKind::Real);
         assert_eq!(pacing.kind_at_host_time(frame_time + Duration::from_millis(1)), PictureKind::Real);
+    }
+
+    /// a Screen capped at 60 shows the title's own pictures, never one in
+    /// between, and the cap is per Screen: another Screen's leaves the
+    /// shown one drawing in between.
+    #[test]
+    fn a_screen_capped_at_sixty_shows_real_frames_only() {
+        let (mut system, frame) = stereo_system();
+        let half = frame / 2;
+        system.aim_mouse = Some(aim_mouse::AimMouse::default());
+        assert!(matches!(system.picture_kind_at_host_time(half), PictureKind::InBetween(_)), "uncapped, the host sees a picture in between");
+        assert!(system.shows_between());
+
+        system.aim_mouse.as_mut().unwrap().set_screen_rate(aim_mouse::Screen::Pause, aim_mouse::ScreenRate::Sixty);
+        system.aim_mouse.as_mut().unwrap().show_screen(aim_mouse::Screen::Pause, system.frames);
+        assert_eq!(system.picture_kind_at_host_time(half), PictureKind::Real);
+        assert!(!system.shows_between(), "a capped Screen draws no picture in between");
+
+        // another Screen's cap does not reach Pause
+        system.aim_mouse.as_mut().unwrap().set_screen_rate(aim_mouse::Screen::Pause, aim_mouse::ScreenRate::Host);
+        system.aim_mouse.as_mut().unwrap().set_screen_rate(aim_mouse::Screen::MainMenu, aim_mouse::ScreenRate::Sixty);
+        system.aim_mouse.as_mut().unwrap().show_screen(aim_mouse::Screen::Pause, system.frames);
+        assert!(matches!(system.picture_kind_at_host_time(half), PictureKind::InBetween(_)));
+
+        // until the capped Screen is the one shown
+        system.aim_mouse.as_mut().unwrap().show_screen(aim_mouse::Screen::MainMenu, system.frames);
+        assert_eq!(system.picture_kind_at_host_time(half), PictureKind::Real);
+        assert!(!system.shows_between());
     }
 
     /// the top screen as a title drawing in 3D has it, with a buffer for the
