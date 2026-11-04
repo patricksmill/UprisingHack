@@ -2193,6 +2193,44 @@ mod tests {
         assert_eq!(pacing.kind_at_host_time(frame_time + Duration::from_millis(1)), PictureKind::Real);
     }
 
+    /// a 144 Hz host, not a multiple of the game's 60, still shows the
+    /// pictures in between at the fraction of the frame the clock is at:
+    /// t = 0.417 and 0.833, every one within [0, 1].
+    #[test]
+    fn pictures_in_between_follow_a_144_hz_host_clock() {
+        use std::time::Duration;
+
+        let frame_time = Duration::from_secs_f64(1.0 / 60.0);
+        let host_step = Duration::from_secs_f64(1.0 / 144.0);
+        let pacing = Pacing {
+            refreshes: 10,
+            // the last new picture arrived one refresh ago
+            new_at: 9,
+            between: true,
+            older_host_time: Some(Duration::ZERO),
+            newer_host_time: Some(frame_time),
+            ..Default::default()
+        };
+
+        // the refreshes inside one frame: its own picture, then two in
+        // between it and the next
+        let mut shown = Vec::new();
+        let mut host = Duration::ZERO;
+        while host < frame_time {
+            shown.push(pacing.kind_at_host_time(host));
+            host += host_step;
+        }
+        assert_eq!(shown.first(), Some(&PictureKind::Real), "{shown:?}");
+        let between: Vec<f32> = shown.iter().filter_map(PictureKind::t).collect();
+        assert_eq!(between.len(), 2, "{shown:?}");
+        for (t, expected) in between.iter().zip([60.0 / 144.0, 120.0 / 144.0]) {
+            assert!((t - expected).abs() < 1e-4, "t was {t}, expected {expected}");
+            assert!((0.0..=1.0).contains(t), "t was {t}");
+        }
+        // the next frame's own picture starts the sequence over
+        assert_eq!(pacing.kind_at_host_time(frame_time), PictureKind::Real);
+    }
+
     /// the top screen as a title drawing in 3D has it, with a buffer for the
     /// right eye, and the pacer as pace leaves it for a title drawing every
     /// other refresh, two console refreshes apart.

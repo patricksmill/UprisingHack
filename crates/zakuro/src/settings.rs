@@ -31,6 +31,64 @@ pub fn high_refresh_blocker(hardware_rasterizer: bool, vulkan: bool) -> Option<&
     None
 }
 
+/// the most pictures a second High Refresh Mode shows, or Off to follow the
+/// display's refresh rate. it never goes below 60, so the mode can't show
+/// fewer pictures than the 60 FPS patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum HighRefreshCap {
+    #[default]
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "90")]
+    Hz90,
+    #[serde(rename = "120")]
+    Hz120,
+    #[serde(rename = "144")]
+    Hz144,
+    #[serde(rename = "165")]
+    Hz165,
+    #[serde(rename = "240")]
+    Hz240,
+}
+
+impl HighRefreshCap {
+    pub const ALL: [HighRefreshCap; 6] =
+        [HighRefreshCap::Off, HighRefreshCap::Hz90, HighRefreshCap::Hz120, HighRefreshCap::Hz144, HighRefreshCap::Hz165, HighRefreshCap::Hz240];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HighRefreshCap::Off => "Off, match the display",
+            HighRefreshCap::Hz90 => "90 Hz",
+            HighRefreshCap::Hz120 => "120 Hz",
+            HighRefreshCap::Hz144 => "144 Hz",
+            HighRefreshCap::Hz165 => "165 Hz",
+            HighRefreshCap::Hz240 => "240 Hz",
+        }
+    }
+
+    /// the pictures a second it caps the mode at, none when it follows the
+    /// display.
+    pub fn hz(self) -> Option<u32> {
+        match self {
+            HighRefreshCap::Off => None,
+            HighRefreshCap::Hz90 => Some(90),
+            HighRefreshCap::Hz120 => Some(120),
+            HighRefreshCap::Hz144 => Some(144),
+            HighRefreshCap::Hz165 => Some(165),
+            HighRefreshCap::Hz240 => Some(240),
+        }
+    }
+
+    /// the longest gap between two pictures, the cap's or the display's,
+    /// whichever is slower: a cap never raises the rate past the display's.
+    pub fn step(self, display: std::time::Duration) -> std::time::Duration {
+        match self.hz() {
+            Some(hz) => display.max(std::time::Duration::from_secs_f64(1.0 / f64::from(hz))),
+            None => display,
+        }
+    }
+}
+
 /// how the screens are arranged in the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -485,6 +543,9 @@ pub struct Settings {
     /// which only lifted a 30 FPS game to 60, and loaded as on.
     #[serde(alias = "frame_interpolation")]
     pub high_refresh_mode: bool,
+    /// the most pictures a second High Refresh Mode shows.
+    #[serde(deserialize_with = "or_default")]
+    pub high_refresh_cap: HighRefreshCap,
     /// run a game's recompiled code when it has some, rather than
     /// interpreting everything.
     pub recompiled: bool,
@@ -544,6 +605,7 @@ impl Default for Settings {
             resolution: 3,
             texture_packs: true,
             high_refresh_mode: false,
+            high_refresh_cap: HighRefreshCap::Off,
             recompiled: true,
             scale: 2,
             layout: Screens::Stacked,
@@ -700,6 +762,45 @@ mod tests {
         let text = toml::to_string_pretty(&Settings::default()).unwrap();
         assert!(!text.contains("frame_interpolation"), "only the new key is written:\n{text}");
         assert!(text.contains("high_refresh_mode"), "the new key is written:\n{text}");
+    }
+
+    /// the cap offers only rates at or above 60, and at 240 Hz it brings
+    /// the pictures down to 120 a second.
+    #[test]
+    fn a_120_cap_at_240_hz_shows_120_pictures_a_second() {
+        for cap in HighRefreshCap::ALL {
+            if let Some(hz) = cap.hz() {
+                assert!(hz >= 60, "{cap:?} is below 60");
+            }
+        }
+        assert_eq!(HighRefreshCap::ALL.len(), 6);
+        let display = std::time::Duration::from_secs_f64(1.0 / 240.0);
+        let step = HighRefreshCap::Hz120.step(display);
+        // a nanosecond's rounding of the interval, so not exactly 120.0
+        let rate = 1.0 / step.as_secs_f64();
+        assert!((rate - 120.0).abs() < 0.001, "{rate} pictures a second");
+        // off follows the display, and a cap faster than it does not raise
+        // the rate past it
+        assert_eq!(HighRefreshCap::Off.step(display), display);
+        let sixty = std::time::Duration::from_secs_f64(1.0 / 60.0);
+        assert_eq!(HighRefreshCap::Hz240.step(sixty), sixty);
+    }
+
+    /// the cap is kept between runs, and a value this build does not know,
+    /// below 60 say, reads as Off without losing the other settings.
+    #[test]
+    fn the_high_refresh_cap_persists_and_reads_back() {
+        assert_eq!(HighRefreshCap::default(), HighRefreshCap::Off);
+        let settings = Settings { high_refresh_cap: HighRefreshCap::Hz144, show_fps: true, ..Settings::default() };
+        let text = toml::to_string_pretty(&settings).unwrap();
+        assert!(text.contains("high_refresh_cap = \"144\""), "{text}");
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(back.high_refresh_cap, HighRefreshCap::Hz144);
+        assert!(back.show_fps);
+
+        let unknown: Settings = toml::from_str("high_refresh_cap = \"30\"\nshow_fps = true\n").unwrap();
+        assert_eq!(unknown.high_refresh_cap, HighRefreshCap::Off);
+        assert!(unknown.show_fps, "the other settings are kept");
     }
 
     /// the mode needs the 3D drawn on the GPU and shown with Vulkan, and

@@ -11,7 +11,9 @@ use zakuro_core::services::keyboard::Request;
 use crate::library::{Library, ICON_SIZE};
 use crate::recompile::{Job, Stage};
 use crate::gamepad::button_name;
-use crate::settings::{CameraSource, Filter, Keys, Language, PadButtons, Renderer, Screens, Settings, Stereo3d, TopShape};
+use crate::settings::{
+    CameraSource, Filter, HighRefreshCap, Keys, Language, PadButtons, Renderer, Screens, Settings, Stereo3d, TopShape,
+};
 
 /// what the user asked for.
 #[derive(Debug, Clone, PartialEq)]
@@ -701,6 +703,15 @@ impl Menus {
                     response.on_disabled_hover_text(high_refresh_text);
                     ui.label(RichText::new(high_refresh_text).weak());
                 }
+                egui::ComboBox::from_label("High Refresh cap")
+                    .selected_text(settings.high_refresh_cap.name())
+                    .show_ui(ui, |ui| {
+                        for cap in HighRefreshCap::ALL {
+                            ui.selectable_value(&mut settings.high_refresh_cap, cap, cap.name());
+                        }
+                    })
+                    .response
+                    .on_hover_text("The most pictures a second High Refresh Mode shows. Off follows the display's refresh rate; the others cap it, never below 60.");
                 ui.add(egui::Slider::new(&mut settings.scale, 1..=6).text("Window scale"));
                 egui::ComboBox::from_label("Screens").selected_text(settings.layout.name()).show_ui(ui, |ui| {
                     for layout in Screens::ALL {
