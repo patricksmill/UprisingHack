@@ -1,7 +1,10 @@
 //! a stand-in for the console's shared font. its characters come from a
 //! font the host has for Japanese, the alphabets and Japanese a title
 //! writes in, or where there is none, printable ASCII from a small bitmap
-//! font of our own.
+//! font of our own. the console's button symbols are drawn as the input
+//! the player is using shows them, see prompts.
+
+use super::prompts::{self, Prompts};
 
 /// where the font block a title is handed starts, past the status word and
 /// the rest of the block header.
@@ -64,17 +67,45 @@ struct Face {
     advance: u8,
 }
 
-/// builds the font block, laid out for being mapped at base.
-pub fn build(base: u32) -> Vec<u8> {
+/// builds the font block, laid out for being mapped at base, its button
+/// symbols as prompts says.
+pub fn build(base: u32, prompts: &Prompts) -> Vec<u8> {
     match host_face() {
-        Some(face) => write(base, face),
-        None => write(base, &bitmap_face()),
+        Some(face) => write(base, face, &symbols(prompts, host_font())),
+        None => write(base, &bitmap_face(), &symbols(prompts, None)),
     }
 }
 
-/// the font block for face, laid out for being mapped at base.
-fn write(base: u32, face: &Face) -> Vec<u8> {
-    let glyphs = &face.glyphs;
+/// draws the stand-in, mapped at base and paddr, over again for prompts,
+/// in place, so the button symbols a title shows change while it runs. a
+/// dumped font, or a stand-in laid out otherwise, as an older save state's
+/// may be, stays as it is: a title keeps pointers into its sections.
+pub fn redraw(memory: &mut crate::memory::Memory, base: u32, paddr: u32, prompts: &Prompts) -> bool {
+    let data = build(base, prompts);
+    // the headers, the sections' places and sizes, end before the sheets
+    let mut headers = [0u8; 0x100];
+    if !memory.read_physical(paddr, &mut headers) || headers[..] != data[..headers.len()] {
+        return false;
+    }
+    memory.write_physical(paddr, &data)
+}
+
+/// the console's symbols, the way prompts has them, their text in font.
+fn symbols(prompts: &Prompts, font: Option<ab_glyph::FontRef>) -> Vec<Glyph> {
+    prompts::codes()
+        .map(|code| {
+            let drawn = prompts::draw(code, prompts, font.as_ref());
+            Glyph { code, alpha: drawn.alpha, left: drawn.left, width: drawn.width, advance: prompts::ADVANCE }
+        })
+        .collect()
+}
+
+/// the font block for face and the symbols, laid out for being mapped at
+/// base.
+fn write(base: u32, face: &Face, symbols: &[Glyph]) -> Vec<u8> {
+    let mut glyphs: Vec<&Glyph> = face.glyphs.iter().chain(symbols).collect();
+    glyphs.sort_by_key(|glyph| glyph.code);
+    let glyphs = &glyphs[..];
     let count = glyphs.len() as u32;
     let per_sheet = (COLUMNS * ROWS) as u32;
     let sheets = count.div_ceil(per_sheet).max(1);
@@ -226,7 +257,7 @@ impl Map {
 /// the maps that give each glyph's character, glyphs in order of their
 /// characters: runs of characters in a row each a direct map, the rest in
 /// one scanned list after them.
-fn maps(glyphs: &[Glyph]) -> Vec<Map> {
+fn maps(glyphs: &[&Glyph]) -> Vec<Map> {
     let mut maps = Vec::new();
     let mut rest = Vec::new();
     let mut start = 0;
@@ -317,12 +348,19 @@ fn characters() -> Vec<char> {
 fn host_face() -> Option<&'static Face> {
     static FACE: std::sync::OnceLock<Option<Face>> = std::sync::OnceLock::new();
     FACE.get_or_init(|| {
-        let (path, data) = host_font()?;
-        let face = rasterize(&data)?;
+        let (path, data) = host_font_file()?;
+        let face = rasterize(data)?;
         log::info!("the shared font's stand-in draws {} characters from {}", face.glyphs.len(), path.display());
         Some(face)
     })
     .as_ref()
+}
+
+/// the host's font for Japanese, for the text on button symbols, none
+/// where its glyphs are not good enough for the rest of the font either.
+fn host_font() -> Option<ab_glyph::FontRef<'static>> {
+    host_face()?;
+    ab_glyph::FontRef::try_from_slice_and_index(&host_font_file()?.1, 0).ok()
 }
 
 /// glyphs for the characters a font has, at EM pixels an em.
@@ -368,9 +406,11 @@ fn rasterize(data: &[u8]) -> Option<Face> {
     Some(Face { glyphs, baseline: HOST_BASELINE, advance })
 }
 
-/// the first font for Japanese the host has, and where it is.
-fn host_font() -> Option<(std::path::PathBuf, Vec<u8>)> {
-    font_candidates().into_iter().find_map(|path| Some((path.clone(), std::fs::read(&path).ok()?)))
+/// the first font for Japanese the host has, and where it is, read once.
+fn host_font_file() -> Option<&'static (std::path::PathBuf, Vec<u8>)> {
+    static FILE: std::sync::LazyLock<Option<(std::path::PathBuf, Vec<u8>)>> =
+        std::sync::LazyLock::new(|| font_candidates().into_iter().find_map(|path| Some((path.clone(), std::fs::read(&path).ok()?))));
+    FILE.as_ref()
 }
 
 /// where Windows keeps its fonts for Japanese.
@@ -574,7 +614,7 @@ mod tests {
     /// on that section's magic.
     #[test]
     fn the_block_parses_as_a_font() {
-        let font = write(BASE, &bitmap_face());
+        let font = write(BASE, &bitmap_face(), &[]);
 
         assert_eq!(read32(&font, 0), 2, "the status word should say loaded");
         assert_eq!(&font[0x80..0x84], b"CFNU");
@@ -606,7 +646,7 @@ mod tests {
     /// in 8-byte steps. one 4 bytes off had it read every glyph shifted.
     #[test]
     fn the_glyph_sheets_are_aligned() {
-        let font = write(BASE, &face_of(&(0x20..0x400).collect::<Vec<u16>>()));
+        let font = write(BASE, &face_of(&(0x20..0x400).collect::<Vec<u16>>()), &[]);
         let tglp = read32(&font, FINF + 16) - BASE - SECTION_BODY;
         assert_eq!(read32(&font, tglp + 28) % SHEET_ALIGN, 0);
         assert_eq!(read32(&font, tglp + 12) % SHEET_ALIGN, 0, "and each sheet after the first");
@@ -617,7 +657,7 @@ mod tests {
     #[test]
     fn the_glyph_sheets_are_within_the_block() {
         for face in [bitmap_face(), face_of(&(0x20..0x1000).collect::<Vec<u16>>())] {
-            let font = write(BASE, &face);
+            let font = write(BASE, &face, &[]);
             let tglp = read32(&font, FINF + 16) - BASE - SECTION_BODY;
             let sheets = read16(&font, tglp + 16) as u32;
             let end = read32(&font, tglp + 28) - BASE + sheets * read32(&font, tglp + 12);
@@ -636,7 +676,7 @@ mod tests {
         codes.extend(0x3041..=0x3096);
         codes.extend([0x4E00, 0x4E03, 0x4E07, 0x4E09, 0x4E0A, 0x6F22, 0x9F8D, 0xFF1F]);
         let face = face_of(&codes);
-        let font = write(BASE, &face);
+        let font = write(BASE, &face, &[]);
         assert!(read32(&font, FONT_OFFSET + 16) > 4, "runs and a list of the rest");
         let cwdh = read32(&font, FINF + 20) - BASE - SECTION_BODY + 0x10;
         for (index, &code) in codes.iter().enumerate() {
@@ -651,6 +691,23 @@ mod tests {
         }
     }
 
+    /// the console's button symbols have glyphs among the font's own
+    /// characters, a whole cell wide, and the characters around them keep
+    /// theirs. without them a prompt's "\u{E000} OK" lost its button.
+    #[test]
+    fn the_button_symbols_have_glyphs() {
+        let font = write(BASE, &bitmap_face(), &symbols(&Prompts::default(), None));
+        let cwdh = read32(&font, FINF + 20) - BASE - SECTION_BODY + 0x10;
+        for code in [0xE000, 0xE001, 0xE004, 0xE052, 0xE073, 0xE077, 0xE07E] {
+            let glyph = glyph_of(&font, code).unwrap_or_else(|| panic!("no glyph for {code:04X}"));
+            assert_eq!(font[(cwdh + glyph as u32 * 3 + 2) as usize], prompts::ADVANCE, "{code:04X}'s advance");
+            let lit = (0..CELL_HEIGHT as u16).flat_map(|y| (0..CELL_WIDTH as u16).map(move |x| (x, y))).filter(|&(x, y)| pixel(&font, glyph, x, y) != 0).count();
+            assert!(lit > 20, "{code:04X} has {lit} pixels drawn");
+        }
+        assert_eq!(glyph_of(&font, u16::from(b'A')), Some(0x41 - 0x20));
+        assert_eq!(glyph_of(&font, 0xE007), None);
+    }
+
     /// with a font for Japanese on the host, kana, kanji and the alphabet
     /// all have glyphs with something drawn, and the block stays as small
     /// as the console's.
@@ -660,7 +717,7 @@ mod tests {
             eprintln!("no font for Japanese on this host");
             return;
         };
-        let font = write(BASE, face);
+        let font = write(BASE, face, &symbols(&Prompts::default(), host_font()));
         assert!(font.len() as u32 <= BLOCK_LIMIT, "0x{:X} bytes", font.len());
         for character in ['あ', 'ア', '漢', '字', 'A', 'z', 'é', '！', '・'] {
             let glyph = glyph_of(&font, character as u16).unwrap_or_else(|| panic!("no glyph for {character}"));

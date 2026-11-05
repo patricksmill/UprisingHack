@@ -24,6 +24,7 @@ pub mod mii_selector;
 pub mod misc;
 pub mod nfc;
 pub mod shared_font;
+pub mod prompts;
 pub mod host_archive;
 pub mod srv;
 pub mod system_archives;

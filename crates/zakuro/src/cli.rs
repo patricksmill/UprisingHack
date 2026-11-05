@@ -28,6 +28,8 @@ pub struct Options {
     pub interpreter: bool,
     /// play no sound.
     pub mute: bool,
+    /// open the developer layout editor over the game.
+    pub menu_editor: bool,
 }
 
 const USAGE: &str = "\
@@ -58,13 +60,15 @@ options:
   --interpreter                    interpret everything, even with recompiled
                                    code around
   --mute                           play no sound
+  --menu-editor                    open the developer layout editor (F2 toggles)
   --data <dir>                     where saves live (default: the system's
                                    place for data, ~/.local/share/zakuro or
                                    %APPDATA%\\zakuro)
   -h, --help                       show this message
 
-The system font cannot be generated: put a dump at sysdata/shared_font.bin, in
-the working directory or where saves live, for titles that render text with it.
+Without a dump of the system font at sysdata/shared_font.bin, in the working
+directory or where saves live, a stand-in is drawn from the computer's fonts,
+its button symbols following the keys, mouse or controller in use.
 ";
 
 pub fn parse() -> Result<Options, String> {
@@ -82,6 +86,7 @@ pub fn parse() -> Result<Options, String> {
         data: None,
         interpreter: false,
         mute: false,
+        menu_editor: false,
     };
 
     let mut args = std::env::args().skip(1);
@@ -126,6 +131,7 @@ pub fn parse() -> Result<Options, String> {
             }
             "--interpreter" => options.interpreter = true,
             "--mute" => options.mute = true,
+            "--menu-editor" => options.menu_editor = true,
             "--profile" => options.profile = true,
             "--test-pattern" => options.test_pattern = true,
             other if other.starts_with('-') => {

@@ -17,20 +17,6 @@ pub enum Renderer {
     OpenGl,
 }
 
-/// why High Refresh Mode can't run with the renderer and rasterizer in use,
-/// none when it can. the in-between pictures are the host GPU's, shown
-/// straight from its device, so it takes the Vulkan presenter and the 3D
-/// drawn on the GPU.
-pub fn high_refresh_blocker(hardware_rasterizer: bool, vulkan: bool) -> Option<&'static str> {
-    if !hardware_rasterizer {
-        return Some("High Refresh Mode needs the 3D drawn on the GPU. Turn on \"Draw the 3D on the GPU\" to use it.");
-    }
-    if !vulkan {
-        return Some("High Refresh Mode needs the Vulkan presenter, which isn't in use.");
-    }
-    None
-}
-
 /// the most pictures a second High Refresh Mode shows, or Off to follow the
 /// display's refresh rate. it never goes below 60, so the mode can't show
 /// fewer pictures than the 60 FPS patch.
@@ -52,6 +38,7 @@ pub enum HighRefreshCap {
 }
 
 impl HighRefreshCap {
+    #[cfg(test)]
     pub const ALL: [HighRefreshCap; 6] =
         [HighRefreshCap::Off, HighRefreshCap::Hz90, HighRefreshCap::Hz120, HighRefreshCap::Hz144, HighRefreshCap::Hz165, HighRefreshCap::Hz240];
 
@@ -539,9 +526,9 @@ pub struct Settings {
     /// draw the texture packs put in games' mods folders.
     pub texture_packs: bool,
     /// a new picture on every refresh of the display, drawn in between the
-    /// last two the game made. older settings called it frame interpolation,
-    /// which only lifted a 30 FPS game to 60, and loaded as on.
-    #[serde(alias = "frame_interpolation")]
+    /// last two the game made. hidden and always off for now: it slows the
+    /// emulation down, so a saved value is neither read nor written.
+    #[serde(skip)]
     pub high_refresh_mode: bool,
     /// the most pictures a second High Refresh Mode shows.
     #[serde(deserialize_with = "or_default")]
@@ -749,19 +736,16 @@ mod tests {
         assert_eq!(layout, Screens::Stacked);
     }
 
-    /// a settings file from before High Refresh Mode turns it on when it
-    /// had frame interpolation on, and only the new key is written back.
+    /// High Refresh Mode stays off whatever a settings file says, under
+    /// its name or the old frame interpolation one, and is not written.
     #[test]
-    fn old_frame_interpolation_settings_switch_high_refresh_mode_on() {
-        let settings: Settings = toml::from_str("frame_interpolation = true\n").unwrap();
-        assert!(settings.high_refresh_mode, "the old setting carried over");
-        let settings: Settings = toml::from_str("frame_interpolation = false\n").unwrap();
-        assert!(!settings.high_refresh_mode);
-        let settings: Settings = toml::from_str("high_refresh_mode = true\n").unwrap();
-        assert!(settings.high_refresh_mode);
+    fn saved_high_refresh_mode_stays_off() {
+        for text in ["high_refresh_mode = true\n", "frame_interpolation = true\n"] {
+            let settings: Settings = toml::from_str(text).unwrap();
+            assert!(!settings.high_refresh_mode, "{text}");
+        }
         let text = toml::to_string_pretty(&Settings::default()).unwrap();
-        assert!(!text.contains("frame_interpolation"), "only the new key is written:\n{text}");
-        assert!(text.contains("high_refresh_mode"), "the new key is written:\n{text}");
+        assert!(!text.contains("high_refresh_mode") && !text.contains("frame_interpolation"), "{text}");
     }
 
     /// the cap offers only rates at or above 60, and at 240 Hz it brings
@@ -801,17 +785,5 @@ mod tests {
         let unknown: Settings = toml::from_str("high_refresh_cap = \"30\"\nshow_fps = true\n").unwrap();
         assert_eq!(unknown.high_refresh_cap, HighRefreshCap::Off);
         assert!(unknown.show_fps, "the other settings are kept");
-    }
-
-    /// the mode needs the 3D drawn on the GPU and shown with Vulkan, and
-    /// says which of them is missing.
-    #[test]
-    fn high_refresh_mode_is_blocked_without_vulkan_or_the_gpu() {
-        assert!(high_refresh_blocker(true, true).is_none());
-        let software = high_refresh_blocker(false, true).expect("software 3D blocks it");
-        assert!(software.contains("GPU"), "{software}");
-        let opengl = high_refresh_blocker(true, false).expect("OpenGL blocks it");
-        assert!(opengl.contains("Vulkan"), "{opengl}");
-        assert!(high_refresh_blocker(false, false).is_some());
     }
 }

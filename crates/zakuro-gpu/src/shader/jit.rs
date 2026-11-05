@@ -125,6 +125,7 @@ pub(super) struct Emitted {
     outputs: u16,
     slot: [usize; LANES],
     completes: [bool; LANES],
+    winding: bool,
     slots: [Triangle; LANES],
     triangles: [Vec<Triangle>; LANES],
 }
@@ -135,6 +136,7 @@ impl Emitted {
             outputs,
             slot: [0; LANES],
             completes: [false; LANES],
+            winding: false,
             slots: [[[[0.0; 4]; OUTPUT_REGISTERS]; 3]; LANES],
             triangles: std::array::from_fn(|_| Vec::new()),
         }
@@ -174,26 +176,29 @@ extern "C" fn lit(context: *mut Context) {
     scratch[2] = scratch[2].map(|w| w.max(0.0));
 }
 
+/// completes holds setemit's primitive bit in bit 0 and its winding bit in
+/// bit 1.
 extern "C" fn set_emit(context: *mut Context, slot: u32, completes: u32) {
     // SAFETY: as in floor, and emitted is the caller's for as long as the
     // program runs, or none
     let Some(emitted) = (unsafe { (*context).emitted.as_mut() }) else { return };
     emitted.slot = [slot as usize; LANES];
-    emitted.completes = [completes != 0; LANES];
+    emitted.completes = [completes & 1 != 0; LANES];
+    emitted.winding = completes & 2 != 0;
 }
 
 extern "C" fn emit(context: *mut Context) {
     // SAFETY: as in set_emit
     let (outputs, emitted) = unsafe { (&(*context).outputs, (*context).emitted.as_mut()) };
     let Some(emitted) = emitted else { return };
-    let written = emitted.outputs;
+    let (written, winding) = (emitted.outputs, emitted.winding);
     let lanes = emitted.slots.iter_mut().zip(&mut emitted.triangles).zip(emitted.slot.iter().zip(&emitted.completes));
     for (lane, ((slots, triangles), (&slot, &completes))) in lanes.enumerate() {
         for register in (0..OUTPUT_REGISTERS).filter(|register| written & (1 << register) != 0) {
             slots[slot][register] = std::array::from_fn(|component| outputs[register][component][lane]);
         }
         if completes {
-            triangles.push(*slots);
+            triangles.push(super::wound(*slots, winding));
         }
     }
 }
@@ -700,7 +705,8 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
             OpCode::End => self.finish(),
             OpCode::SetEmit => {
                 let slot = self.builder.ins().iconst(types::I32, instruction.emit_vertex().min(2) as i64);
-                let completes = self.builder.ins().iconst(types::I32, instruction.emit_primitive() as i64);
+                let completes = instruction.emit_primitive() as i64 | (instruction.emit_winding() as i64) << 1;
+                let completes = self.builder.ins().iconst(types::I32, completes);
                 self.builder.ins().call(self.helpers.set_emit, &[self.context, slot, completes]);
                 self.jump(next, frames);
             }

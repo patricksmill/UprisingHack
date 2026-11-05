@@ -328,6 +328,8 @@ pub struct System {
     pub fatal_errors: Vec<String>,
     /// mouse aiming for Kid Icarus: Uprising, when the frontend turned it on.
     pub aim_mouse: Option<aim_mouse::AimMouse>,
+    /// how the button symbols in the title's text look, see set_prompts.
+    pub(crate) prompts: services::prompts::Prompts,
     /// undefined instructions we have seen, so the log stays readable.
     undefined_seen: BTreeMap<u32, u32>,
     /// branches into unmapped memory, keyed by target.
@@ -429,6 +431,7 @@ impl System {
             room: None,
             fatal_errors: Vec::new(),
             aim_mouse: None,
+            prompts: services::prompts::Prompts::default(),
             undefined_seen: BTreeMap::new(),
             prefetch_aborts: BTreeMap::new(),
             history: [0; HISTORY_LENGTH],
@@ -1192,6 +1195,15 @@ impl System {
     pub fn set_slider_3d(&mut self, value: f32) {
         self.config.slider_3d = value;
         memory::config::set_slider_3d(self.memory.phys.shared_page_mut(), value);
+    }
+
+    /// shows the console's button symbols in the title's text as prompts
+    /// has them, from now on, where the font is the stand-in.
+    pub fn set_prompts(&mut self, prompts: services::prompts::Prompts) {
+        if self.prompts != prompts {
+            self.prompts = prompts;
+            services::apt::redraw_shared_font(self);
+        }
     }
 
     /// where a screen's picture is on the host's GPU, for a presenter sharing

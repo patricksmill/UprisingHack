@@ -1,9 +1,8 @@
 //! the one process that puts a game-owned Screen's drawing and input on the
 //! top screen, and the registry of the Screens it knows.
 //!
-//! Pause, its dialog and the 26 Scripted Menus are here. The Cauldron joins
-//! them, then the layout stages move from index branching to placements; see
-//! docs/agents/screen-transform.md.
+//! Pause, its dialog, the 26 Scripted Menus and the Fiend's Cauldron are
+//! here; see docs/agents/screen-transform.md.
 
 use serde::{Deserialize, Serialize};
 
@@ -445,7 +444,7 @@ pub(super) static SCREENS: &[ScreenSpec] = &[
 
 /// a source rectangle on the game's screen and where it shows on the top
 /// screen. Drawing, hit-testing and the future editor all use this mapping.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
     pub from: [f32; 4],
     pub to: [f32; 4],
@@ -491,19 +490,30 @@ pub(super) enum QuadRole {
     Corner = 4,
 }
 
-/// one Screen's placements for a completed title frame, in `QuadRole` order.
-/// A rule that was hidden has no placement, so neither drawing nor
-/// hit-testing reaches it. The frame is the title's own: a picture in
-/// between two titles' frames has no number of its own, so it reuses the
-/// newer real frame's placements rather than blending them.
+impl From<QuadRole> for usize {
+    fn from(role: QuadRole) -> usize {
+        role as usize
+    }
+}
+
+/// the most roles one Screen's layout seats: the Cauldron's eight.
+const ROLES: usize = 8;
+
+/// one Screen's placements for a completed title frame, indexed by its
+/// role enum (`QuadRole`, `CauldronRole`). A rule that was hidden has no
+/// placement, so neither drawing nor hit-testing reaches it. The frame is
+/// the title's own: a picture in between two titles' frames has no number
+/// of its own, so it reuses the newer real frame's placements rather than
+/// blending them.
+#[derive(Clone, Copy, Debug)]
 pub(super) struct ScreenLayout {
     frame: u64,
-    placements: [Option<Placement>; 5],
+    placements: [Option<Placement>; ROLES],
 }
 
 impl ScreenLayout {
-    pub fn place(&self, role: QuadRole) -> Option<Placement> {
-        self.placements[role as usize]
+    pub fn place(&self, role: impl Into<usize>) -> Option<Placement> {
+        self.placements[role.into()]
     }
 
     /// the completed title frame these placements were seated from.
@@ -513,13 +523,16 @@ impl ScreenLayout {
 }
 
 /// how one target rect follows the viewport: fixed size, narrowed by
-/// `widen` about its anchor, or stretched across the top screen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// `widen` about its anchor, stretched across the top screen, or fitted:
+/// laid out for a screen `design_width` wide as shown, made evenly smaller
+/// on a narrower one, by the edges its anchors say.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RuleScale {
     #[allow(dead_code)]
     Fixed,
     Narrow,
     Stretch,
+    Fit { design_width: f32 },
 }
 
 /// a rule is shown unless it was hidden, which layouts saved before rules
@@ -529,13 +542,17 @@ fn shown() -> bool {
 }
 
 /// one editable placement rule: the source box, the target box at 400 by
-/// 240, the anchor it narrows about, how it follows the viewport, and
-/// whether it is shown.
+/// 240 (for `Fit`, at its design width as shown), the anchors it narrows
+/// or fits about, how it follows the viewport, and whether it is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlacementRule {
     pub from: [f32; 4],
     pub to: [f32; 4],
     pub anchor: f32,
+    /// for `Fit`, where the room a smaller rule leaves goes: 0 keeps it by
+    /// the top, 1 by the bottom. Layouts saved before it read 0.
+    #[serde(default)]
+    pub anchor_y: f32,
     pub scale: RuleScale,
     /// a hidden rule's group is drawn nowhere and takes no touches.
     #[serde(default = "shown")]
@@ -545,16 +562,83 @@ pub struct PlacementRule {
 impl PlacementRule {
     pub fn placement(self, widen: f32) -> Placement {
         let widen = if widen.is_finite() && widen > 0.0 { widen } else { 1.0 };
-        let (x, width) = match self.scale {
-            RuleScale::Fixed => (self.to[0], self.to[2]),
+        let [to_x, to_y, to_width, to_height] = self.to;
+        let to = match self.scale {
+            RuleScale::Fixed => self.to,
             RuleScale::Narrow => {
-                let width = self.to[2] / widen;
-                (self.to[0] + self.anchor * (self.to[2] - width), width)
+                let width = to_width / widen;
+                [to_x + self.anchor * (to_width - width), to_y, width, to_height]
             }
-            RuleScale::Stretch => (0.0, 400.0),
+            RuleScale::Stretch => [0.0, to_y, 400.0, to_height],
+            RuleScale::Fit { design_width } => {
+                // laid out on the screen as shown, 400 times widen across,
+                // then squeezed back into the top screen's 400
+                let shown = 400.0 * widen;
+                let scale = (shown / design_width).min(1.0);
+                let x = to_x * scale + self.anchor * (shown - design_width * scale);
+                let y = to_y * scale + self.anchor_y * 240.0 * (1.0 - scale);
+                [x / widen, y, to_width * scale / widen, to_height * scale]
+            }
         };
-        Placement { from: self.from, to: [x, self.to[1], width, self.to[3]] }
+        Placement { from: self.from, to }
     }
+
+    /// the target box that places this rule at `to`, in the top screen's
+    /// 400 by 240, at `widen`: what an editor drag writes back.
+    pub fn target_for(self, widen: f32, to: [f32; 4]) -> [f32; 4] {
+        let widen = if widen.is_finite() && widen > 0.0 { widen } else { 1.0 };
+        let [x, y, width, height] = to;
+        match self.scale {
+            RuleScale::Fixed => to,
+            RuleScale::Narrow => [x - self.anchor * (width * widen - width), y, width * widen, height],
+            RuleScale::Stretch => [self.to[0], y, self.to[2], height],
+            RuleScale::Fit { design_width } => {
+                let shown = 400.0 * widen;
+                let scale = (shown / design_width).min(1.0);
+                let x = (x * widen - self.anchor * (shown - design_width * scale)) / scale;
+                let y = (y - self.anchor_y * 240.0 * (1.0 - scale)) / scale;
+                [x, y, width * widen / scale, height / scale]
+            }
+        }
+    }
+}
+
+/// one rule as the Rust that writes it.
+fn rule_rust(rule: PlacementRule) -> String {
+    format!(
+        "PlacementRule {{ from: {:?}, to: {:?}, anchor: {:?}, anchor_y: {:?}, scale: RuleScale::{:?}, visible: {:?} }}",
+        rule.from, rule.to, rule.anchor, rule.anchor_y, rule.scale, rule.visible
+    )
+}
+
+/// what changes from a Screen's default rules, named, one line per rule
+/// and one more for a rule hidden or shown, then the acceptance.
+fn change_request(screen: &str, rules: &[(&str, PlacementRule, PlacementRule)], acceptance: &str) -> String {
+    let mut lines = Vec::new();
+    let mut hid = false;
+    for &(name, before, after) in rules {
+        if before.visible != after.visible {
+            hid = true;
+            lines.push(format!("{} the {name} rule on {screen}.", if after.visible { "Show" } else { "Hide" }));
+        }
+        if before.from == after.from && before.to == after.to && before.anchor == after.anchor
+            && before.anchor_y == after.anchor_y && before.scale == after.scale
+        {
+            continue;
+        }
+        lines.push(format!(
+            "Move the {name} rule on {screen}: source {:?} -> {:?}, target {:?} -> {:?}, anchor {:?} -> {:?}, anchor_y {:?} -> {:?}, {:?} -> {:?}.",
+            before.from, after.from, before.to, after.to, before.anchor, after.anchor, before.anchor_y, after.anchor_y, before.scale, after.scale
+        ));
+    }
+    if lines.is_empty() {
+        return format!("No changes from the default {screen} rules.\n");
+    }
+    lines.push(acceptance.to_owned());
+    if hid {
+        lines.push("Hidden rules draw nothing on the top screen and take no touches.".to_owned());
+    }
+    lines.join("\n") + "\n"
 }
 
 /// the pause screen's editable rules, one per quad role.
@@ -570,12 +654,13 @@ pub struct PauseRules {
 impl Default for PauseRules {
     fn default() -> PauseRules {
         let from = [0.0, 0.0, 320.0, 240.0];
+        let rule = |to, anchor| PlacementRule { from, to, anchor, anchor_y: 0.0, scale: RuleScale::Narrow, visible: true };
         PauseRules {
-            span: PlacementRule { from, to: [0.0, 0.0, 400.0, 240.0], anchor: 0.0, scale: RuleScale::Stretch, visible: true },
-            center: PlacementRule { from, to: [PAUSE_MENU_OFFSET, 0.0, 320.0, 240.0], anchor: 0.5, scale: RuleScale::Narrow, visible: true },
-            left: PlacementRule { from, to: [0.0, 0.0, 320.0, 240.0], anchor: 0.0, scale: RuleScale::Narrow, visible: true },
-            right: PlacementRule { from, to: [2.0 * PAUSE_MENU_OFFSET, 0.0, 320.0, 240.0], anchor: 1.0, scale: RuleScale::Narrow, visible: true },
-            corner: PlacementRule { from, to: [2.0 * PAUSE_MENU_OFFSET, 0.0, 320.0, 240.0], anchor: 1.0, scale: RuleScale::Narrow, visible: true },
+            span: PlacementRule { scale: RuleScale::Stretch, ..rule([0.0, 0.0, 400.0, 240.0], 0.0) },
+            center: rule([PAUSE_MENU_OFFSET, 0.0, 320.0, 240.0], 0.5),
+            left: rule([0.0, 0.0, 320.0, 240.0], 0.0),
+            right: rule([2.0 * PAUSE_MENU_OFFSET, 0.0, 320.0, 240.0], 1.0),
+            corner: rule([2.0 * PAUSE_MENU_OFFSET, 0.0, 320.0, 240.0], 1.0),
         }
     }
 }
@@ -583,13 +668,9 @@ impl Default for PauseRules {
 impl PauseRules {
     /// the Rust row a layout change would land as.
     pub fn rust_fragment(&self) -> String {
-        let rule = |rule: PlacementRule| {
-            format!("PlacementRule {{ from: {:?}, to: {:?}, anchor: {:?}, scale: RuleScale::{:?}, visible: {:?} }}",
-                rule.from, rule.to, rule.anchor, rule.scale, rule.visible)
-        };
         format!(
             "PauseRules {{\n    span: {},\n    center: {},\n    left: {},\n    right: {},\n    corner: {},\n}}\n",
-            rule(self.span), rule(self.center), rule(self.left), rule(self.right), rule(self.corner)
+            rule_rust(self.span), rule_rust(self.center), rule_rust(self.left), rule_rust(self.right), rule_rust(self.corner)
         )
     }
 
@@ -597,41 +678,17 @@ impl PauseRules {
     /// more for a rule hidden or shown.
     pub fn change_request(&self) -> String {
         let default = PauseRules::default();
-        let rules = [
-            ("span", default.span, self.span),
-            ("center", default.center, self.center),
-            ("left", default.left, self.left),
-            ("right", default.right, self.right),
-            ("corner", default.corner, self.corner),
-        ];
-        let mut lines = Vec::new();
-        let mut hid = false;
-        for (name, before, after) in rules {
-            if before.visible != after.visible {
-                hid = true;
-                lines.push(format!(
-                    "{} the {name} rule on Pause.",
-                    if after.visible { "Show" } else { "Hide" }
-                ));
-            }
-            if before.from == after.from && before.to == after.to && before.anchor == after.anchor
-                && before.scale == after.scale
-            {
-                continue;
-            }
-            lines.push(format!(
-                "Move the {name} rule on Pause: from {:?} to {:?}, anchor {:?} -> {:?}, {:?} -> {:?}.",
-                before.from, after.from, before.anchor, after.anchor, before.scale, after.scale
-            ));
-        }
-        if lines.is_empty() {
-            return "No changes from the default Pause rules.\n".to_owned();
-        }
-        lines.push("Acceptance: on a Pause capture the five rules resolve to the exported rectangles, and hit-testing lights the Control inside each.".to_owned());
-        if hid {
-            lines.push("Hidden rules draw nothing on the top screen and take no touches.".to_owned());
-        }
-        lines.join("\n") + "\n"
+        change_request(
+            "Pause",
+            &[
+                ("span", default.span, self.span),
+                ("center", default.center, self.center),
+                ("left", default.left, self.left),
+                ("right", default.right, self.right),
+                ("corner", default.corner, self.corner),
+            ],
+            "Acceptance: on a Pause capture the five rules resolve to the exported rectangles, and hit-testing lights the Control inside each.",
+        )
     }
 
     /// seats the rules for a completed title frame. `frame` is the title's
@@ -647,8 +704,225 @@ impl PauseRules {
                 place(self.left),
                 place(self.right),
                 place(self.corner),
+                None,
+                None,
+                None,
             ],
         }
+    }
+}
+
+/// the Fiend's Cauldron's parts, each in a place of its own: the top's
+/// picture, its intensity panel, the bottom's bar, the bar's dial, Back,
+/// Move Out, the rest (the pot, the pan and the hearts bet), and the
+/// bottom screen's ring background, drawn behind everything else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CauldronRole {
+    Top,
+    Panel,
+    Bar,
+    Dial,
+    Back,
+    MoveOut,
+    Rest,
+    Ring,
+}
+
+impl CauldronRole {
+    pub const ALL: [CauldronRole; 8] = [
+        CauldronRole::Top,
+        CauldronRole::Panel,
+        CauldronRole::Bar,
+        CauldronRole::Dial,
+        CauldronRole::Back,
+        CauldronRole::MoveOut,
+        CauldronRole::Rest,
+        CauldronRole::Ring,
+    ];
+
+    pub fn name(self) -> &'static str {
+        ["top", "panel", "bar", "dial", "back", "moveout", "rest", "ring"][self as usize]
+    }
+
+    pub fn from_name(name: &str) -> Option<CauldronRole> {
+        CauldronRole::ALL.into_iter().find(|role| role.name() == name)
+    }
+}
+
+impl From<CauldronRole> for usize {
+    fn from(role: CauldronRole) -> usize {
+        role as usize
+    }
+}
+
+/// the width, as shown, the Cauldron's layout is made for: 16:9.
+const CAULDRON_WIDTH: f32 = 427.0;
+/// where on the bottom screen the dial points for an intensity of 0 and
+/// how far it goes for each 1, the box around it under the bar from its
+/// arrow's tip, and how wide and high that is.
+const DIAL_ZERO: f32 = 33.0;
+const DIAL_STEP: f32 = 28.3;
+const DIAL_TOP: f32 = 30.0;
+const DIAL_SIZE: [f32; 2] = [54.0, 54.0];
+/// the dial's size on the top screen against the bar's.
+const DIAL_SCALE: f32 = 0.55;
+/// where on the bottom screen a press of the dial goes, down the screen:
+/// the dial's middle.
+const DIAL_GRAB: f32 = 60.0;
+/// Move Out on the bottom screen, x, y, width and height: its place has
+/// room around it for it to grow when lit, and only this is touched.
+const MOVE_OUT_BUTTON: [f32; 4] = [55.0, 182.0, 210.0, 58.0];
+/// where the top picture's intensity panel's middle is for 0 and how far
+/// it goes for each 1, in top screen pixels: it slides with the value.
+const PANEL_ZERO: f32 = 64.0;
+const PANEL_STEP: f32 = 30.0;
+
+/// what the mouse does over one of the Cauldron's parts: the cursor name
+/// it lights (an index into `CAULDRON_CURSOR_NAMES`), the part of the
+/// role's source box that takes touches (all of it for none), and, for
+/// the dial, the height of the bottom screen a press goes to, along the
+/// bar.
+pub(super) struct CauldronControl {
+    pub role: CauldronRole,
+    pub cursor: Option<usize>,
+    pub hit: Option<[f32; 4]>,
+    pub grab: Option<f32>,
+}
+
+/// the Cauldron's Controls in the order they are drawn over each other,
+/// the dial first. The top's picture and its panel take no touches.
+pub(super) const CAULDRON_CONTROLS: [CauldronControl; 5] = [
+    CauldronControl { role: CauldronRole::Dial, cursor: Some(0), hit: None, grab: Some(DIAL_GRAB) },
+    CauldronControl { role: CauldronRole::Bar, cursor: Some(0), hit: None, grab: None },
+    CauldronControl { role: CauldronRole::Back, cursor: Some(2), hit: None, grab: None },
+    CauldronControl { role: CauldronRole::MoveOut, cursor: Some(1), hit: Some(MOVE_OUT_BUTTON), grab: None },
+    CauldronControl { role: CauldronRole::Rest, cursor: None, hit: None, grab: None },
+];
+
+/// the Cauldron's editable rules, one per `CauldronRole`. The panel's and
+/// the dial's are where they are for an intensity of 0; seating slides
+/// them along the bar with the pot's value. A saved list from before a
+/// role was added gets that role's default.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "Vec<PlacementRule>")]
+pub struct CauldronRules([PlacementRule; 8]);
+
+impl From<Vec<PlacementRule>> for CauldronRules {
+    fn from(saved: Vec<PlacementRule>) -> CauldronRules {
+        let mut rules = CauldronRules::default();
+        for (rule, saved) in rules.0.iter_mut().zip(saved) {
+            *rule = saved;
+        }
+        rules
+    }
+}
+
+impl Default for CauldronRules {
+    /// the top's picture and under it the panel, the bar, its dial and Back
+    /// on the left, the pot over Move Out on the right with the ring
+    /// behind it, made for 16:9 and smaller on a narrower screen.
+    fn default() -> CauldronRules {
+        let fit = |to, from, right: bool, down: bool| PlacementRule {
+            from,
+            to,
+            anchor: if right { 1.0 } else { 0.0 },
+            anchor_y: if down { 1.0 } else { 0.0 },
+            scale: RuleScale::Fit { design_width: CAULDRON_WIDTH },
+            visible: true,
+        };
+        let (bar_to, bar_from) = ([40.0, 197.0, 220.0, 23.0], [14.0, 0.0, 312.0, 32.0]);
+        let (along, down) = (bar_to[2] / bar_from[2], bar_to[3] / bar_from[3]);
+        // at 0, the dial's arrow tip on the bar's lower edge, the panel's
+        // middle over the dial
+        let dial_middle = bar_to[0] + (DIAL_ZERO - bar_from[0]) * along;
+        let dial = [DIAL_SIZE[0] * along * DIAL_SCALE, DIAL_SIZE[1] * down * DIAL_SCALE];
+        let panel_width = 91.0;
+        CauldronRules([
+            fit([16.0, 24.0, 258.0, 172.0], [36.0, 22.0, 328.0, 218.0], false, false),
+            fit([dial_middle - panel_width * 0.5, 148.0, panel_width, 49.0], [PANEL_ZERO - 70.0, 176.0, 140.0, 76.0], false, true),
+            fit(bar_to, bar_from, false, true),
+            fit(
+                [dial_middle - dial[0] * 0.5, bar_to[1] + (DIAL_TOP - bar_from[1]) * down, dial[0], dial[1]],
+                [DIAL_ZERO - DIAL_SIZE[0] * 0.5, DIAL_TOP, DIAL_SIZE[0], DIAL_SIZE[1]],
+                false,
+                true,
+            ),
+            fit([9.0, 207.0, 33.0, 30.0], [6.0, 202.0, 42.0, 38.0], false, true),
+            fit([244.9, 192.9, 171.1, 47.5], [16.0, 160.0, 288.0, 80.0], true, true),
+            fit([188.0, 47.0, 237.4, 178.1], [0.0, 0.0, 320.0, 240.0], true, true),
+            fit([188.0, 47.0, 237.4, 178.1], [0.0, 0.0, 320.0, 240.0], true, true),
+        ])
+    }
+}
+
+impl CauldronRules {
+    pub fn rule(&self, role: CauldronRole) -> PlacementRule {
+        self.0[role as usize]
+    }
+
+    pub fn rule_mut(&mut self, role: CauldronRole) -> &mut PlacementRule {
+        &mut self.0[role as usize]
+    }
+
+    /// how far the bar's placement goes across the top screen for each
+    /// pixel of the bottom screen's.
+    fn along(&self, widen: f32) -> f32 {
+        let bar = self.rule(CauldronRole::Bar).placement(widen);
+        bar.to[2] / bar.from[2]
+    }
+
+    /// every role's placement at the pot's value, hidden ones too: the
+    /// panel and the dial slid along the bar with it.
+    pub fn boxes(&self, widen: f32, value: f32) -> [Placement; ROLES] {
+        let mut boxes = CauldronRole::ALL.map(|role| self.rule(role).placement(widen));
+        let along = self.along(widen);
+        for (role, from_step) in [(CauldronRole::Panel, PANEL_STEP), (CauldronRole::Dial, DIAL_STEP)] {
+            let place = &mut boxes[role as usize];
+            place.from[0] += value * from_step;
+            place.to[0] += value * DIAL_STEP * along;
+        }
+        boxes
+    }
+
+    /// moves a role so that, at the pot's value, it is placed at `to` in the
+    /// top screen's 400 by 240.
+    pub fn set_box(&mut self, role: CauldronRole, widen: f32, value: f32, mut to: [f32; 4]) {
+        if matches!(role, CauldronRole::Panel | CauldronRole::Dial) {
+            to[0] -= value * DIAL_STEP * self.along(widen);
+        }
+        let rule = self.rule_mut(role);
+        rule.to = rule.target_for(widen, to);
+    }
+
+    /// seats the rules for a completed title frame at the pot's value: the
+    /// panel and the dial slide along the bar with it, and have no place
+    /// without one.
+    pub(super) fn layout(&self, frame: u64, widen: f32, value: Option<f32>) -> ScreenLayout {
+        let boxes = self.boxes(widen, value.unwrap_or(0.0));
+        let mut placements = [None; ROLES];
+        for role in CauldronRole::ALL {
+            let slides = matches!(role, CauldronRole::Panel | CauldronRole::Dial);
+            placements[role as usize] = (self.rule(role).visible && (value.is_some() || !slides)).then_some(boxes[role as usize]);
+        }
+        ScreenLayout { frame, placements }
+    }
+
+    /// the Rust a layout change would land as, for `Default`.
+    pub fn rust_fragment(&self) -> String {
+        let rules: String = CauldronRole::ALL.iter().map(|&role| format!("    // {}\n    {},\n", role.name(), rule_rust(self.rule(role)))).collect();
+        format!("CauldronRules([\n{rules}])\n")
+    }
+
+    /// what changes from the default Cauldron rules, one line per rule
+    /// and one more for a rule hidden or shown.
+    pub fn change_request(&self) -> String {
+        let default = CauldronRules::default();
+        let rules: Vec<_> = CauldronRole::ALL.iter().map(|&role| (role.name(), default.rule(role), self.rule(role))).collect();
+        change_request(
+            "Fiend's Cauldron",
+            &rules,
+            "Acceptance: on a Fiend's Cauldron capture at 5:3, 16:9 and 21:9 the seven rules resolve to the exported rectangles, and hovering each Control lights it.",
+        )
     }
 }
 
@@ -665,6 +939,12 @@ pub(super) struct ScreenTransform {
     cauldron_drawn: Option<u64>,
     cauldron_pouring: bool,
     cauldron_task: Option<u32>,
+    /// the Cauldron's editable rules, and their placements seated on the
+    /// frame it was last shown, which drawing and hit-testing both read,
+    /// with the width and the pot's value they were seated at.
+    cauldron_rules: CauldronRules,
+    cauldron_layout: Option<ScreenLayout>,
+    cauldron_seat: (f32, Option<f32>),
     /// the pause screen's editable placement rules.
     pause_rules: PauseRules,
     /// each Screen's High Refresh Mode rate, declared on its row and
@@ -686,6 +966,9 @@ impl Default for ScreenTransform {
             cauldron_drawn: None,
             cauldron_pouring: false,
             cauldron_task: None,
+            cauldron_rules: CauldronRules::default(),
+            cauldron_layout: None,
+            cauldron_seat: (1.0, None),
             pause_rules: PauseRules::default(),
             rates: std::array::from_fn(|index| SCREENS[index].rate),
             active: None,
@@ -768,6 +1051,12 @@ impl ScreenTransform {
         self.active.filter(|&(_, at)| frame <= at + 3).map(|(screen, _)| screen)
     }
 
+    /// the Screen last drawn on the top screen, however long ago: the one
+    /// the layout editor edits.
+    pub fn last_active(&self) -> Option<Screen> {
+        self.active.map(|(screen, _)| screen)
+    }
+
     /// whether the picture at `frame` must be the title's own: the Screen
     /// shown then is capped at 60. The host's presenter asks this before it
     /// shows a picture in between.
@@ -775,14 +1064,14 @@ impl ScreenTransform {
         self.active(frame).is_some_and(|screen| self.capped(screen))
     }
 
-    /// Clears what the last frames recorded. The host's editable Pause rules
-    /// and its per-Screen caps are not the console's state, so a load keeps
+    /// Clears what the last frames recorded. The host's editable rules and
+    /// its per-Screen caps are not the console's state, so a load keeps
     /// them.
     pub fn reset(&mut self) {
-        let pause_rules = self.pause_rules;
-        let rates = self.rates;
+        let (pause_rules, cauldron_rules, rates) = (self.pause_rules, self.cauldron_rules, self.rates);
         *self = Self::default();
         self.pause_rules = pause_rules;
+        self.cauldron_rules = cauldron_rules;
         self.rates = rates;
     }
 
@@ -852,10 +1141,15 @@ impl ScreenTransform {
         }
     }
 
-    pub fn mark_cauldron(&mut self, frame: u64, task: u32, pouring: bool) {
+    /// the pot's task ran on a completed frame: the Cauldron is shown, and
+    /// its placements are seated for the pot's value, none when it has no
+    /// sensible one.
+    pub fn mark_cauldron(&mut self, frame: u64, task: u32, pouring: bool, widen: f32, value: Option<f32>) {
         self.cauldron_drawn = Some(frame);
         self.cauldron_task = Some(task);
         self.cauldron_pouring = pouring;
+        self.cauldron_seat = (widen, value);
+        self.cauldron_layout = Some(self.cauldron_rules.layout(frame, widen, value));
         self.mark_active(Screen::FiendsCauldron, frame);
     }
 
@@ -867,8 +1161,29 @@ impl ScreenTransform {
         self.cauldron_shown(frame) && self.cauldron_pouring
     }
 
-    pub fn cauldron_task(&self) -> Option<u32> {
-        self.cauldron_task
+    /// the Cauldron's placements seated on the frame it was last shown,
+    /// while it is.
+    pub fn cauldron_layout(&self, frame: u64) -> Option<ScreenLayout> {
+        self.cauldron_layout.filter(|_| self.cauldron_shown(frame))
+    }
+
+    pub fn cauldron_rules(&self) -> CauldronRules {
+        self.cauldron_rules
+    }
+
+    /// the width and the pot's value the Cauldron was last seated at.
+    pub fn cauldron_seat(&self) -> (f32, Option<f32>) {
+        self.cauldron_seat
+    }
+
+    /// seats the Cauldron again at once, at the same frame, width and value,
+    /// so drawing and hit-testing follow an edit before its next frame.
+    pub fn set_cauldron_rules(&mut self, rules: CauldronRules) {
+        self.cauldron_rules = rules;
+        let (widen, value) = self.cauldron_seat;
+        if let Some(layout) = &mut self.cauldron_layout {
+            *layout = rules.layout(layout.frame, widen, value);
+        }
     }
 }
 
@@ -910,6 +1225,57 @@ mod tests {
         assert!(near(place(QuadRole::RightButton).to[0], 400.0 - 320.0 / 1.4));
         assert!(near(place(QuadRole::LeftButton).to[0], 0.0));
         assert_eq!(place(QuadRole::Span).to[2], 400.0);
+    }
+
+    /// the default rules keep the Cauldron where its hand-made layout put
+    /// it: made for a 16:9 window as shown, evenly smaller on a narrower
+    /// one, by the left or right and the top or bottom edge, then squeezed
+    /// into the top screen's 400. the panel and the dial slide along the
+    /// bar with the pot's value.
+    #[test]
+    fn cauldron_rules_fit_the_window_and_follow_the_value() {
+        let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 0.001);
+        for widen in [1.0, 427.0 / 400.0, 533.0 / 400.0, 300.0 / 400.0] {
+            let shown = 400.0 * widen;
+            let scale = (shown / 427.0_f32).min(1.0);
+            let fitted = |to: [f32; 4], right: bool, down: bool| {
+                let x = to[0] * scale + if right { shown - 427.0 * scale } else { 0.0 };
+                let y = to[1] * scale + if down { 240.0 * (1.0 - scale) } else { 0.0 };
+                [x / widen, y, to[2] * scale / widen, to[3] * scale]
+            };
+            let layout = CauldronRules::default().layout(10, widen, Some(4.0));
+            let to = |role| layout.place(role).unwrap().to;
+            assert!(near(to(CauldronRole::Top), fitted([16.0, 24.0, 258.0, 172.0], false, false)), "{widen}");
+            assert!(near(to(CauldronRole::Bar), fitted([40.0, 197.0, 220.0, 23.0], false, true)), "{widen}");
+            assert!(near(to(CauldronRole::Back), fitted([9.0, 207.0, 33.0, 30.0], false, true)), "{widen}");
+            assert!(near(to(CauldronRole::MoveOut), fitted([244.9, 192.9, 171.1, 47.5], true, true)), "{widen}");
+            assert!(near(to(CauldronRole::Rest), fitted([188.0, 47.0, 237.4, 178.1], true, true)), "{widen}");
+            // the dial's arrow on the bar where the bottom screen's points,
+            // 33 + 28.3 per 1, its tip on the bar's lower edge
+            let bar = layout.place(CauldronRole::Bar).unwrap();
+            let dial = layout.place(CauldronRole::Dial).unwrap();
+            let tip = DIAL_ZERO + 4.0 * DIAL_STEP;
+            assert!((dial.from[0] + dial.from[2] * 0.5 - tip).abs() < 0.001);
+            assert!((dial.to[0] + dial.to[2] * 0.5 - bar.map_x(tip)).abs() < 0.001);
+            assert!((dial.to[1] - bar.map_point([0.0, DIAL_TOP])[1]).abs() < 0.001);
+            // the panel's middle over it, showing the top's panel for 4
+            let panel = layout.place(CauldronRole::Panel).unwrap();
+            assert!((panel.to[0] + panel.to[2] * 0.5 - bar.map_x(tip)).abs() < 0.001);
+            assert!((panel.from[0] + panel.from[2] * 0.5 - (PANEL_ZERO + 4.0 * PANEL_STEP)).abs() < 0.001);
+        }
+        // with no value there is nothing to point at
+        let layout = CauldronRules::default().layout(10, 1.0, None);
+        assert!(layout.place(CauldronRole::Dial).is_none() && layout.place(CauldronRole::Panel).is_none());
+        assert!(layout.place(CauldronRole::Bar).is_some());
+    }
+
+    #[test]
+    fn a_hidden_cauldron_role_has_no_placement() {
+        let mut rules = CauldronRules::default();
+        rules.rule_mut(CauldronRole::Back).visible = false;
+        let layout = rules.layout(10, 1.0, Some(2.0));
+        assert!(layout.place(CauldronRole::Back).is_none());
+        assert!(CauldronRole::ALL.into_iter().filter(|&role| role != CauldronRole::Back).all(|role| layout.place(role).is_some()));
     }
 
     #[test]

@@ -380,8 +380,15 @@ pub struct Emitter {
     slots: [[Vec4; OUTPUT_REGISTERS]; 3],
     slot: usize,
     completes_primitive: bool,
+    winding: bool,
     /// finished triangles, as each vertex's output registers.
     pub triangles: Vec<[[Vec4; OUTPUT_REGISTERS]; 3]>,
+}
+
+/// the triangle a completing emit sends on: with setemit's winding bit the
+/// first two vertices swap, so its facing turns.
+pub(super) fn wound<T: Copy>(slots: [T; 3], winding: bool) -> [T; 3] {
+    if winding { [slots[1], slots[0], slots[2]] } else { slots }
 }
 
 /// one source of an instruction, with its descriptor applied ahead of time.
@@ -753,13 +760,14 @@ fn execute(unit: &ShaderUnit, program: &Program, state: &mut ShaderState, mut em
                 if let Some(emitter) = emitter.as_deref_mut() {
                     emitter.slot = instruction.emit_vertex().min(2);
                     emitter.completes_primitive = instruction.emit_primitive();
+                    emitter.winding = instruction.emit_winding();
                 }
             }
             OpCode::Emit => {
                 if let Some(emitter) = emitter.as_deref_mut() {
                     emitter.slots[emitter.slot] = state.output;
                     if emitter.completes_primitive {
-                        emitter.triangles.push(emitter.slots);
+                        emitter.triangles.push(wound(emitter.slots, emitter.winding));
                     }
                 }
             }
@@ -1839,5 +1847,51 @@ mod tests {
         assert_eq!(a[0], [1.0, 2.0, 0.0, 1.0]);
         assert_eq!(b[0], [11.0, 2.0, 0.0, 1.0]);
         assert_eq!(c[0], [1.0, 2.0, 0.0, 1.0]);
+    }
+
+    /// setemit's winding bit turns the completed triangle round, its first
+    /// two vertices swapped, so strips a geometry shader builds keep facing
+    /// out; the batched and compiled shaders agree with the interpreter.
+    #[test]
+    fn a_wound_setemit_swaps_the_first_two_vertices() {
+        let setemit = |slot: u32, primitive: bool, winding: bool| {
+            (0x2B << 26) | (slot << 24) | ((primitive as u32) << 23) | ((winding as u32) << 22)
+        };
+        let emit = 0x2A << 26;
+        let mov = 0x13 << 26; // mov o0, v0
+        let add = 1 << 7; // add o0, v0, v1
+        let program = [
+            setemit(0, false, false),
+            mov,
+            emit,
+            setemit(1, false, false),
+            add,
+            emit,
+            setemit(2, true, true),
+            add,
+            emit,
+            0x22 << 26,
+        ];
+        let unit = unit_with(&program, &[IDENTITY]);
+        let mut state = ShaderState::new();
+        state.input[0] = [1.0, 2.0, 0.0, 1.0];
+        state.input[1] = [10.0, 0.0, 0.0, 0.0];
+        let mut emitter = Emitter::default();
+        run_geometry(&unit, &mut state, &mut emitter);
+
+        let (first, second) = ([1.0, 2.0, 0.0, 1.0], [11.0, 2.0, 0.0, 1.0]);
+        assert_eq!(emitter.triangles.len(), 1);
+        let [a, b, c] = emitter.triangles[0];
+        assert_eq!([a[0], b[0], c[0]], [second, first, second]);
+
+        let mut input = [[0.0; 4]; INPUT_REGISTERS];
+        input[0] = state.input[0];
+        input[1] = state.input[1];
+        let many = run_geometry_many(&unit, &[input; 3]);
+        for triangles in many {
+            assert_eq!(triangles.len(), 1);
+            let [a, b, c] = triangles[0];
+            assert_eq!([a[0], b[0], c[0]], [second, first, second]);
+        }
     }
 }

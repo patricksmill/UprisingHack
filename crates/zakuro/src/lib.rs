@@ -26,6 +26,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use zakuro_common::Screen;
+use zakuro_core::aim_mouse::{CauldronRules, NavigationLink, PauseRules};
 use zakuro_core::{loader, Config, FrameOutcome, System};
 use zakuro_gpu::{layout, GpuScreen, Overlay, PresentError, RendererKind, ScreenImage};
 
@@ -38,6 +39,70 @@ use recompile::{Job, Stage, Toolchain};
 use settings::{CameraSource, Renderer, Screens, Settings};
 
 pub use zakuro_core::recompiled::Linked;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedLayout {
+    /// Scripted Menu parts hidden by the editor, by screen and part, absent
+    /// in older files. first, as TOML wants its values before its tables.
+    #[serde(default)]
+    hidden: Vec<(usize, usize)>,
+    #[serde(default)]
+    layers: Vec<SavedLayer>,
+    /// absent in files written before Pause rules were kept.
+    #[serde(default)]
+    pause: Option<PauseRules>,
+    /// explicit Control-to-Control navigation links, absent in older files.
+    #[serde(default)]
+    navigation: Vec<NavigationLink>,
+    /// the Fiend's Cauldron's rules, absent in older files. last, as its
+    /// rules are an array of tables.
+    #[serde(default)]
+    cauldron: Option<CauldronRules>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedLayer {
+    screen: usize,
+    part: usize,
+    to: [f32; 4],
+}
+
+fn layout_path(data_dir: &Option<PathBuf>) -> PathBuf {
+    data_dir.clone().unwrap_or_default().join("menu-layout.toml")
+}
+
+fn load_layout(data_dir: &Option<PathBuf>) -> Result<SavedLayout, String> {
+    let path = layout_path(data_dir);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SavedLayout { layers: Vec::new(), pause: None, navigation: Vec::new(), hidden: Vec::new(), cauldron: None })
+        }
+        Err(error) => return Err(format!("Could not read {}: {error}", path.display())),
+    };
+    toml::from_str(&text).map_err(|error| format!("Could not read {}: {error}", path.display()))
+}
+
+fn save_layout(
+    data_dir: &Option<PathBuf>,
+    layers: &[(usize, usize, [f32; 4])],
+    pause: PauseRules,
+    cauldron: CauldronRules,
+    navigation: Vec<NavigationLink>,
+    hidden: Vec<(usize, usize)>,
+) -> Result<PathBuf, String> {
+    let saved = SavedLayout {
+        layers: layers.iter().map(|&(screen, part, to)| SavedLayer { screen, part, to }).collect(),
+        pause: Some(pause),
+        navigation,
+        cauldron: Some(cauldron),
+        hidden,
+    };
+    let path = layout_path(data_dir);
+    let text = toml::to_string_pretty(&saved).map_err(|error| error.to_string())?;
+    std::fs::write(&path, text).map_err(|error| error.to_string())?;
+    Ok(path)
+}
 
 /// runs the emulator as the command line says, on recompiled code linked
 /// into the program when there is some.
@@ -63,14 +128,35 @@ pub fn run(linked: Option<Linked>) {
     }
 
     let data_dir = options.data.clone().map(PathBuf::from).or_else(default_data_dir);
+    let (layout_overrides, pause_rules, cauldron_rules, navigation, hidden, layout_error) = if options.menu_editor {
+        match load_layout(&data_dir) {
+            Ok(saved) => (
+                saved.layers.into_iter().map(|layer| (layer.screen, layer.part, layer.to)).collect(),
+                saved.pause.unwrap_or_default(),
+                saved.cauldron.unwrap_or_default(),
+                saved.navigation,
+                saved.hidden,
+                None,
+            ),
+            Err(error) => {
+                log::warn!("{error}");
+                (Vec::new(), PauseRules::default(), CauldronRules::default(), Vec::new(), Vec::new(), Some(error))
+            }
+        }
+    } else {
+        (Vec::new(), PauseRules::default(), CauldronRules::default(), Vec::new(), Vec::new(), None)
+    };
     if let Some(dir) = &data_dir {
         report::to_file(dir);
         bring_saves(dir);
     }
 
+    let menu_editor = options.menu_editor;
     let mut app = App {
         keyboard: Keyboard::new(settings.keys.clone()),
         gamepads: gamepad::Gamepads::new(settings.pad.clone()),
+        prompt_faces: None,
+        prompts_shown: None,
         scale: options.scale.unwrap_or(settings.scale).max(1),
         layout: settings.layout,
         top_shape: settings.top_shape,
@@ -79,10 +165,16 @@ pub fn run(linked: Option<Linked>) {
         linked,
         library: Library::new(data_dir.clone()),
         data_dir,
+        layout_overrides,
+        pause_rules,
+        cauldron_rules,
+        navigation,
+        hidden,
         game: None,
         menus: {
             let mut menus = Menus::default();
             menus.slot = 1;
+            menus.editor_open = menu_editor;
             menus
         },
         jobs: Vec::new(),
@@ -124,6 +216,10 @@ pub fn run(linked: Option<Linked>) {
         maximized_before_full_screen: false,
         resize_after_full_screen: false,
     };
+
+    if let Some(error) = layout_error {
+        app.menus.message = Some(error);
+    }
 
     if let Some(frames) = app.options.headless {
         app.start();
@@ -347,6 +443,17 @@ struct App {
     settings: Settings,
     linked: Option<Linked>,
     data_dir: Option<PathBuf>,
+    layout_overrides: Vec<(usize, usize, [f32; 4])>,
+    /// the editor's Pause rules, kept across a game restart.
+    pause_rules: PauseRules,
+    /// the editor's Fiend's Cauldron rules, kept across a game restart.
+    cauldron_rules: CauldronRules,
+    /// the editor's explicit navigation links, kept across a restart and a
+    /// console state load.
+    navigation: Vec<NavigationLink>,
+    /// the editor's hidden Scripted Menu parts, by screen and part, kept
+    /// across a restart and a console state load.
+    hidden: Vec<(usize, usize)>,
     game: Option<Running>,
     library: Library,
     menus: Menus,
@@ -360,6 +467,12 @@ struct App {
     window: Option<Window>,
     keyboard: Keyboard,
     gamepads: gamepad::Gamepads,
+    /// the controller whose buttons the game's prompts show, none for the
+    /// keyboard and mouse: whichever the player used last.
+    prompt_faces: Option<gamepad::Faces>,
+    /// what the running game's prompts were last made for, none when they
+    /// are due again: a new game, or bindings changed.
+    prompts_shown: Option<Option<gamepad::Faces>>,
     audio: Option<audio::Audio>,
     /// the window's size, times the console's.
     scale: u32,
@@ -676,6 +789,7 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state, button, .. } if self.aim_captured => {
                 if button == MouseButton::Left {
                     self.keyboard.mouse_button(zakuro_core::services::hid::PadState::L, state == ElementState::Pressed);
+                    self.prompt_faces = None;
                 }
             }
             WindowEvent::CursorMoved { .. } if self.aim_captured => {}
@@ -837,6 +951,15 @@ impl App {
             aim_mouse.cauldron_on_top = std::env::var("ZAKURO_CAULDRON_TOP").map_or(true, |value| value != "0");
             aim_mouse.menus_on_top = std::env::var("ZAKURO_MENUS_TOP").map_or(true, |value| value != "0");
             system.aim_mouse = Some(aim_mouse);
+            if let Some(mouse) = system.aim_mouse.as_mut() {
+                mouse.set_editor_overrides(self.layout_overrides.clone());
+                mouse.set_pause_rules(self.pause_rules);
+                mouse.set_cauldron_rules(self.cauldron_rules);
+                if self.options.menu_editor {
+                    mouse.set_editor_navigation(self.navigation.clone());
+                    mouse.set_editor_hidden_layers(self.hidden.clone());
+                }
+            }
             // at 60 FPS the game has half a 3DS's time for each frame, which
             // its busiest scenes need more than: ZAKURO_OVERCLOCK times the
             // instructions in the same time, 1 as the console
@@ -876,6 +999,7 @@ impl App {
             self.menus.message = Some(GPU_FALLBACK.to_owned());
         }
         self.game = Some(game);
+        self.prompts_shown = None;
         // the new game's cameras see what the settings say, and it plays
         // in the room the player is in
         self.camera = None;
@@ -925,14 +1049,22 @@ impl App {
             return;
         }
         if code == KeyCode::Tab && !event.repeat && !self.settings.keys.binds(KeyCode::Tab) {
-            // fast forward while it is held
-            self.fast_forward_key = pressed && self.game.is_some();
+            // fast forward while it is held; the editor owns the keyboard
+            self.fast_forward_key = pressed && self.game.is_some() && !self.menus.editor_open;
         }
         if pressed && !event.repeat {
             match code {
-                KeyCode::F6 if self.game.as_ref().is_some_and(|game| game.system.aim_mouse.is_some()) => {
+                KeyCode::F6 if !self.menus.editor_open && self.game.as_ref().is_some_and(|game| game.system.aim_mouse.is_some()) => {
                     self.released_for_pause = false;
                     self.set_aim_captured(!self.aim_captured);
+                    return;
+                }
+                KeyCode::F2 if self.options.menu_editor => {
+                    self.released_for_pause = false;
+                    self.set_aim_captured(false);
+                    self.menus.editor_open = !self.menus.editor_open;
+                    self.menus.toast = Some((format!("Layout editor {}", if self.menus.editor_open { "on" } else { "off" }), Instant::now()));
+                    self.keyboard.release();
                     return;
                 }
                 KeyCode::Escape if self.game.is_some() => {
@@ -963,8 +1095,9 @@ impl App {
             }
         }
         // the power key uses a power in a battle, and anywhere else does what
-        // else it is bound to, if anything. held, it uses no more than the one
-        if pressed && code == self.settings.keys.power {
+        // else it is bound to, if anything. held, it uses no more than the one;
+        // the editor owns the keyboard, so typing there cannot use a power.
+        if pressed && code == self.settings.keys.power && !self.menus.editor_open {
             if let Some(game) = &mut self.game {
                 let frame = game.system.frames;
                 if let Some(aim_mouse) = game.system.aim_mouse.as_mut().filter(|aim_mouse| aim_mouse.in_battle(frame)) {
@@ -978,11 +1111,15 @@ impl App {
         let to_game = self.game.is_some()
             && !self.menus.menu_open
             && !self.menus.settings_open
+            && !self.menus.editor_open
             && !consumed
             && !self.gui.as_ref().is_some_and(Gui::wants_keyboard);
         // letting go always gets through, so that no button stays held
         if to_game || !pressed {
             self.keyboard.key(event.physical_key, pressed);
+        }
+        if to_game && pressed {
+            self.prompt_faces = None;
         }
     }
 
@@ -1000,6 +1137,24 @@ impl App {
                 self.keyboard.release();
             }
         }
+        if let Some(faces) = self.gamepads.used() {
+            self.prompt_faces = Some(faces);
+        }
+    }
+
+    /// shows the game's button prompts as the keys, mouse or controller the
+    /// player used last, bound as the settings have them, when that changed.
+    fn update_prompts(&mut self) {
+        let Some(game) = &mut self.game else { return };
+        if self.prompts_shown == Some(self.prompt_faces) {
+            return;
+        }
+        let prompts = match self.prompt_faces {
+            Some(faces) => self.gamepads.prompts(faces),
+            None => input::prompts(&self.settings.keys, game.system.aim_mouse.is_some()),
+        };
+        game.system.set_prompts(prompts);
+        self.prompts_shown = Some(self.prompt_faces);
     }
 
     /// holds the pointer for aiming or lets it go back to touching.
@@ -1047,6 +1202,10 @@ impl App {
     /// touching it there, and holds it again once the menu is gone, when it
     /// was let go for it.
     fn follow_pause_menu(&mut self) {
+        if self.menus.editor_open {
+            if self.aim_captured { self.set_aim_captured(false); }
+            return;
+        }
         let shown = self.pause_menu_shown();
         if shown && self.aim_captured {
             self.set_aim_captured(false);
@@ -1061,7 +1220,7 @@ impl App {
 
     /// whether the pointer is busy with something other than the game.
     fn pointer_taken(&self, consumed: bool) -> bool {
-        consumed || self.game.is_none() || self.menus.menu_open || self.gui.as_ref().is_some_and(Gui::wants_pointer)
+        consumed || self.game.is_none() || self.menus.menu_open || self.menus.editor_open || self.gui.as_ref().is_some_and(Gui::wants_pointer)
     }
 
     /// touches the bottom screen while the button is down over it, and
@@ -1096,13 +1255,7 @@ impl App {
                 mouse.clear_menus_top_pointer();
                 return None;
             }
-            if mouse.pause_menu_shown(frames) {
-                mouse.pause_menu_touch(frames, x, y)
-            } else if mouse.cauldron_on_top_shown(frames) {
-                mouse.cauldron_touch(frames, x, y, self.mouse_down)
-            } else {
-                mouse.menus_top_touch(frames, x, y, self.mouse_down)
-            }
+            mouse.top_screen_touch(frames, x, y, self.mouse_down)
         });
         let top_dragging = self.mouse_down && self.game.as_ref().and_then(|game| game.system.aim_mouse.as_ref()).is_some_and(|mouse| mouse.menus_top_dragging());
         let pointer = top_pointer.or_else(|| {
@@ -1174,19 +1327,6 @@ impl App {
         self.game.as_ref().is_some_and(|game| game.system.gpu.interpolates())
     }
 
-    /// why High Refresh Mode can't run with the renderer and rasterizer in
-    /// use, none when it can.
-    fn high_refresh_blocker(&self) -> Option<&'static str> {
-        // what the game's 3D really uses, when one runs: the settings may
-        // ask for Vulkan and the GPU while the backend fell back
-        let hardware = match &self.game {
-            Some(game) => game.system.gpu.draws_on_gpu(),
-            None => self.options.hardware_rasterizer.unwrap_or(self.settings.hardware_rasterizer),
-        };
-        let vulkan = matches!(self.backend, Some(Backend::Vulkan(_)));
-        settings::high_refresh_blocker(hardware, vulkan)
-    }
-
     /// the host time now, on the clock the console's frames are timed by.
     fn host_time(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.host_epoch)
@@ -1239,6 +1379,7 @@ impl App {
         self.apply_camera();
         self.keyboard.set_keys(self.settings.keys.clone());
         self.gamepads.set_buttons(self.settings.pad.clone());
+        self.prompts_shown = None;
         self.apply_volume();
         self.apply_layout();
     }
@@ -1398,6 +1539,62 @@ impl App {
 
     fn act(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         match action {
+            Action::SaveLayout => {
+                let (layers, pause, cauldron, navigation, hidden) = match self.game.as_ref().and_then(|game| game.system.aim_mouse.as_ref()) {
+                    Some(mouse) => (mouse.editor_overrides(), mouse.pause_rules(), mouse.cauldron_rules(), mouse.editor_navigation(), mouse.editor_hidden_layers()),
+                    None => (self.layout_overrides.clone(), self.pause_rules, self.cauldron_rules, self.navigation.clone(), self.hidden.clone()),
+                };
+                let written = save_layout(&self.data_dir, &layers, pause, cauldron, navigation.clone(), hidden.clone());
+                let path = layout_path(&self.data_dir);
+                self.menus.message = Some(match written {
+                    Ok(path) => {
+                        self.layout_overrides = layers;
+                        self.pause_rules = pause;
+                        self.cauldron_rules = cauldron;
+                        self.navigation = navigation;
+                        self.hidden = hidden;
+                        format!("Saved the layout to {}", path.display())
+                    }
+                    Err(error) => format!("Could not save {}: {error}", path.display()),
+                });
+            }
+            Action::EditorNavigationLink(from, direction, to) => {
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.set_editor_navigation_link(from, direction, to);
+                    self.navigation = mouse.editor_navigation();
+                }
+            }
+            Action::EditorLayer(index, to) => {
+                let overrides = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()).map(|mouse| {
+                    mouse.set_editor_layer(index, to);
+                    self.cauldron_rules = mouse.cauldron_rules();
+                    mouse.editor_overrides()
+                });
+                if let Some(overrides) = overrides {
+                    self.layout_overrides = overrides;
+                }
+            }
+            Action::EditorLayerVisible(index, visible) => {
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.set_editor_layer_visible(index, visible);
+                    self.cauldron_rules = mouse.cauldron_rules();
+                    self.hidden = mouse.editor_hidden_layers();
+                }
+            }
+            Action::CauldronRules(rules) => {
+                self.cauldron_rules = rules;
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.set_cauldron_rules(rules);
+                }
+            }
+            Action::PauseRules(rules) => {
+                self.pause_rules = rules;
+                if let Some(game) = &mut self.game {
+                    if let Some(mouse) = game.system.aim_mouse.as_mut() {
+                        mouse.set_pause_rules(rules);
+                    }
+                }
+            }
             Action::Play(path) => {
                 if let Err(error) = self.play(&path) {
                     self.menus.message = Some(error);
@@ -1558,6 +1755,7 @@ impl App {
         self.library.poll();
         self.poll_jobs();
         self.poll_gamepads();
+        self.update_prompts();
         // a room that went away takes the game's local wireless with it
         if self.room.as_ref().is_some_and(|room| !room.open()) {
             self.leave_room();
@@ -1926,6 +2124,12 @@ impl App {
         match loaded {
             Ok(()) => {
                 log::info!("loaded the state from {}", path.display());
+                if self.options.menu_editor {
+                    if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                        mouse.set_editor_navigation(self.navigation.clone());
+                        mouse.set_editor_hidden_layers(self.hidden.clone());
+                    }
+                }
                 self.menus.toast = Some((format!("Loaded slot {slot}"), Instant::now()));
                 self.menus.menu_open = false;
                 if let Some(audio) = &self.audio {
@@ -1961,16 +2165,36 @@ impl App {
             .flatten()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
             .map(ago);
-        let high_refresh_blocked = self.high_refresh_blocker();
         // the host's pictures read apart from the game's own frames, so a
         // dropped picture and a dropped frame can be told apart
         let high_refresh = self.high_refresh();
         let shown = self.shown.rate();
+        let canvas = {
+            let layout_kind = self.layout;
+            let top_width = self.top_width();
+            let integer = self.settings.integer_scale;
+            self.window.as_ref().and_then(|window| {
+                let size = window.inner_size();
+                let (top, _) = layout(size.width, size.height, layout_kind.screens(), top_width, integer);
+                top.map(|top| [top.x, top.y, top.width, top.height])
+            })
+        };
         let (Some(gui), Some(window)) = (&mut self.gui, &self.window) else { return Overlay::default() };
         let show_fps = self.settings.show_fps;
+        let editor_open = self.menus.editor_open;
+        let editor_enabled = self.options.menu_editor;
+        let (editor_layers, editor_visibility, navigation_controls, navigation_directions, editor_widen) = self.game.as_ref().filter(|_| editor_open).and_then(|game| game.system.aim_mouse.as_ref())
+            .map_or((Vec::new(), Vec::new(), Vec::new(), [true; 4], 1.0), |mouse| (mouse.editor_layers(), mouse.editor_layer_visibility(), mouse.editor_navigation_controls(), mouse.editor_navigation_directions(), mouse.widen()));
         let game = self.game.as_ref().map(|game| {
             let fps = menus::FpsReadout::new(high_refresh, shown, game.fps);
-            (game.name.clone(), fps, game.system.recompiled.is_some())
+            // the Pause rules' window unless the editor edits the Cauldron
+            let rules = game.system.aim_mouse.as_ref().map(|mouse| (mouse.pause_rules(), mouse.editor_cauldron_rules()));
+            let (pause_rules, cauldron_rules) = match rules {
+                Some((_, Some(cauldron))) => (None, Some(cauldron)),
+                Some((pause, None)) => (Some(pause), None),
+                None => (None, None),
+            };
+            (game.name.clone(), fps, game.system.recompiled.is_some(), pause_rules, cauldron_rules)
         });
         let fast = self.fast_forwarding;
         let keyboard = self.game.as_ref().and_then(|game| game.system.keyboard_request().cloned());
@@ -1990,12 +2214,13 @@ impl App {
         let mut actions = Vec::new();
         let overlay = gui.frame(window, |ui| {
             match &game {
-                Some((name, fps, recompiled)) => {
-                    actions.extend(menus.game(ui, name, show_fps.then_some(*fps), *recompiled, fast, jobs, saved.as_deref()))
-                }
+                Some((name, fps, recompiled, pause_rules, cauldron_rules)) => actions.extend(menus.game(
+                    ui, name, show_fps.then_some(*fps), *recompiled, fast, jobs, saved.as_deref(), *pause_rules, *cauldron_rules,
+                    editor_layers.clone(), editor_visibility.clone(), navigation_controls.clone(), navigation_directions, editor_widen, canvas, editor_open, editor_enabled,
+                )),
                 None => actions.extend(menus.library(ui, library, settings, jobs)),
             }
-            actions.extend(menus.settings(ui.ctx(), settings, high_refresh_blocked));
+            actions.extend(menus.settings(ui.ctx(), settings));
             if menus.multiplayer_open {
                 actions.extend(menus.multiplayer(ui.ctx(), settings, room.as_ref()));
             }
@@ -2184,6 +2409,128 @@ const _: RendererKind = RendererKind::Software;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zakuro_core::aim_mouse::{NavigationDirection, NavigationLink, RuleScale};
+
+    /// a fresh folder for one test's `menu-layout.toml`.
+    fn temp_data_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("zakuro-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a folder for the test's layout");
+        dir
+    }
+
+    #[test]
+    fn saved_layout_round_trips_pause_rules_layers_navigation_and_hidden() {
+        let dir = temp_data_dir("layout-round-trip");
+        let mut rules = PauseRules::default();
+        rules.center.to[0] = 60.0;
+        rules.left.scale = RuleScale::Fixed;
+        rules.corner.anchor = 0.25;
+        let layers = vec![(13, 0, [7.0, 8.0, 90.0, 40.0]), (5, 2, [0.0, 1.0, 30.0, 20.0])];
+        let navigation = vec![
+            NavigationLink { screen: 13, from: 0, direction: NavigationDirection::Up, to: 2 },
+            NavigationLink { screen: 13, from: 2, direction: NavigationDirection::Left, to: 2 },
+            NavigationLink { screen: 5, from: 1, direction: NavigationDirection::Down, to: 0 },
+        ];
+        let hidden = vec![(13, 5), (5, 2)];
+        let mut cauldron = CauldronRules::default();
+        cauldron.rule_mut(zakuro_core::aim_mouse::CauldronRole::Back).visible = false;
+        cauldron.rule_mut(zakuro_core::aim_mouse::CauldronRole::Top).to = [20.0, 30.0, 150.0, 100.0];
+        let path = save_layout(&Some(dir.clone()), &layers, rules, cauldron, navigation.clone(), hidden.clone()).expect("the layout is written");
+        assert_eq!(path, layout_path(&Some(dir.clone())));
+        let loaded = load_layout(&Some(dir.clone())).expect("the layout is read");
+        let loaded_layers: Vec<_> = loaded.layers.into_iter().map(|layer| (layer.screen, layer.part, layer.to)).collect();
+        assert_eq!(loaded_layers, layers);
+        assert_eq!(loaded.pause, Some(rules));
+        assert_eq!(loaded.cauldron, Some(cauldron));
+        assert_eq!(loaded.navigation, navigation);
+        assert_eq!(loaded.hidden, hidden);
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// a layout saved before the Cauldron's ring had a role keeps its
+    /// Cauldron rules, and the ring gets its default place.
+    #[test]
+    fn a_cauldron_layout_saved_without_the_ring_still_loads() {
+        use zakuro_core::aim_mouse::CauldronRole;
+        let dir = temp_data_dir("layout-before-ring");
+        let mut cauldron = CauldronRules::default();
+        cauldron.rule_mut(CauldronRole::Back).visible = false;
+        let path = save_layout(&Some(dir.clone()), &[], PauseRules::default(), cauldron, Vec::new(), Vec::new()).expect("the layout is written");
+        let mut file: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        file["cauldron"].as_array_mut().expect("the Cauldron's rules are a list").pop();
+        std::fs::write(&path, toml::to_string(&file).unwrap()).unwrap();
+        let loaded = load_layout(&Some(dir.clone())).expect("the old layout is read").cauldron.expect("its Cauldron rules are kept");
+        assert!(!loaded.rule(CauldronRole::Back).visible);
+        assert_eq!(loaded.rule(CauldronRole::Ring), CauldronRules::default().rule(CauldronRole::Ring));
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// a Scripted layer hidden without ever being moved is saved on its own.
+    #[test]
+    fn a_hidden_layer_is_saved_without_a_move() {
+        let dir = temp_data_dir("layout-hidden");
+        let hidden = vec![(11, 5), (4, 1)];
+        save_layout(&Some(dir.clone()), &[], PauseRules::default(), CauldronRules::default(), Vec::new(), hidden.clone())
+            .expect("the layout with only a hidden layer is written");
+        let loaded = load_layout(&Some(dir.clone())).expect("the layout is read");
+        assert!(loaded.layers.is_empty(), "hiding a layer wrote a move");
+        assert_eq!(loaded.hidden, hidden, "the hidden layer did not come back");
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// a file written before Pause rules were kept still loads its layers.
+    #[test]
+    fn a_layout_without_pause_rules_still_loads() {
+        let dir = temp_data_dir("layout-legacy");
+        std::fs::write(
+            layout_path(&Some(dir.clone())),
+            "[[layers]]\nscreen = 13\npart = 0\nto = [1.0, 2.0, 3.0, 4.0]\n",
+        )
+        .expect("the old layout is written");
+        let loaded = load_layout(&Some(dir.clone())).expect("the old layout is read");
+        let loaded_layers: Vec<_> = loaded.layers.into_iter().map(|layer| (layer.screen, layer.part, layer.to)).collect();
+        assert_eq!(loaded_layers, vec![(13, 0, [1.0, 2.0, 3.0, 4.0])]);
+        assert_eq!(loaded.pause, None);
+        assert!(loaded.navigation.is_empty(), "a layout without links has none");
+        assert!(loaded.hidden.is_empty(), "a layout without hidden layers hides none");
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// Pause rules written before visibility existed load every rule shown.
+    #[test]
+    fn old_pause_rules_without_visibility_stay_visible() {
+        let dir = temp_data_dir("layout-legacy-pause");
+        let rule = "from = [0.0, 0.0, 320.0, 240.0]\nto = [0.0, 0.0, 400.0, 240.0]\nanchor = 0.5\nscale = \"Narrow\"\n";
+        let mut text = String::new();
+        for name in ["span", "center", "left", "right", "corner"] {
+            text.push_str(&format!("[pause.{name}]\n{rule}\n"));
+        }
+        std::fs::write(layout_path(&Some(dir.clone())), text).expect("the old layout is written");
+        let loaded = load_layout(&Some(dir.clone())).expect("the old layout is read");
+        let rules = loaded.pause.expect("the old Pause rules");
+        assert!([rules.span, rules.center, rules.left, rules.right, rules.corner].iter().all(|rule| rule.visible), "old rules were hidden");
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// a damaged layout is reported, not silently treated as the default.
+    #[test]
+    fn a_malformed_layout_is_reported() {
+        let dir = temp_data_dir("layout-malformed");
+        std::fs::write(layout_path(&Some(dir.clone())), "layers = [").expect("the damaged layout is written");
+        assert!(load_layout(&Some(dir.clone())).is_err());
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// a save that cannot be written says so instead of claiming success.
+    #[test]
+    fn a_layout_that_cannot_be_written_reports_an_error() {
+        let dir = temp_data_dir("layout-error");
+        let blocked = dir.join("not-a-folder");
+        std::fs::write(&blocked, b"").expect("a file stands where the folder would go");
+        assert!(save_layout(&Some(blocked), &[], PauseRules::default(), CauldronRules::default(), Vec::new(), Vec::new()).is_err());
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
 
     #[test]
     fn wheel_scrolls_vertically_and_shift_scrolls_horizontally() {

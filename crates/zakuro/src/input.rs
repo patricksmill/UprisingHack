@@ -2,6 +2,7 @@
 
 use winit::keyboard::{KeyCode, PhysicalKey};
 use zakuro_core::services::hid::{InputState, PadState};
+use zakuro_core::services::prompts::{Input, Label, MouseButton, Prompts};
 
 use crate::settings::Keys;
 
@@ -113,9 +114,82 @@ impl Keyboard {
     }
 }
 
+/// the console's button symbols as the keys they are on, and with the
+/// mouse aiming, L, which the left button fires, as that button.
+pub fn prompts(keys: &Keys, aiming: bool) -> Prompts {
+    let mut prompts = Prompts::default();
+    for (input, key) in [
+        (Input::A, keys.a),
+        (Input::B, keys.b),
+        (Input::X, keys.x),
+        (Input::Y, keys.y),
+        (Input::L, keys.l),
+        (Input::R, keys.r),
+        (Input::ZL, keys.zl),
+        (Input::ZR, keys.zr),
+        (Input::Up, keys.up),
+        (Input::Down, keys.down),
+        (Input::Left, keys.left),
+        (Input::Right, keys.right),
+    ] {
+        prompts.set(input, Label::Key(cap(key)));
+    }
+    let together = |keys: &[KeyCode]| Label::Key(keys.iter().map(|&key| cap(key)).collect::<Vec<_>>().join(""));
+    prompts.set(Input::DPad, together(&[keys.up, keys.left, keys.down, keys.right]));
+    prompts.set(Input::UpDown, together(&[keys.up, keys.down]));
+    prompts.set(Input::LeftRight, together(&[keys.left, keys.right]));
+    prompts.set(Input::CirclePad, together(&[keys.circle_up, keys.circle_left, keys.circle_down, keys.circle_right]));
+    if aiming {
+        prompts.set(Input::L, Label::Mouse(MouseButton::Left));
+    }
+    prompts
+}
+
+/// a key's name short enough for a keycap.
+fn cap(key: KeyCode) -> String {
+    let short = match key {
+        KeyCode::ArrowUp => "↑",
+        KeyCode::ArrowDown => "↓",
+        KeyCode::ArrowLeft => "←",
+        KeyCode::ArrowRight => "→",
+        KeyCode::Enter | KeyCode::NumpadEnter => "Enter",
+        KeyCode::Backspace => "Bksp",
+        KeyCode::Space => "Space",
+        KeyCode::Escape => "Esc",
+        KeyCode::Tab => "Tab",
+        KeyCode::ShiftLeft | KeyCode::ShiftRight => "Shift",
+        KeyCode::ControlLeft | KeyCode::ControlRight => "Ctrl",
+        KeyCode::AltLeft | KeyCode::AltRight => "Alt",
+        KeyCode::Minus => "-",
+        KeyCode::Equal => "=",
+        KeyCode::Comma => ",",
+        KeyCode::Period => ".",
+        KeyCode::Slash => "/",
+        KeyCode::Semicolon => ";",
+        KeyCode::Quote => "'",
+        KeyCode::BracketLeft => "[",
+        KeyCode::BracketRight => "]",
+        _ => return crate::menus::key_name(key).trim_start_matches("Numpad").to_owned(),
+    };
+    short.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// a prompt shows the key a button is bound to, and follows a rebinding.
+    #[test]
+    fn prompts_follow_the_keys() {
+        let mut keys = Keys::default();
+        let prompts = super::prompts(&keys, false);
+        assert_eq!(prompts.get(Input::A), &Label::Key("X".into()));
+        assert_eq!(prompts.get(Input::DPad), &Label::Key("↑←↓→".into()));
+        assert_eq!(prompts.get(Input::CirclePad), &Label::Key("IJKL".into()));
+        keys.a = KeyCode::Space;
+        assert_eq!(super::prompts(&keys, false).get(Input::A), &Label::Key("Space".into()));
+        assert_eq!(super::prompts(&keys, true).get(Input::L), &Label::Mouse(MouseButton::Left), "the left button fires");
+    }
 
     #[test]
     fn keys_press_the_buttons_they_are_bound_to() {

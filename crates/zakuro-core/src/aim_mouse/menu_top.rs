@@ -479,6 +479,7 @@ impl AimMouse {
     }
 
     pub fn editor_navigation_controls(&self) -> Vec<(usize, [Option<usize>; 4])> {
+        if !self.editing_scripted() { return Vec::new(); }
         let Some((screen, ..)) = self.menu_screen else { return Vec::new() };
         if !NAVIGABLE_SCREENS.contains(&screen) { return Vec::new(); }
         self.menu_top.parts.iter().enumerate().filter(|(_, part)|
@@ -494,6 +495,7 @@ impl AimMouse {
     }
 
     pub fn set_editor_navigation_link(&mut self, from: usize, direction: NavigationDirection, to: Option<usize>) {
+        if !self.editing_scripted() { return; }
         let Some((screen, ..)) = self.menu_screen else { return };
         if !NAVIGABLE_SCREENS.contains(&screen) { return; }
         if screen == 11 && matches!(direction, NavigationDirection::Up | NavigationDirection::Down) { return; }
@@ -755,8 +757,11 @@ impl AimMouse {
 
     pub fn hovered_menu_part(&self) -> Option<u32> { self.menu_part.map(|part| part.hash) }
 
-    /// the active Scripted Menu's editable layers: label and target box.
+    /// the edited Screen's layers: label and target box, in pixels as shown.
+    /// the Cauldron's parts, the active Scripted Menu's, or none on Pause.
     pub fn editor_layers(&self) -> Vec<(String, [f32; 4])> {
+        if self.editing_cauldron() { return self.cauldron_editor_layers(); }
+        if !self.editing_scripted() { return Vec::new(); }
         self.menu_top.parts.iter().enumerate().map(|(index, part)| {
             let name = if self.menu_top.file_select() {
                 match index {
@@ -785,6 +790,8 @@ impl AimMouse {
 
     /// Visibility follows the same stable indices as `editor_layers`.
     pub fn editor_layer_visibility(&self) -> Vec<bool> {
+        if self.editing_cauldron() { return self.cauldron_editor_visibility(); }
+        if !self.editing_scripted() { return Vec::new(); }
         self.menu_top.parts.iter().map(|part| part.visible).collect()
     }
 
@@ -805,6 +812,8 @@ impl AimMouse {
     }
 
     pub fn set_editor_layer_visible(&mut self, index: usize, visible: bool) {
+        if self.editing_cauldron() { return self.set_cauldron_editor_visible(index, visible); }
+        if !self.editing_scripted() { return; }
         let Some(screen) = self.menu_screen.map(|(screen, ..)| screen)
             .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) else { return };
         let Some(part) = self.menu_top.parts.get_mut(index) else { return };
@@ -815,8 +824,11 @@ impl AimMouse {
         self.clear_menus_top_pointer();
     }
 
-    /// move one Scripted Menu layer, keeping the edit for the next frame.
+    /// move one layer of the edited Screen, keeping the edit for the next
+    /// frame.
     pub fn set_editor_layer(&mut self, index: usize, to: [f32; 4]) {
+        if self.editing_cauldron() { return self.set_cauldron_editor_layer(index, to); }
+        if !self.editing_scripted() { return; }
         let screen = self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen));
         if let Some(part) = self.menu_top.parts.get_mut(index) {
             part.place.to = to;

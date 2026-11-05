@@ -96,7 +96,7 @@ fn shared_font(system: &mut System) -> Option<(u32, u32)> {
         }
     };
     let generated = data.is_empty();
-    let length = if generated { crate::services::shared_font::build(0).len() } else { data.len() };
+    let length = if generated { crate::services::shared_font::build(0, &system.prompts).len() } else { data.len() };
 
     let size = zakuro_common::bits::align_up(length as u32, 0x1000);
     let block = system
@@ -106,7 +106,7 @@ fn shared_font(system: &mut System) -> Option<(u32, u32)> {
     // the font sits where the linear mapping puts its memory, among the
     // system's, a title's own linear heap can reach far and never there
     let address = system.kernel.linear_base + (block.addr - zakuro_common::memory_map::FCRAM_PADDR);
-    let data = if generated { crate::services::shared_font::build(address) } else { data };
+    let data = if generated { crate::services::shared_font::build(address, &system.prompts) } else { data };
 
     let object = system
         .kernel
@@ -138,6 +138,18 @@ fn shared_font(system: &mut System) -> Option<(u32, u32)> {
     log::info!("mapped the shared font at 0x{address:08X} ({} KiB)", data.len() / 1024);
     system.services.apt.shared_font = Some((address, handle));
     Some((address, handle))
+}
+
+/// draws the button symbols of a mapped stand-in font again, for the
+/// prompts the frontend just gave.
+pub fn redraw_shared_font(system: &mut System) {
+    let Some((_, handle)) = system.services.apt.shared_font else { return };
+    let Some(object) = system.kernel.resolve(handle) else { return };
+    let Some(crate::kernel::object::KObject::SharedMemory(block)) = system.kernel.objects.get(object) else { return };
+    let (base, paddr) = (block.mapped_at.unwrap_or(block.address), block.paddr);
+    if !crate::services::shared_font::redraw(&mut system.memory, base, paddr, &system.prompts) {
+        log::debug!("the shared font is a dump or laid out otherwise, its button symbols stay");
+    }
 }
 
 pub fn handle(system: &mut System, buffer: &CommandBuffer, header: Header) -> bool {

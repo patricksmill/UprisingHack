@@ -6,14 +6,13 @@ use std::sync::mpsc::{channel, Receiver};
 
 use egui::{Align, Color32, Layout, RichText, Vec2};
 use winit::keyboard::KeyCode;
+use zakuro_core::aim_mouse::{CauldronRules, NavigationDirection, PauseRules, PlacementRule, RuleScale};
 use zakuro_core::services::keyboard::Request;
 
 use crate::library::{Library, ICON_SIZE};
 use crate::recompile::{Job, Stage};
 use crate::gamepad::button_name;
-use crate::settings::{
-    CameraSource, Filter, HighRefreshCap, Keys, Language, PadButtons, Renderer, Screens, Settings, Stereo3d, TopShape,
-};
+use crate::settings::{CameraSource, Filter, Keys, Language, PadButtons, Renderer, Screens, Settings, Stereo3d, TopShape};
 
 /// what the user asked for.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +61,20 @@ pub enum Action {
     ReloadCheats,
     /// show the cheats folder.
     CheatsFolder,
+    /// the pause layout rules as the editor left them.
+    PauseRules(PauseRules),
+    /// the Fiend's Cauldron's rules, edited.
+    CauldronRules(CauldronRules),
+    /// a Scripted Menu layer moved by the editor.
+    EditorLayer(usize, [f32; 4]),
+    /// a Scripted Menu layer hidden or shown again by the editor.
+    EditorLayerVisible(usize, bool),
+    /// an explicit navigation link set for a Control, or removed for the
+    /// game's native behavior.
+    EditorNavigationLink(usize, NavigationDirection, Option<usize>),
+    /// keep the dev editor's Scripted Menu moves, hidden layers and
+    /// navigation links.
+    SaveLayout,
 }
 
 /// what the frame rate over the game reads: the game's own frames a second,
@@ -95,6 +108,17 @@ impl FpsReadout {
 pub struct Menus {
     /// the menu over a running game.
     pub menu_open: bool,
+    /// the developer layout editor over the game.
+    pub editor_open: bool,
+    /// the selected Scripted Menu layer and whether its corner is dragged.
+    pub editor_layer: Option<usize>,
+    /// every selected layer, the primary one included; Ctrl or Shift adds.
+    editor_group: Vec<usize>,
+    editor_resizing: bool,
+    /// the boxes the dragged layers started at, and the layer names the
+    /// selection was picked from, so another screen forgets both.
+    editor_drag: Vec<(usize, [f32; 4])>,
+    editor_seen: Vec<String>,
     /// the cheats window, and the cheat being written in it.
     pub cheats_open: bool,
     cheat_name: String,
@@ -395,6 +419,16 @@ impl Menus {
         fast: bool,
         jobs: &[Job],
         saved: Option<&str>,
+        pause_rules: Option<PauseRules>,
+        cauldron_rules: Option<CauldronRules>,
+        editor_layers: Vec<(String, [f32; 4])>,
+        editor_visibility: Vec<bool>,
+        navigation_controls: Vec<(usize, [Option<usize>; 4])>,
+        navigation_directions: [bool; 4],
+        editor_widen: f32,
+        canvas: Option<[f32; 4]>,
+        editor_open: bool,
+        editor_enabled: bool,
     ) -> Vec<Action> {
         let mut actions = Vec::new();
         let ctx = ui.ctx().clone();
@@ -431,77 +465,367 @@ impl Menus {
                 });
             });
         }
-        if !self.menu_open {
-            return actions;
-        }
-        egui::Window::new("Paused")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(&ctx, |ui| {
-                ui.label(RichText::new(name).strong());
-                ui.label(RichText::new(if recompiled { "running its recompiled code" } else { "interpreted" }).weak());
-                ui.add_space(6.0);
-                let wide = |ui: &mut egui::Ui, text: &str| ui.add_sized([200.0, 28.0], egui::Button::new(text)).clicked();
-                if wide(ui, "Resume") {
-                    actions.push(Action::Resume);
-                }
-                if wide(ui, "Reset") {
-                    actions.push(Action::Reset);
-                }
-                if wide(ui, "Fullscreen") {
-                    actions.push(Action::Fullscreen);
-                }
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut self.slot).range(1..=9).prefix("Slot "));
-                    ui.label(RichText::new(saved.unwrap_or("empty")).weak());
-                });
-                ui.horizontal(|ui| {
-                    if ui.add_sized([98.0, 28.0], egui::Button::new("Save state")).on_hover_text("F5 saves to this slot while playing.").clicked() {
-                        actions.push(Action::SaveState);
+        if self.menu_open {
+            egui::Window::new("Paused")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(&ctx, |ui| {
+                    ui.label(RichText::new(name).strong());
+                    ui.label(RichText::new(if recompiled { "running its recompiled code" } else { "interpreted" }).weak());
+                    ui.add_space(6.0);
+                    let wide = |ui: &mut egui::Ui, text: &str| ui.add_sized([200.0, 28.0], egui::Button::new(text)).clicked();
+                    if wide(ui, "Resume") {
+                        actions.push(Action::Resume);
+                    }
+                    if wide(ui, "Reset") {
+                        actions.push(Action::Reset);
+                    }
+                    if wide(ui, "Fullscreen") {
+                        actions.push(Action::Fullscreen);
+                    }
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut self.slot).range(1..=9).prefix("Slot "));
+                        ui.label(RichText::new(saved.unwrap_or("empty")).weak());
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.add_sized([98.0, 28.0], egui::Button::new("Save state")).on_hover_text("F5 saves to this slot while playing.").clicked() {
+                            actions.push(Action::SaveState);
+                        }
+                        if ui
+                            .add_enabled(saved.is_some(), egui::Button::new("Load state").min_size(Vec2::new(98.0, 28.0)))
+                            .on_hover_text("F8 loads this slot while playing.")
+                            .clicked()
+                        {
+                            actions.push(Action::LoadState);
+                        }
+                    });
+                    ui.add_space(4.0);
+                    if editor_enabled && wide(ui, "Layout editor") {
+                        self.editor_open = !self.editor_open;
+                    }
+                    if wide(ui, "Settings") {
+                        self.settings_open = true;
+                    }
+                    if wide(ui, "Cheats") {
+                        self.cheats_open = true;
+                    }
+                    if wide(ui, "Multiplayer") {
+                        self.multiplayer_open = true;
                     }
                     if ui
-                        .add_enabled(saved.is_some(), egui::Button::new("Load state").min_size(Vec2::new(98.0, 28.0)))
-                        .on_hover_text("F8 loads this slot while playing.")
+                        .add_sized([200.0, 28.0], egui::Button::new("Show the camera a picture"))
+                        .on_hover_text("Pick a picture for the console's cameras to see, a QR code's say, in place of the computer's camera.")
                         .clicked()
                     {
-                        actions.push(Action::LoadState);
+                        actions.push(Action::ChooseCameraPicture);
+                    }
+                    if wide(ui, "Copy info for a report") {
+                        actions.push(Action::CopyReport);
+                    }
+                    if wide(ui, "Back to the library") {
+                        actions.push(Action::Library);
+                    }
+                    if wide(ui, "Quit") {
+                        actions.push(Action::Quit);
+                    }
+                    for job in jobs {
+                        ui.separator();
+                        ui.label(&job.name);
+                        progress(ui, job);
                     }
                 });
-                ui.add_space(4.0);
-                if wide(ui, "Settings") {
-                    self.settings_open = true;
+        }
+        self.layout_editor(&ctx, pause_rules, cauldron_rules, editor_layers, editor_visibility, navigation_controls, navigation_directions, editor_widen, canvas, editor_open, &mut actions);
+        actions
+    }
+
+    /// the dev-only layout editor: the edited Screen's layers on a canvas,
+    /// and the Pause or Fiend's Cauldron rules, live, with reset and export.
+    fn layout_editor(
+        &mut self,
+        ctx: &egui::Context,
+        rules: Option<PauseRules>,
+        cauldron: Option<CauldronRules>,
+        layers: Vec<(String, [f32; 4])>,
+        visibility: Vec<bool>,
+        navigation_controls: Vec<(usize, [Option<usize>; 4])>,
+        navigation_directions: [bool; 4],
+        widen: f32,
+        canvas: Option<[f32; 4]>,
+        open: bool,
+        actions: &mut Vec<Action>,
+    ) -> NavigationEditorResponse {
+        if !open {
+            self.editor_resizing = false;
+            self.editor_drag.clear();
+            return NavigationEditorResponse::default();
+        }
+        // an index and a box belong to the layer list they were picked from
+        if self.editor_seen.len() != layers.len() || self.editor_seen.iter().zip(&layers).any(|(seen, (name, _))| seen != name) {
+            self.editor_seen = layers.iter().map(|(name, _)| name.clone()).collect();
+            self.editor_layer = None;
+            self.editor_group.clear();
+            self.editor_resizing = false;
+            self.editor_drag.clear();
+        }
+        if self.editor_layer.is_some_and(|index| index >= layers.len()) {
+            self.editor_layer = None;
+            self.editor_group.clear();
+            self.editor_resizing = false;
+            self.editor_drag.clear();
+        }
+        // the list picks one layer; the group follows it unless it is a member
+        if let Some(index) = self.editor_layer.filter(|index| !self.editor_group.contains(index)) {
+            self.editor_group = vec![index];
+        }
+        if self.editor_layer.is_none() { self.editor_group.clear(); }
+        if let Some([x, y, width, height]) = canvas.filter(|_| !layers.is_empty() && widen > 0.0) {
+            let pixels = ctx.pixels_per_point();
+            let area = egui::Rect::from_min_size(egui::pos2(x / pixels, y / pixels), egui::vec2(width / pixels, height / pixels));
+            let scale_x = area.width() / (400.0 * widen);
+            let scale_y = area.height() / 240.0;
+            let mut selected = self.editor_layer;
+            let mut group = std::mem::take(&mut self.editor_group);
+            let mut resizing = self.editor_resizing;
+            let mut drag = std::mem::take(&mut self.editor_drag);
+            let mut moved = Vec::new();
+            let adding = ctx.input(|input| input.modifiers.command || input.modifiers.shift);
+            // below the windows, so their lists and buttons keep the pointer
+            egui::Area::new(egui::Id::new("layout canvas")).order(egui::Order::Background).fixed_pos(area.min).show(ctx, |ui| {
+                let (canvas, response) = ui.allocate_exact_size(area.size(), egui::Sense::click_and_drag());
+                let painter = ui.painter();
+                let rect_of = |to: [f32; 4]| egui::Rect::from_min_size(
+                    canvas.min + egui::vec2(to[0] * scale_x, to[1] * scale_y),
+                    egui::vec2(to[2] * scale_x, to[3] * scale_y),
+                );
+                let handle_of = |to: [f32; 4]| egui::Rect::from_min_size(rect_of(to).max - egui::vec2(9.0, 9.0), egui::vec2(10.0, 10.0));
+                let shown = |index: usize| visibility.get(index).copied().unwrap_or(true);
+                let under = |point: egui::Pos2| layers.iter().enumerate().rev()
+                    .find(|(index, (_, to))| shown(*index) && rect_of(*to).contains(point))
+                    .map(|(index, _)| index);
+                for (index, (name, to)) in layers.iter().enumerate() {
+                    let rect = rect_of(*to);
+                    let active = shown(index);
+                    let picked = group.contains(&index);
+                    let colour = if !active {
+                        egui::Color32::from_gray(110)
+                    } else if selected == Some(index) {
+                        egui::Color32::from_rgb(0, 220, 255)
+                    } else if picked {
+                        egui::Color32::from_rgb(255, 200, 0)
+                    } else {
+                        egui::Color32::from_rgb(160, 200, 220)
+                    };
+                    painter.rect_stroke(rect, 0.0, egui::Stroke::new(if active && picked { 2.0 } else { 1.0 }, colour), egui::StrokeKind::Inside);
+                    painter.text(rect.min + egui::vec2(2.0, 2.0), egui::Align2::LEFT_TOP, name, egui::FontId::monospace(10.0), colour);
+                    // a hidden layer has no handle: it cannot be dragged until shown
+                    if active {
+                        painter.rect_filled(egui::Rect::from_min_size(rect.max - egui::vec2(7.0, 7.0), egui::vec2(7.0, 7.0)), 0.0, colour);
+                    }
                 }
-                if wide(ui, "Cheats") {
-                    self.cheats_open = true;
+                if response.clicked() {
+                    if let Some(point) = response.interact_pointer_pos() {
+                        match under(point) {
+                            Some(index) if adding && group.contains(&index) => {
+                                group.retain(|&member| member != index);
+                                selected = group.last().copied();
+                            }
+                            Some(index) if adding => {
+                                group.push(index);
+                                selected = Some(index);
+                            }
+                            hit => {
+                                selected = hit;
+                                group = hit.into_iter().collect();
+                            }
+                        }
+                        if selected.is_none() { resizing = false; }
+                    }
                 }
-                if wide(ui, "Multiplayer") {
-                    self.multiplayer_open = true;
+                if response.drag_started() {
+                    // where the button went down, not where the pointer is now:
+                    // a corner drag leaves the layer before egui calls it a drag
+                    let point = ctx.input(|input| input.pointer.press_origin());
+                    let hit = point.and_then(under);
+                    // dragging a member moves the whole group
+                    match hit {
+                        Some(index) if group.contains(&index) => {}
+                        Some(index) if adding => group.push(index),
+                        _ => group = hit.into_iter().collect(),
+                    }
+                    selected = hit;
+                    resizing = match (hit, point) {
+                        (Some(index), Some(point)) => handle_of(layers[index].1).contains(point),
+                        _ => false,
+                    };
+                    drag = group.iter().filter(|&&index| shown(index)).map(|&index| (index, layers[index].1)).collect();
                 }
-                if ui
-                    .add_sized([200.0, 28.0], egui::Button::new("Show the camera a picture"))
-                    .on_hover_text("Pick a picture for the console's cameras to see, a QR code's say, in place of the computer's camera.")
-                    .clicked()
-                {
-                    actions.push(Action::ChooseCameraPicture);
+                if response.dragged() && selected.is_some() {
+                    // the whole distance from the press, so a still pointer
+                    // asks for the same boxes again and released moves stop
+                    if let Some(by) = response.total_drag_delta() {
+                        moved = dragged(&drag, [by.x / scale_x, by.y / scale_y], resizing);
+                    }
                 }
-                if wide(ui, "Copy info for a report") {
-                    actions.push(Action::CopyReport);
-                }
-                if wide(ui, "Back to the library") {
-                    actions.push(Action::Library);
-                }
-                if wide(ui, "Quit") {
-                    actions.push(Action::Quit);
-                }
-                for job in jobs {
-                    ui.separator();
-                    ui.label(&job.name);
-                    progress(ui, job);
+                if response.drag_stopped() {
+                    resizing = false;
+                    drag.clear();
                 }
             });
-        actions
+            self.editor_layer = selected;
+            self.editor_group = group;
+            self.editor_resizing = resizing;
+            self.editor_drag = drag;
+            actions.extend(moved.into_iter().map(|(index, to)| Action::EditorLayer(index, to)));
+        }
+        if let Some(cauldron) = cauldron {
+            self.cauldron_editor(ctx, cauldron, &layers, &visibility, actions);
+            return NavigationEditorResponse::default();
+        }
+        let Some(mut rules) = rules else {
+            let mut window_open = true;
+            let mut save = false;
+            let mut export = false;
+            let mut navigation = NavigationEditorResponse::default();
+            #[cfg(test)]
+            let mut visible_boxes = Vec::new();
+            let room = (ctx.content_rect().height() - 150.0).clamp(120.0, 420.0);
+            egui::Window::new("Menu editor").id(egui::Id::new("menu_editor")).open(&mut window_open).default_width(380.0).show(ctx, |ui| {
+                ui.label(if layers.is_empty() { "Open a Scripted Menu or the Pause menu to edit its layout." } else { "Select a layer on the canvas to move or resize it." });
+                egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
+                    #[cfg(test)]
+                    {
+                        visible_boxes = layer_list(ui, &layers, &visibility, &mut self.editor_layer, &mut self.editor_group, actions);
+                    }
+                    #[cfg(not(test))]
+                    {
+                        layer_list(ui, &layers, &visibility, &mut self.editor_layer, &mut self.editor_group, actions);
+                    }
+                    navigation = navigation_editor(ui, &layers, &navigation_controls, navigation_directions, self.editor_layer, actions);
+                });
+                if !layers.is_empty() {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Save layout").on_hover_text("Write the moved and hidden layers and navigation links to menu-layout.toml.").clicked() {
+                            save = true;
+                        }
+                        if ui.button("Export layers").clicked() {
+                            export = true;
+                        }
+                    });
+                }
+            });
+            if !window_open { self.editor_open = false; }
+            #[cfg(test)]
+            {
+                navigation.visibility = visible_boxes;
+            }
+            if export {
+                self.message = Some(match export_layers(&layers, &visibility) {
+                    Ok(()) => "Wrote editor-layers-export.txt".to_owned(),
+                    Err(error) => format!("Could not write editor-layers-export.txt: {error}"),
+                });
+            }
+            if save { actions.push(Action::SaveLayout); }
+            return navigation;
+        };
+        let mut window_open = true;
+        let mut changed = false;
+        let mut save = false;
+        let mut message = None;
+        let mut navigation = NavigationEditorResponse::default();
+        #[cfg(test)]
+        let mut visible_boxes = Vec::new();
+        let room = (ctx.content_rect().height() - 170.0).clamp(120.0, 420.0);
+        egui::Window::new("Menu editor — Pause").id(egui::Id::new("menu_editor_pause")).open(&mut window_open).default_width(420.0).show(ctx, |ui| {
+            ui.label(RichText::new("Edits apply live. F2 closes and reopens this window.").weak());
+            egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
+                changed |= rule_editor(ui, "span", &mut rules.span);
+                changed |= rule_editor(ui, "center", &mut rules.center);
+                changed |= rule_editor(ui, "left", &mut rules.left);
+                changed |= rule_editor(ui, "right", &mut rules.right);
+                changed |= rule_editor(ui, "corner", &mut rules.corner);
+                #[cfg(test)]
+                {
+                    visible_boxes = layer_list(ui, &layers, &visibility, &mut self.editor_layer, &mut self.editor_group, actions);
+                }
+                #[cfg(not(test))]
+                {
+                    layer_list(ui, &layers, &visibility, &mut self.editor_layer, &mut self.editor_group, actions);
+                }
+                navigation = navigation_editor(ui, &layers, &navigation_controls, navigation_directions, self.editor_layer, actions);
+                if !layers.is_empty() && ui.button("Export layers").clicked() {
+                    message = Some(match export_layers(&layers, &visibility) {
+                        Ok(()) => "Wrote editor-layers-export.txt".to_owned(),
+                        Err(error) => format!("Could not write editor-layers-export.txt: {error}"),
+                    });
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Save layout").on_hover_text("Write the pause rules, the moved and hidden layers and navigation links to menu-layout.toml.").clicked() {
+                    save = true;
+                }
+                if ui.button("Reset").clicked() {
+                    rules = PauseRules::default();
+                    changed = true;
+                }
+                if ui.button("Export Rust + change request").clicked() {
+                    let text = format!("// Pause layout rules\n{}\n// Change request\n{}\n", rules.rust_fragment(), rules.change_request());
+                    message = Some(match std::fs::write("menu-layout-export.txt", text) {
+                        Ok(()) => "Wrote menu-layout-export.txt".to_owned(),
+                        Err(error) => format!("Could not write menu-layout-export.txt: {error}"),
+                    });
+                }
+            });
+        });
+        if !window_open { self.editor_open = false; }
+        #[cfg(test)]
+        {
+            navigation.visibility = visible_boxes;
+        }
+        if changed { actions.push(Action::PauseRules(rules)); }
+        if save { actions.push(Action::SaveLayout); }
+        if let Some(message) = message { self.message = Some(message); }
+        navigation
+    }
+
+    /// the Fiend's Cauldron's window: its seven parts listed with Visible
+    /// checkboxes, moved and resized on the canvas, then saved, reset or
+    /// exported as Rust and a change request.
+    fn cauldron_editor(&mut self, ctx: &egui::Context, rules: CauldronRules, layers: &[(String, [f32; 4])], visibility: &[bool], actions: &mut Vec<Action>) {
+        let mut window_open = true;
+        let (mut save, mut reset) = (false, false);
+        let mut message = None;
+        let room = (ctx.content_rect().height() - 170.0).clamp(120.0, 420.0);
+        egui::Window::new("Menu editor — Fiend's Cauldron").id(egui::Id::new("menu_editor_cauldron")).open(&mut window_open).default_width(380.0).show(ctx, |ui| {
+            ui.label(RichText::new("Drag a part on the canvas to move it; its corner handle resizes it. Edits apply live.").weak());
+            egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
+                layer_list(ui, layers, visibility, &mut self.editor_layer, &mut self.editor_group, actions);
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Save layout").on_hover_text("Write the Fiend's Cauldron and Pause rules, the moved and hidden layers and navigation links to menu-layout.toml.").clicked() {
+                    save = true;
+                }
+                if ui.button("Reset").clicked() {
+                    reset = true;
+                }
+                if ui.button("Export Rust + change request").clicked() {
+                    let text = format!("// Fiend's Cauldron layout rules\n{}\n// Change request\n{}\n", rules.rust_fragment(), rules.change_request());
+                    message = Some(match std::fs::write("menu-layout-export.txt", text) {
+                        Ok(()) => "Wrote menu-layout-export.txt".to_owned(),
+                        Err(error) => format!("Could not write menu-layout-export.txt: {error}"),
+                    });
+                }
+            });
+        });
+        if !window_open { self.editor_open = false; }
+        if reset { actions.push(Action::CauldronRules(CauldronRules::default())); }
+        if save { actions.push(Action::SaveLayout); }
+        if let Some(message) = message { self.message = Some(message); }
     }
 
     /// the cheats window over a game, when open, its cheats by name, whether
@@ -675,7 +999,7 @@ impl Menus {
     }
 
     /// the settings window, when open.
-    pub fn settings(&mut self, ctx: &egui::Context, settings: &mut Settings, high_refresh_blocked: Option<&'static str>) -> Vec<Action> {
+    pub fn settings(&mut self, ctx: &egui::Context, settings: &mut Settings) -> Vec<Action> {
         let mut actions = Vec::new();
         let before = settings.clone();
         let mut open = self.settings_open;
@@ -719,26 +1043,6 @@ impl Menus {
                 .on_hover_text("How many times the console's resolution the 3D is drawn at. Past what the window shows, the extra pixels smooth the edges, at a cost to the GPU that grows fast.");
                 ui.add_enabled(settings.hardware_rasterizer, egui::Checkbox::new(&mut settings.texture_packs, "Texture packs"))
                     .on_hover_text("Draw a game's texture pack, made for Citra or Azahar, put in the textures folder of the game's mods folder.");
-                let (can_high_refresh, high_refresh_text) = high_refresh_controls(high_refresh_blocked);
-                let response = ui.add_enabled(
-                    can_high_refresh,
-                    egui::Checkbox::new(&mut settings.high_refresh_mode, "High Refresh Mode"),
-                );
-                if can_high_refresh {
-                    response.on_hover_text(high_refresh_text);
-                } else {
-                    response.on_disabled_hover_text(high_refresh_text);
-                    ui.label(RichText::new(high_refresh_text).weak());
-                }
-                egui::ComboBox::from_label("High Refresh cap")
-                    .selected_text(settings.high_refresh_cap.name())
-                    .show_ui(ui, |ui| {
-                        for cap in HighRefreshCap::ALL {
-                            ui.selectable_value(&mut settings.high_refresh_cap, cap, cap.name());
-                        }
-                    })
-                    .response
-                    .on_hover_text("The most pictures a second High Refresh Mode shows. Off follows the display's refresh rate; the others cap it, never below 60.");
                 ui.add(egui::Slider::new(&mut settings.scale, 1..=6).text("Window scale"));
                 egui::ComboBox::from_label("Screens").selected_text(settings.layout.name()).show_ui(ui, |ui| {
                     for layout in Screens::ALL {
@@ -1002,19 +1306,6 @@ fn progress(ui: &mut egui::Ui, job: &Job) {
     ui.add(egui::ProgressBar::new(stage.fraction()).desired_width(220.0).text(format!("{text}, {minutes}:{seconds:02}")));
 }
 
-/// whether the High Refresh Mode toggle can be turned on, and what to say
-/// about it: why not when it can't, what it does when it can.
-fn high_refresh_controls(blocked: Option<&'static str>) -> (bool, &'static str) {
-    match blocked {
-        Some(reason) => (false, reason),
-        None => (
-            true,
-            "A new picture on every refresh of the display, drawn in between the last two the game made, so motion looks as \
-             smooth as the display. The game still updates 60 times a second, and the screens show a 60th of a second late.",
-        ),
-    }
-}
-
 /// a key as a person would call it.
 pub fn key_name(key: KeyCode) -> String {
     let name = format!("{key:?}");
@@ -1065,24 +1356,12 @@ mod tests {
         for _ in 0..3 {
             let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
             ctx.run_ui(input, |ui| {
-                menus.settings(ui.ctx(), &mut settings, None);
+                menus.settings(ui.ctx(), &mut settings);
             })
             .drop_without_applying_deltas();
         }
         let window = ctx.memory(|memory| memory.area_rect(egui::Id::new("settings"))).unwrap();
         assert!(screen.contains_rect(window), "{window:?} in {screen:?}");
-    }
-
-    /// the High Refresh Mode toggle is on offer only when it can run, and
-    /// says why not when it can't.
-    #[test]
-    fn high_refresh_toggle_is_greyed_out_with_its_reason() {
-        let (enabled, text) = high_refresh_controls(None);
-        assert!(enabled);
-        assert!(text.contains("every refresh"), "{text}");
-        let (enabled, text) = high_refresh_controls(Some("High Refresh Mode needs the Vulkan presenter."));
-        assert!(!enabled);
-        assert_eq!(text, "High Refresh Mode needs the Vulkan presenter.");
     }
 
     #[test]
@@ -1092,4 +1371,757 @@ mod tests {
         assert_eq!(key_name(KeyCode::Digit1), "1");
         assert_eq!(key_name(KeyCode::Enter), "Enter");
     }
+
+    /// the layout editor driven through the egui frames and pointer events
+    /// the app feeds it, with each frame's moves applied the way `act` does.
+    struct Editor {
+        ctx: egui::Context,
+        menus: Menus,
+        layers: Vec<(String, [f32; 4])>,
+        visibility: Vec<bool>,
+        canvas: [f32; 4],
+        screen: egui::Rect,
+        rules: Option<PauseRules>,
+        cauldron: Option<CauldronRules>,
+        controls: Vec<(usize, [Option<usize>; 4])>,
+        drawn: NavigationEditorResponse,
+        time: f64,
+        /// the keys held, as Ctrl adding to the selection.
+        modifiers: egui::Modifiers,
+    }
+
+    fn layer(name: &str, to: [f32; 4]) -> (String, [f32; 4]) {
+        (name.to_owned(), to)
+    }
+
+    fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default() }
+    }
+
+    /// the move an editor frame asked for, if it asked for one.
+    fn editor_move(actions: &[Action]) -> Option<(usize, [f32; 4])> {
+        actions.iter().find_map(|action| match action {
+            Action::EditorLayer(index, to) => Some((*index, *to)),
+            _ => None,
+        })
+    }
+
+    impl Editor {
+        fn new(layers: Vec<(String, [f32; 4])>, canvas: [f32; 4]) -> Self {
+            Self::on(layers, canvas, egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1000.0, 600.0)))
+        }
+
+        fn on(layers: Vec<(String, [f32; 4])>, canvas: [f32; 4], screen: egui::Rect) -> Self {
+            let visibility = vec![true; layers.len()];
+            let mut editor = Editor {
+                ctx: egui::Context::default(),
+                menus: Menus { editor_open: true, ..Menus::default() },
+                layers,
+                visibility,
+                canvas,
+                screen,
+                rules: None,
+                cauldron: None,
+                controls: Vec::new(),
+                drawn: NavigationEditorResponse::default(),
+                time: 0.0,
+                modifiers: egui::Modifiers::default(),
+            };
+            // egui hit-tests against the frame before the pointer arrives
+            editor.frame(Vec::new());
+            editor.frame(Vec::new());
+            editor
+        }
+
+        /// the canvas point that a layer box coordinate lands on.
+        fn point(&self, x: f32, y: f32) -> egui::Pos2 {
+            egui::pos2(self.canvas[0] + x, self.canvas[1] + y)
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<Action> {
+            let events = std::iter::once(egui::Event::ModifiersChanged(self.modifiers)).chain(events).collect();
+            let input = egui::RawInput { screen_rect: Some(self.screen), time: Some(self.time), events, ..Default::default() };
+            self.time += 1.0 / 60.0;
+            let mut actions = Vec::new();
+            let menus = &mut self.menus;
+            let layers = self.layers.clone();
+            let visibility = self.visibility.clone();
+            let canvas = self.canvas;
+            let rules = self.rules;
+            let cauldron = self.cauldron;
+            let controls = self.controls.clone();
+            let mut drawn = NavigationEditorResponse::default();
+            self.ctx
+                .run_ui(input, |ui| {
+                    drawn = menus.layout_editor(ui.ctx(), rules, cauldron, layers.clone(), visibility.clone(), controls.clone(), [true; 4], 1.0, Some(canvas), true, &mut actions);
+                })
+                .drop_without_applying_deltas();
+            self.drawn = drawn;
+            for action in &actions {
+                match action {
+                    Action::EditorLayer(index, to) => {
+                        if let Some(layer) = self.layers.get_mut(*index) {
+                            layer.1 = *to;
+                        }
+                    }
+                    Action::EditorLayerVisible(index, visible) => {
+                        if let Some(shown) = self.visibility.get_mut(*index) {
+                            *shown = *visible;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            actions
+        }
+
+        fn click(&mut self, pos: egui::Pos2) -> Vec<Action> {
+            let mut actions = self.frame(vec![egui::Event::PointerMoved(pos)]);
+            actions.extend(self.frame(vec![egui::Event::PointerMoved(pos), pointer_button(pos, true)]));
+            actions.extend(self.frame(vec![pointer_button(pos, false)]));
+            actions
+        }
+
+        fn press(&mut self, pos: egui::Pos2) {
+            self.frame(vec![egui::Event::PointerMoved(pos)]);
+            self.frame(vec![egui::Event::PointerMoved(pos), pointer_button(pos, true)]);
+        }
+
+        /// open a direction's dropdown, as a click on its button does.
+        fn click_combo(&mut self, slot: usize) -> Vec<Action> {
+            self.frame(Vec::new());
+            let rect = self.drawn.directions.get(slot).expect("the direction's combo box").1.rect;
+            let actions = self.click(rect.center());
+            if self.drawn.options.is_empty() {
+                self.frame(Vec::new());
+            }
+            assert!(!self.drawn.options.is_empty(), "the combo box's menu did not open");
+            actions
+        }
+
+        /// pick an option from the dropdown open in the last frame.
+        fn click_option(&mut self, value: Option<usize>) -> Vec<Action> {
+            self.frame(Vec::new());
+            let rect = self
+                .drawn
+                .options
+                .iter()
+                .find(|(option, _)| *option == value)
+                .expect("the option in the open menu")
+                .1
+                .rect;
+            self.click(rect.center())
+        }
+
+        /// click a layer's Visible checkbox, as a player would.
+        fn click_visibility(&mut self, index: usize) -> Vec<Action> {
+            self.frame(Vec::new());
+            let rect = self.drawn.visibility.get(index).expect("the layer's Visible checkbox").rect;
+            self.click(rect.center())
+        }
+
+        /// apply the link actions the frame asked for, as `App::act` does.
+        fn apply_links(&mut self, actions: &[Action]) {
+            for action in actions {
+                if let Action::EditorNavigationLink(from, direction, to) = action {
+                    let slot = match *direction {
+                        NavigationDirection::Up => 0,
+                        NavigationDirection::Down => 1,
+                        NavigationDirection::Left => 2,
+                        NavigationDirection::Right => 3,
+                    };
+                    if let Some(entry) = self.controls.iter_mut().find(|(index, _)| *index == *from) {
+                        entry.1[slot] = *to;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cauldron_canvas_drag_updates_the_live_rule() {
+        use zakuro_core::aim_mouse::{AimMouse, CauldronRole, Screen};
+        let mut mouse = AimMouse::default();
+        mouse.cauldron_on_top = true;
+        mouse.show_screen(Screen::FiendsCauldron, 10);
+        let mut editor = Editor::on(mouse.editor_layers(), [1000.0, 0.0, 400.0, 240.0], egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1600.0, 600.0)));
+        editor.cauldron = Some(mouse.cauldron_rules());
+        editor.frame(Vec::new());
+        editor.frame(Vec::new());
+        assert!(editor.ctx.memory(|memory| memory.area_rect(egui::Id::new("menu_editor_cauldron"))).is_some());
+        let before = editor.layers[0].1;
+        let start = editor.point(before[0] + 20.0, before[1] + 20.0);
+        editor.press(start);
+        let target = start + egui::vec2(25.0, 10.0);
+        let actions = editor.frame(vec![egui::Event::PointerMoved(target)]);
+        let (index, to) = editor_move(&actions).expect("dragging the picture moves it");
+        assert_eq!(index, 0);
+        mouse.set_editor_layer(index, to);
+        let after = mouse.editor_layers()[index].1;
+        assert!((after[0] - before[0] - 25.0).abs() < 0.001);
+        assert!((after[1] - before[1] - 10.0).abs() < 0.001);
+        mouse.set_editor_layer_visible(4, false);
+        assert!(!mouse.cauldron_rules().rule(CauldronRole::Back).visible);
+        mouse.show_screen(Screen::Pause, 11);
+        assert!(mouse.editor_layers().is_empty(), "Pause must not expose stale Cauldron layers");
+        println!("Cauldron window opened; live picture moved by (25, 10); Back hidden; Pause has no stale layers");
+    }
+
+    /// a press picks the layer under it, moving and resizing it by the
+    /// distance from the press, and letting go ends the drag.
+    #[test]
+    fn dragging_moves_resizes_and_stops_for_the_layer_that_was_pressed() {
+        let mut editor = Editor::new(
+            vec![layer("left #0", [10.0, 10.0, 50.0, 20.0]), layer("right #1", [200.0, 10.0, 50.0, 20.0])],
+            [500.0, 0.0, 400.0, 240.0],
+        );
+        let right = editor.point(210.0, 20.0);
+        editor.click(right);
+        println!("after clicking the right layer: selected {:?}", editor.menus.editor_layer);
+        assert_eq!(editor.menus.editor_layer, Some(1));
+        let start = editor.point(20.0, 20.0);
+        editor.press(start);
+        let target = editor.point(40.0, 20.0);
+        let actions = editor.frame(vec![egui::Event::PointerMoved(target)]);
+        println!("dragging the left layer {start:?} to {target:?} gave {actions:?}");
+        assert_eq!(editor_move(&actions), Some((0, [30.0, 10.0, 50.0, 20.0])), "{actions:?}");
+        assert_eq!(editor.menus.editor_layer, Some(0));
+        // a still pointer asks for the same box, not the drag again
+        let actions = editor.frame(Vec::new());
+        println!("the drag held still gave {actions:?}");
+        assert_eq!(editor_move(&actions), Some((0, [30.0, 10.0, 50.0, 20.0])), "a still pointer moved the layer: {actions:?}");
+        // letting go ends it: moving the pointer afterwards moves nothing
+        editor.frame(vec![pointer_button(target, false)]);
+        let away = editor.point(120.0, 20.0);
+        let actions = editor.frame(vec![egui::Event::PointerMoved(away)]);
+        println!("after letting go and moving to {away:?}: {actions:?}");
+        assert_eq!(editor_move(&actions), None, "the drag outlived the release: {actions:?}");
+        // the bottom right corner resizes the layer instead of moving it
+        let handle = editor.point(75.0, 25.0);
+        editor.press(handle);
+        let corner = editor.point(85.0, 35.0);
+        let actions = editor.frame(vec![egui::Event::PointerMoved(corner)]);
+        println!("resizing from {handle:?} to {corner:?} gave {actions:?}");
+        assert_eq!(editor_move(&actions), Some((0, [30.0, 10.0, 60.0, 30.0])), "{actions:?}");
+    }
+
+    /// Ctrl adds a layer to the selection; dragging any member moves them
+    /// all, and a member's corner scales the group about its top left.
+    #[test]
+    fn a_ctrl_selection_moves_and_scales_together() {
+        let mut editor = Editor::new(
+            vec![layer("left #0", [10.0, 10.0, 50.0, 20.0]), layer("right #1", [100.0, 10.0, 50.0, 20.0]), layer("other #2", [10.0, 100.0, 50.0, 20.0])],
+            [500.0, 0.0, 400.0, 240.0],
+        );
+        editor.click(editor.point(20.0, 20.0));
+        editor.modifiers = egui::Modifiers::COMMAND;
+        editor.click(editor.point(110.0, 20.0));
+        editor.modifiers = egui::Modifiers::default();
+        let moves = |actions: &[Action]| {
+            let mut moves: Vec<_> = actions.iter().filter_map(|action| match action {
+                Action::EditorLayer(index, to) => Some((*index, *to)),
+                _ => None,
+            }).collect();
+            moves.sort_by_key(|(index, _)| *index);
+            moves
+        };
+        let start = editor.point(20.0, 20.0);
+        editor.press(start);
+        let actions = editor.frame(vec![egui::Event::PointerMoved(editor.point(40.0, 20.0))]);
+        assert_eq!(moves(&actions), vec![(0, [30.0, 10.0, 50.0, 20.0]), (1, [120.0, 10.0, 50.0, 20.0])], "{actions:?}");
+        editor.frame(vec![pointer_button(editor.point(40.0, 20.0), false)]);
+        // the group spans 30..170 by 10..30; its right member's corner grows it
+        let handle = editor.point(168.0, 28.0);
+        editor.press(handle);
+        let actions = editor.frame(vec![egui::Event::PointerMoved(editor.point(182.0, 48.0))]);
+        let scaled = moves(&actions);
+        assert_eq!(scaled.len(), 2, "{actions:?}");
+        for ((index, got), want) in scaled.iter().zip([[30.0, 10.0, 55.0, 40.0], [129.0, 10.0, 55.0, 40.0]]) {
+            assert!(got.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.01), "layer {index}: {got:?}, expected {want:?}");
+        }
+        // a plain click starts over with one layer
+        editor.frame(vec![pointer_button(editor.point(182.0, 48.0), false)]);
+        editor.click(editor.point(20.0, 110.0));
+        assert_eq!(editor.menus.editor_group, vec![2]);
+    }
+
+    /// the layer follows the pointer from where the button went down, past
+    /// the frames egui waits before it calls the press a drag.
+    #[test]
+    fn a_drag_moves_the_layer_from_where_the_press_began() {
+        let mut editor = Editor::new(vec![layer("layer #0", [10.0, 10.0, 50.0, 20.0])], [500.0, 0.0, 400.0, 240.0]);
+        let start = editor.point(20.0, 20.0);
+        editor.press(start);
+        // four points stays inside egui's click slop; the rest starts the drag
+        let early = editor.point(24.0, 20.0);
+        editor.frame(vec![egui::Event::PointerMoved(early)]);
+        let target = editor.point(32.0, 20.0);
+        let actions = editor.frame(vec![egui::Event::PointerMoved(target)]);
+        println!("a 12 point drag from {start:?} to {target:?} gave {actions:?}");
+        assert_eq!(editor_move(&actions).map(|(_, to)| to[0]), Some(22.0), "{actions:?}");
+    }
+
+    /// a layer index means nothing once another screen fills the list.
+    #[test]
+    fn a_screen_change_forgets_the_selected_layer_index() {
+        let mut editor = Editor::new(
+            vec![layer("left #0", [10.0, 10.0, 50.0, 20.0]), layer("right #1", [200.0, 10.0, 50.0, 20.0])],
+            [500.0, 0.0, 400.0, 240.0],
+        );
+        let right = editor.point(210.0, 20.0);
+        editor.click(right);
+        assert_eq!(editor.menus.editor_layer, Some(1));
+        // the game moves to a menu whose only layer sits where the left one was
+        editor.layers = vec![layer("other #0", [10.0, 10.0, 50.0, 20.0])];
+        editor.frame(Vec::new());
+        println!("after the screen changed: selected {:?}", editor.menus.editor_layer);
+        assert_eq!(editor.menus.editor_layer, None);
+        let start = editor.point(20.0, 20.0);
+        editor.press(start);
+        let target = editor.point(40.0, 20.0);
+        let actions = editor.frame(vec![egui::Event::PointerMoved(target)]);
+        println!("dragging the new screen's only layer {start:?} to {target:?} gave {actions:?}");
+        assert_eq!(editor_move(&actions), Some((0, [30.0, 10.0, 50.0, 20.0])), "{actions:?}");
+    }
+
+    /// F2 opens the editor over a running game, with the pause menu shut.
+    #[test]
+    fn the_editor_shows_over_a_game_without_the_pause_menu() {
+        let ctx = egui::Context::default();
+        let mut menus = Menus { editor_open: true, ..Menus::default() };
+        let layers = vec![layer("layer #0", [10.0, 10.0, 50.0, 20.0])];
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1000.0, 600.0));
+        for _ in 0..2 {
+            let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+            ctx.run_ui(input, |ui| {
+                menus.game(ui, "Game", None, false, false, &[], None, None, None, layers.clone(), vec![true], Vec::new(), [true; 4], 1.0, Some([500.0, 0.0, 400.0, 240.0]), true, true);
+            })
+            .drop_without_applying_deltas();
+        }
+        let editor = ctx.memory(|memory| memory.area_rect(egui::Id::new("menu_editor")));
+        let paused = ctx.memory(|memory| memory.area_rect(egui::Id::new("Paused")));
+        println!("editor window {editor:?}, pause window {paused:?}");
+        assert!(editor.is_some(), "the editor window is missing over a running game");
+        assert!(paused.is_none(), "the pause menu must stay closed");
+    }
+
+    /// the canvas outlines layers without taking the editor window's input.
+    #[test]
+    fn the_editor_window_is_above_the_canvas() {
+        let mut editor = Editor::new(vec![layer("layer #0", [10.0, 10.0, 50.0, 20.0])], [0.0, 0.0, 400.0, 240.0]);
+        editor.frame(Vec::new());
+        editor.frame(Vec::new());
+        let window = editor.ctx.memory(|memory| memory.area_rect(egui::Id::new("menu_editor"))).expect("editor window");
+        let point = window.min + Vec2::new(20.0, 10.0);
+        let layer = editor.ctx.layer_id_at(point).expect("a layer under the window");
+        println!("editor window {window:?}, layer at {point:?} is {layer:?}");
+        assert_eq!(layer.id, egui::Id::new("menu_editor"), "{layer:?}");
+        assert_eq!(layer.order, egui::Order::Middle, "{layer:?}");
+    }
+
+    /// a long layer list scrolls instead of running past a short screen.
+    #[test]
+    fn the_editor_fits_a_short_screen() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(800.0, 360.0));
+        let layers: Vec<_> = (0..60)
+            .map(|index| layer(&format!("part #{index}"), [4.0 * index as f32 % 400.0, 8.0 * index as f32 % 240.0, 14.0, 8.0]))
+            .collect();
+        for rules in [None, Some(PauseRules::default())] {
+            let mut editor = Editor::on(layers.clone(), [0.0, 0.0, 400.0, 240.0], screen);
+            editor.rules = rules;
+            for _ in 0..3 {
+                editor.frame(Vec::new());
+            }
+            let (title, id) = if rules.is_some() { ("Menu editor — Pause", "menu_editor_pause") } else { ("Menu editor", "menu_editor") };
+            let window = editor.ctx.memory(|memory| memory.area_rect(egui::Id::new(id))).expect(title);
+            println!("{title:?} on an 800x360 screen: {window:?}");
+            assert!(screen.contains_rect(window), "{title:?} {window:?} does not fit {screen:?}");
+        }
+    }
+
+    /// a layer list too long for the window scrolls to the layers below.
+    #[test]
+    fn the_layer_list_scrolls_in_the_editor() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(800.0, 360.0));
+        let layers: Vec<_> = (0..80).map(|index| layer(&format!("part #{index}"), [0.0, 0.0, 10.0, 10.0])).collect();
+        let mut editor = Editor::on(layers, [0.0, 0.0, 400.0, 240.0], screen);
+        for _ in 0..3 {
+            editor.frame(Vec::new());
+        }
+        let window = editor.ctx.memory(|memory| memory.area_rect(egui::Id::new("menu_editor"))).expect("editor window");
+        // a little way into the first row's name, past its Visible checkbox
+        let row = editor.drawn.visibility[0].rect;
+        let list = egui::pos2(row.max.x + 25.0, row.center().y);
+        editor.click(list);
+        let before = editor.menus.editor_layer.expect("a layer above the fold");
+        for _ in 0..16 {
+            editor.frame(vec![
+                egui::Event::PointerMoved(list),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: Vec2::new(0.0, -120.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ]);
+        }
+        editor.click(list);
+        let after = editor.menus.editor_layer.expect("a layer after scrolling");
+        println!("layer at {list:?} in {window:?} was #{before}, after scrolling is #{after}");
+        assert!(after > before, "the layer list did not scroll: #{before} then #{after}");
+    }
+
+    /// a pointer selects a Control on the canvas, picks a direction's target
+    /// and Native default through the real combo boxes, and the action names
+    /// the selected Control and direction each time. A decorative layer
+    /// offers no dead links.
+    #[test]
+    fn navigation_dropdown_sets_direction_targets_and_restores_native() {
+        let layers = vec![
+            layer("Main Solo #0", [10.0, 10.0, 60.0, 20.0]),
+            layer("Vault2 #1", [200.0, 10.0, 60.0, 20.0]),
+            layer("hint #2", [10.0, 120.0, 60.0, 20.0]),
+        ];
+        let mut editor = Editor::new(layers, [500.0, 0.0, 400.0, 240.0]);
+        editor.controls = vec![(0, [None; 4]), (1, [None; 4])];
+        // the editor selects the layer the canvas click is over.
+        editor.click(editor.point(20.0, 20.0));
+        assert_eq!(editor.menus.editor_layer, Some(0));
+        assert_eq!(editor.drawn.directions.len(), 4, "the selected Control has four direction menus");
+
+        // Down on Main Solo points at Vault2.
+        let actions = editor.click_combo(1);
+        assert!(actions.is_empty(), "opening a direction menu chose a link");
+        let actions = editor.click_option(Some(1));
+        assert_eq!(
+            actions,
+            vec![Action::EditorNavigationLink(0, NavigationDirection::Down, Some(1))],
+            "the chosen target did not name Main Solo's Down link"
+        );
+        editor.apply_links(&actions);
+        // the snapshot now holds the link, so reopening the menu changes nothing.
+        assert!(editor.frame(Vec::new()).is_empty(), "applying a link emitted another action");
+        let actions = editor.click_combo(1);
+        assert!(actions.is_empty(), "reopening a restored link emitted a stale action");
+        let actions = editor.click_option(None);
+        assert_eq!(
+            actions,
+            vec![Action::EditorNavigationLink(0, NavigationDirection::Down, None)],
+            "Native default did not remove only Main Solo's Down link"
+        );
+        editor.apply_links(&actions);
+
+        // the other Control links Up to itself: the action names it, not Main Solo.
+        editor.click(editor.point(210.0, 20.0));
+        assert_eq!(editor.menus.editor_layer, Some(1));
+        let actions = editor.click_combo(0);
+        assert!(actions.is_empty(), "opening a direction menu chose a link");
+        let actions = editor.click_option(Some(1));
+        assert_eq!(
+            actions,
+            vec![Action::EditorNavigationLink(1, NavigationDirection::Up, Some(1))],
+            "the self-link named the wrong Control or direction"
+        );
+        editor.apply_links(&actions);
+
+        // the decorative hint is not offered links at all.
+        editor.menus.editor_layer = Some(2);
+        assert!(editor.frame(Vec::new()).is_empty(), "a decorative hint emitted a link");
+        assert!(editor.drawn.directions.is_empty(), "a decorative hint was offered direction menus");
+        assert!(editor.drawn.options.is_empty(), "a decorative hint was offered link targets");
+    }
+
+    /// a layer's Visible checkbox hides it from the canvas while keeping it
+    /// listed, and showing it again restores the same box and pointer.
+    #[test]
+    fn a_hidden_layer_stays_listed_but_takes_no_canvas_pointer() {
+        let mut editor = Editor::new(
+            vec![layer("left #0", [10.0, 10.0, 50.0, 20.0]), layer("right #1", [200.0, 10.0, 50.0, 20.0])],
+            [500.0, 0.0, 400.0, 240.0],
+        );
+        editor.menus.editor_layer = Some(1);
+        let actions = editor.click_visibility(0);
+        assert_eq!(actions, vec![Action::EditorLayerVisible(0, false)], "the checkbox did not hide the layer: {actions:?}");
+        assert_eq!(editor.menus.editor_layer, Some(0), "the toggle did not select the layer it hid");
+        assert_eq!(editor.visibility, vec![false, true]);
+        assert_eq!(editor.layers.len(), 2, "a hidden layer left the list");
+        assert_eq!(editor.drawn.visibility.len(), 2, "a hidden layer lost its checkbox");
+        // the list still selects it, for showing it again.
+        let checkbox = editor.drawn.visibility[0].rect;
+        editor.click(egui::pos2(checkbox.max.x + 30.0, checkbox.center().y));
+        assert_eq!(editor.menus.editor_layer, Some(0), "a hidden layer is not selectable in the list");
+
+        // a click over the hidden box selects nothing on the canvas.
+        editor.menus.editor_layer = Some(1);
+        editor.click(editor.point(20.0, 20.0));
+        assert_eq!(editor.menus.editor_layer, None, "a hidden layer took a canvas click");
+        // and a press over it moves nothing, though the list can still
+        // select it to show it again.
+        editor.menus.editor_layer = Some(0);
+        editor.press(editor.point(20.0, 20.0));
+        let target = editor.point(60.0, 30.0);
+        let actions = editor.frame(vec![egui::Event::PointerMoved(target)]);
+        editor.frame(vec![pointer_button(target, false)]);
+        assert_eq!(editor_move(&actions), None, "a hidden layer moved: {actions:?}");
+        assert_eq!(editor.layers[0].1, [10.0, 10.0, 50.0, 20.0]);
+
+        // showing it again keeps its box and makes it draggable.
+        let actions = editor.click_visibility(0);
+        assert_eq!(actions, vec![Action::EditorLayerVisible(0, true)], "the checkbox did not show the layer: {actions:?}");
+        assert!(editor.visibility[0]);
+        editor.click(editor.point(20.0, 20.0));
+        assert_eq!(editor.menus.editor_layer, Some(0));
+        editor.press(editor.point(20.0, 20.0));
+        let actions = editor.frame(vec![egui::Event::PointerMoved(editor.point(40.0, 20.0))]);
+        assert_eq!(editor_move(&actions), Some((0, [30.0, 10.0, 50.0, 20.0])), "{actions:?}");
+    }
+
+    /// hiding the layer over another lets the one under the pointer take
+    /// the press, and only that one moves.
+    #[test]
+    fn hiding_an_obscuring_layer_lets_the_one_below_take_the_pointer() {
+        let mut editor = Editor::new(
+            vec![layer("below #0", [10.0, 10.0, 80.0, 40.0]), layer("above #1", [10.0, 10.0, 80.0, 40.0])],
+            [500.0, 0.0, 400.0, 240.0],
+        );
+        editor.click(editor.point(20.0, 20.0));
+        assert_eq!(editor.menus.editor_layer, Some(1), "the upper layer should take the press first");
+        let actions = editor.click_visibility(1);
+        assert_eq!(actions, vec![Action::EditorLayerVisible(1, false)], "{actions:?}");
+
+        editor.click(editor.point(20.0, 20.0));
+        assert_eq!(editor.menus.editor_layer, Some(0), "the hidden upper layer still took the press");
+        editor.press(editor.point(20.0, 20.0));
+        let actions = editor.frame(vec![egui::Event::PointerMoved(editor.point(40.0, 20.0))]);
+        assert_eq!(editor_move(&actions), Some((0, [30.0, 10.0, 80.0, 40.0])), "{actions:?}");
+        assert_eq!(editor.layers[1].1, [10.0, 10.0, 80.0, 40.0], "the hidden layer moved");
+    }
+
+}
+
+/// one rule's visibility, source and target boxes, its anchor and its
+/// scale mode.
+fn rule_editor(ui: &mut egui::Ui, name: &str, rule: &mut PlacementRule) -> bool {
+    let mut changed = false;
+    ui.collapsing(name, |ui| {
+        changed |= ui.checkbox(&mut rule.visible, "Visible").changed();
+        changed |= vec4(ui, "from", &mut rule.from);
+        changed |= vec4(ui, "to", &mut rule.to);
+        ui.horizontal(|ui| {
+            ui.label("anchor");
+            changed |= ui.add(egui::DragValue::new(&mut rule.anchor).speed(0.01)).changed();
+        });
+        egui::ComboBox::from_id_salt(name).selected_text(format!("{:?}", rule.scale)).show_ui(ui, |ui| {
+            changed |= ui.selectable_value(&mut rule.scale, RuleScale::Fixed, "Fixed").changed();
+            changed |= ui.selectable_value(&mut rule.scale, RuleScale::Narrow, "Narrow").changed();
+            changed |= ui.selectable_value(&mut rule.scale, RuleScale::Stretch, "Stretch").changed();
+        });
+    });
+    changed
+}
+
+fn vec4(ui: &mut egui::Ui, label: &str, values: &mut [f32; 4]) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        for value in values.iter_mut() {
+            changed |= ui.add(egui::DragValue::new(value).speed(1.0)).changed();
+        }
+    });
+    changed
+}
+
+/// each layer's name and whether it is drawn, with a Visible checkbox that
+/// hides it and keeps it listed for showing again. Ctrl or Shift on a name
+/// adds it to the selection or takes it out. returns the checkboxes.
+fn layer_list(
+    ui: &mut egui::Ui,
+    layers: &[(String, [f32; 4])],
+    visibility: &[bool],
+    selected: &mut Option<usize>,
+    group: &mut Vec<usize>,
+    actions: &mut Vec<Action>,
+) -> Vec<egui::Response> {
+    let mut boxes = Vec::new();
+    if layers.is_empty() { return boxes; }
+    ui.separator();
+    ui.label(RichText::new("Layers").strong());
+    ui.label(RichText::new("Ctrl or Shift selects several to move or scale together.").small().weak());
+    let adding = ui.input(|input| input.modifiers.command || input.modifiers.shift);
+    for (index, (name, _)) in layers.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let mut visible = visibility.get(index).copied().unwrap_or(true);
+            let response = ui.checkbox(&mut visible, "").on_hover_text("Draw and use this layer in the game.");
+            if response.changed() {
+                // the toggled layer is the one the editor is about now, so
+                // it can be shown again or checked on the canvas deliberately.
+                *selected = Some(index);
+                *group = vec![index];
+                actions.push(Action::EditorLayerVisible(index, visible));
+            }
+            boxes.push(response);
+            if ui.selectable_label(group.contains(&index), name).clicked() {
+                if !adding {
+                    *group = vec![index];
+                    *selected = Some(index);
+                } else if group.contains(&index) {
+                    group.retain(|&member| member != index);
+                    *selected = group.last().copied();
+                } else {
+                    group.push(index);
+                    *selected = Some(index);
+                }
+            }
+        });
+    }
+    boxes
+}
+
+/// the boxes a drag asks for, by `by` layer units from where each began:
+/// moved together, or scaled about the group's top left corner, so a
+/// group keeps its arrangement as it grows or shrinks.
+fn dragged(start: &[(usize, [f32; 4])], by: [f32; 2], resizing: bool) -> Vec<(usize, [f32; 4])> {
+    if !resizing {
+        return start.iter().map(|&(index, to)| (index, [to[0] + by[0], to[1] + by[1], to[2], to[3]])).collect();
+    }
+    let Some(&(_, first)) = start.first() else { return Vec::new() };
+    if let [(index, to)] = start {
+        return vec![(*index, [to[0], to[1], (to[2] + by[0]).max(1.0), (to[3] + by[1]).max(1.0)])];
+    }
+    let bounds = start.iter().fold(first, |b, &(_, to)| {
+        let (x, y) = (b[0].min(to[0]), b[1].min(to[1]));
+        [x, y, (b[0] + b[2]).max(to[0] + to[2]) - x, (b[1] + b[3]).max(to[1] + to[3]) - y]
+    });
+    let scale = [(bounds[2] + by[0]).max(1.0) / bounds[2].max(1.0), (bounds[3] + by[1]).max(1.0) / bounds[3].max(1.0)];
+    start.iter().map(|&(index, to)| (index, [
+        bounds[0] + (to[0] - bounds[0]) * scale[0],
+        bounds[1] + (to[1] - bounds[1]) * scale[1],
+        (to[2] * scale[0]).max(1.0),
+        (to[3] * scale[1]).max(1.0),
+    ])).collect()
+}
+
+const NAVIGATION_DIRECTIONS: [(NavigationDirection, &str); 4] = [
+    (NavigationDirection::Up, "Up"),
+    (NavigationDirection::Down, "Down"),
+    (NavigationDirection::Left, "Left"),
+    (NavigationDirection::Right, "Right"),
+];
+
+/// the widgets the navigation section drew, for the interaction test to
+/// press them as a player would.
+#[derive(Default)]
+struct NavigationEditorResponse {
+    /// each direction's combo box button, in Up Down Left Right order.
+    #[cfg(test)]
+    directions: Vec<(NavigationDirection, egui::Response)>,
+    /// the open combo's options, as the value each would pick.
+    #[cfg(test)]
+    options: Vec<(Option<usize>, egui::Response)>,
+    /// each layer's Visible checkbox, in the layer list's order.
+    #[cfg(test)]
+    visibility: Vec<egui::Response>,
+}
+
+/// the selected Control's explicit Up, Down, Left and Right links, each
+/// either the game's native behavior or another active Control.
+fn navigation_editor(
+    ui: &mut egui::Ui,
+    layers: &[(String, [f32; 4])],
+    controls: &[(usize, [Option<usize>; 4])],
+    directions: [bool; 4],
+    selected: Option<usize>,
+    actions: &mut Vec<Action>,
+) -> NavigationEditorResponse {
+    #[cfg(test)]
+    let mut drawn = NavigationEditorResponse::default();
+    #[cfg(not(test))]
+    let drawn = NavigationEditorResponse::default();
+    ui.separator();
+    ui.label(RichText::new("Navigation").strong());
+    let Some(selected) = selected.filter(|index| *index < layers.len()) else {
+        ui.label(RichText::new("Select a Control on the canvas to set its Up, Down, Left and Right links.").weak());
+        return drawn;
+    };
+    let Some((_, destinations)) = controls.iter().find(|(index, _)| *index == selected) else {
+        ui.label(
+            RichText::new("This layer has no editable native navigation binding. Select an active Control; background layers and inactive Controls retain native navigation.")
+                .weak(),
+        );
+        return drawn;
+    };
+    ui.label(RichText::new(layers[selected].0.clone()).small().weak());
+    for (slot, (direction, label)) in NAVIGATION_DIRECTIONS.iter().enumerate() {
+        if !directions[slot] {
+            ui.label(RichText::new(format!("{label}: native direction unavailable")).small().weak());
+            continue;
+        }
+        let current = destinations[slot];
+        let mut destination = current;
+        let text = match current {
+            None => "Native default".to_owned(),
+            Some(to) if to == selected => "Stay on this Control (self-link)".to_owned(),
+            Some(to) => layers.get(to).map_or_else(|| format!("Control #{to}"), |(name, _)| name.clone()),
+        };
+        #[cfg(test)]
+        let mut options = Vec::new();
+        let combo = ui.horizontal(|ui| {
+            ui.label(*label);
+            egui::ComboBox::from_id_salt(("editor_navigation", selected, slot))
+                .width(190.0)
+                .selected_text(text)
+                .show_ui(ui, |ui| {
+                    #[cfg(test)]
+                    options.push((None, ui.selectable_value(&mut destination, None, "Native default")));
+                    #[cfg(not(test))]
+                    ui.selectable_value(&mut destination, None, "Native default");
+                    for (index, (name, _)) in layers.iter().enumerate() {
+                        if !controls.iter().any(|(control, _)| *control == index) {
+                            continue;
+                        }
+                        let text = if index == selected { "Stay on this Control (self-link)".to_owned() } else { name.clone() };
+                        #[cfg(test)]
+                        options.push((Some(index), ui.selectable_value(&mut destination, Some(index), text)));
+                        #[cfg(not(test))]
+                        ui.selectable_value(&mut destination, Some(index), text);
+                    }
+                })
+        });
+        #[cfg(test)]
+        {
+            drawn.directions.push((*direction, combo.inner.response));
+            drawn.options.extend(options);
+        }
+        #[cfg(not(test))]
+        let _ = combo;
+        if destination != current {
+            actions.push(Action::EditorNavigationLink(selected, *direction, destination));
+        }
+    }
+    ui.label(
+        RichText::new(
+            "Links are explicit and replace only that direction; Native default follows the game's own behavior. Moving or resizing layers does not rewrite them. F2 closes the editor to test the game's keyboard, D-pad, stick and A.",
+        )
+        .weak()
+        .small(),
+    );
+    drawn
+}
+
+fn export_layers(layers: &[(String, [f32; 4])], visibility: &[bool]) -> std::io::Result<()> {
+    let mut text = String::from("// Scripted Menu layers: name, target x y width height on the top screen, visible.\n[\n");
+    for (index, (name, to)) in layers.iter().enumerate() {
+        let visible = visibility.get(index).copied().unwrap_or(true);
+        text.push_str(&format!("    ({name:?}, {:?}, {visible}),\n", to));
+    }
+    text.push_str("]\n\n// Change request\n");
+    for (index, (name, to)) in layers.iter().enumerate() {
+        if visibility.get(index).copied().unwrap_or(true) {
+            text.push_str(&format!("Move the {name} layer: target now {:?}.\n", to));
+        } else {
+            text.push_str(&format!("Hide the {name} layer: it stays in the editor list to show again.\n"));
+        }
+    }
+    text.push_str("Acceptance: on a Scripted Menu capture the named layers sit at the exported boxes, hit-testing follows the same boxes, and hidden layers are neither drawn nor hit.\n");
+    std::fs::write("editor-layers-export.txt", text)
 }
