@@ -6,13 +6,21 @@ use std::sync::mpsc::{channel, Receiver};
 
 use egui::{Align, Color32, Layout, RichText, Vec2};
 use winit::keyboard::KeyCode;
-use zakuro_core::aim_mouse::{CauldronRules, NavigationDirection, PauseRules, PlacementRule, RuleScale};
+use zakuro_core::aim_mouse::{CauldronRules, DialogRules, NavigationDirection, PauseRules, PlacementRule, RuleScale};
 use zakuro_core::services::keyboard::Request;
 
 use crate::library::{Library, ICON_SIZE};
 use crate::recompile::{Job, Stage};
 use crate::gamepad::button_name;
 use crate::settings::{CameraSource, Filter, Keys, Language, PadButtons, Renderer, Screens, Settings, Stereo3d, TopShape};
+
+/// the rules of the Screen the layout editor edits, which pick its window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EditorRules {
+    Pause(PauseRules),
+    RetreatDialog(DialogRules),
+    Cauldron(CauldronRules),
+}
 
 /// what the user asked for.
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +71,8 @@ pub enum Action {
     CheatsFolder,
     /// the pause layout rules as the editor left them.
     PauseRules(PauseRules),
+    /// the Retreat Dialog's rules, edited.
+    DialogRules(DialogRules),
     /// the Fiend's Cauldron's rules, edited.
     CauldronRules(CauldronRules),
     /// a Scripted Menu layer moved by the editor.
@@ -419,8 +429,7 @@ impl Menus {
         fast: bool,
         jobs: &[Job],
         saved: Option<&str>,
-        pause_rules: Option<PauseRules>,
-        cauldron_rules: Option<CauldronRules>,
+        rules: Option<EditorRules>,
         editor_layers: Vec<(String, [f32; 4])>,
         editor_visibility: Vec<bool>,
         navigation_controls: Vec<(usize, [Option<usize>; 4])>,
@@ -537,17 +546,17 @@ impl Menus {
                     }
                 });
         }
-        self.layout_editor(&ctx, pause_rules, cauldron_rules, editor_layers, editor_visibility, navigation_controls, navigation_directions, editor_widen, canvas, editor_open, &mut actions);
+        self.layout_editor(&ctx, rules, editor_layers, editor_visibility, navigation_controls, navigation_directions, editor_widen, canvas, editor_open, &mut actions);
         actions
     }
 
     /// the dev-only layout editor: the edited Screen's layers on a canvas,
-    /// and the Pause or Fiend's Cauldron rules, live, with reset and export.
+    /// and the edited Screen's rules, live, with reset and export.
+    #[allow(clippy::too_many_arguments)]
     fn layout_editor(
         &mut self,
         ctx: &egui::Context,
-        rules: Option<PauseRules>,
-        cauldron: Option<CauldronRules>,
+        rules: Option<EditorRules>,
         layers: Vec<(String, [f32; 4])>,
         visibility: Vec<bool>,
         navigation_controls: Vec<(usize, [Option<usize>; 4])>,
@@ -680,10 +689,18 @@ impl Menus {
             self.editor_drag = drag;
             actions.extend(moved.into_iter().map(|(index, to)| Action::EditorLayer(index, to)));
         }
-        if let Some(cauldron) = cauldron {
-            self.cauldron_editor(ctx, cauldron, &layers, &visibility, actions);
-            return NavigationEditorResponse::default();
-        }
+        let rules = match rules {
+            Some(EditorRules::Cauldron(cauldron)) => {
+                self.cauldron_editor(ctx, cauldron, &layers, &visibility, actions);
+                return NavigationEditorResponse::default();
+            }
+            Some(EditorRules::RetreatDialog(dialog)) => {
+                self.dialog_editor(ctx, dialog, actions);
+                return NavigationEditorResponse::default();
+            }
+            Some(EditorRules::Pause(pause)) => Some(pause),
+            None => None,
+        };
         let Some(mut rules) = rules else {
             let mut window_open = true;
             let mut save = false;
@@ -792,7 +809,45 @@ impl Menus {
         navigation
     }
 
-    /// the Fiend's Cauldron's window: its seven parts listed with Visible
+    /// the Retreat Dialog's window: its dimming and its panel (box, buttons
+    /// and words) as rules, then saved, reset or exported as Rust and a
+    /// change request.
+    fn dialog_editor(&mut self, ctx: &egui::Context, mut rules: DialogRules, actions: &mut Vec<Action>) {
+        let mut window_open = true;
+        let (mut changed, mut save) = (false, false);
+        let mut message = None;
+        let room = (ctx.content_rect().height() - 170.0).clamp(120.0, 420.0);
+        egui::Window::new("Menu editor — Retreat Dialog").id(egui::Id::new("menu_editor_dialog")).open(&mut window_open).default_width(420.0).show(ctx, |ui| {
+            ui.label(RichText::new("Edits apply live. The panel carries the box, its buttons and its words.").weak());
+            egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
+                changed |= rule_editor(ui, "span", &mut rules.span);
+                changed |= rule_editor(ui, "panel", &mut rules.panel);
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Save layout").on_hover_text("Write the Retreat Dialog's rules with the rest of the layout to menu-layout.toml.").clicked() {
+                    save = true;
+                }
+                if ui.button("Reset").clicked() {
+                    rules = DialogRules::default();
+                    changed = true;
+                }
+                if ui.button("Export Rust + change request").clicked() {
+                    let text = format!("// Retreat Dialog layout rules\n{}\n// Change request\n{}\n", rules.rust_fragment(), rules.change_request());
+                    message = Some(match std::fs::write("menu-layout-export.txt", text) {
+                        Ok(()) => "Wrote menu-layout-export.txt".to_owned(),
+                        Err(error) => format!("Could not write menu-layout-export.txt: {error}"),
+                    });
+                }
+            });
+        });
+        if !window_open { self.editor_open = false; }
+        if changed { actions.push(Action::DialogRules(rules)); }
+        if save { actions.push(Action::SaveLayout); }
+        if let Some(message) = message { self.message = Some(message); }
+    }
+
+    /// the Fiend's Cauldron's window: its eight parts listed with Visible
     /// checkboxes, moved and resized on the canvas, then saved, reset or
     /// exported as Rust and a change request.
     fn cauldron_editor(&mut self, ctx: &egui::Context, rules: CauldronRules, layers: &[(String, [f32; 4])], visibility: &[bool], actions: &mut Vec<Action>) {
@@ -1381,8 +1436,7 @@ mod tests {
         visibility: Vec<bool>,
         canvas: [f32; 4],
         screen: egui::Rect,
-        rules: Option<PauseRules>,
-        cauldron: Option<CauldronRules>,
+        rules: Option<EditorRules>,
         controls: Vec<(usize, [Option<usize>; 4])>,
         drawn: NavigationEditorResponse,
         time: f64,
@@ -1421,7 +1475,6 @@ mod tests {
                 canvas,
                 screen,
                 rules: None,
-                cauldron: None,
                 controls: Vec::new(),
                 drawn: NavigationEditorResponse::default(),
                 time: 0.0,
@@ -1448,12 +1501,11 @@ mod tests {
             let visibility = self.visibility.clone();
             let canvas = self.canvas;
             let rules = self.rules;
-            let cauldron = self.cauldron;
             let controls = self.controls.clone();
             let mut drawn = NavigationEditorResponse::default();
             self.ctx
                 .run_ui(input, |ui| {
-                    drawn = menus.layout_editor(ui.ctx(), rules, cauldron, layers.clone(), visibility.clone(), controls.clone(), [true; 4], 1.0, Some(canvas), true, &mut actions);
+                    drawn = menus.layout_editor(ui.ctx(), rules, layers.clone(), visibility.clone(), controls.clone(), [true; 4], 1.0, Some(canvas), true, &mut actions);
                 })
                 .drop_without_applying_deltas();
             self.drawn = drawn;
@@ -1545,7 +1597,7 @@ mod tests {
         mouse.cauldron_on_top = true;
         mouse.show_screen(Screen::FiendsCauldron, 10);
         let mut editor = Editor::on(mouse.editor_layers(), [1000.0, 0.0, 400.0, 240.0], egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1600.0, 600.0)));
-        editor.cauldron = Some(mouse.cauldron_rules());
+        editor.rules = Some(EditorRules::Cauldron(mouse.cauldron_rules()));
         editor.frame(Vec::new());
         editor.frame(Vec::new());
         assert!(editor.ctx.memory(|memory| memory.area_rect(egui::Id::new("menu_editor_cauldron"))).is_some());
@@ -1694,7 +1746,7 @@ mod tests {
         for _ in 0..2 {
             let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
             ctx.run_ui(input, |ui| {
-                menus.game(ui, "Game", None, false, false, &[], None, None, None, layers.clone(), vec![true], Vec::new(), [true; 4], 1.0, Some([500.0, 0.0, 400.0, 240.0]), true, true);
+                menus.game(ui, "Game", None, false, false, &[], None, None, layers.clone(), vec![true], Vec::new(), [true; 4], 1.0, Some([500.0, 0.0, 400.0, 240.0]), true, true);
             })
             .drop_without_applying_deltas();
         }
@@ -1726,13 +1778,13 @@ mod tests {
         let layers: Vec<_> = (0..60)
             .map(|index| layer(&format!("part #{index}"), [4.0 * index as f32 % 400.0, 8.0 * index as f32 % 240.0, 14.0, 8.0]))
             .collect();
-        for rules in [None, Some(PauseRules::default())] {
+        for pause in [None, Some(PauseRules::default())] {
             let mut editor = Editor::on(layers.clone(), [0.0, 0.0, 400.0, 240.0], screen);
-            editor.rules = rules;
+            editor.rules = pause.map(EditorRules::Pause);
             for _ in 0..3 {
                 editor.frame(Vec::new());
             }
-            let (title, id) = if rules.is_some() { ("Menu editor — Pause", "menu_editor_pause") } else { ("Menu editor", "menu_editor") };
+            let (title, id) = if pause.is_some() { ("Menu editor — Pause", "menu_editor_pause") } else { ("Menu editor", "menu_editor") };
             let window = editor.ctx.memory(|memory| memory.area_rect(egui::Id::new(id))).expect(title);
             println!("{title:?} on an 800x360 screen: {window:?}");
             assert!(screen.contains_rect(window), "{title:?} {window:?} does not fit {screen:?}");

@@ -26,7 +26,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use zakuro_common::Screen;
-use zakuro_core::aim_mouse::{CauldronRules, NavigationLink, PauseRules};
+use zakuro_core::aim_mouse::{CauldronRules, DialogRules, NavigationLink, PauseRules};
 use zakuro_core::{loader, Config, FrameOutcome, System};
 use zakuro_gpu::{layout, GpuScreen, Overlay, PresentError, RendererKind, ScreenImage};
 
@@ -51,6 +51,9 @@ struct SavedLayout {
     /// absent in files written before Pause rules were kept.
     #[serde(default)]
     pause: Option<PauseRules>,
+    /// the Retreat Dialog's rules, absent in older files.
+    #[serde(default)]
+    dialog: Option<DialogRules>,
     /// explicit Control-to-Control navigation links, absent in older files.
     #[serde(default)]
     navigation: Vec<NavigationLink>,
@@ -76,7 +79,7 @@ fn load_layout(data_dir: &Option<PathBuf>) -> Result<SavedLayout, String> {
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SavedLayout { layers: Vec::new(), pause: None, navigation: Vec::new(), hidden: Vec::new(), cauldron: None })
+            return Ok(SavedLayout { layers: Vec::new(), pause: None, dialog: None, navigation: Vec::new(), hidden: Vec::new(), cauldron: None })
         }
         Err(error) => return Err(format!("Could not read {}: {error}", path.display())),
     };
@@ -87,6 +90,7 @@ fn save_layout(
     data_dir: &Option<PathBuf>,
     layers: &[(usize, usize, [f32; 4])],
     pause: PauseRules,
+    dialog: DialogRules,
     cauldron: CauldronRules,
     navigation: Vec<NavigationLink>,
     hidden: Vec<(usize, usize)>,
@@ -94,6 +98,7 @@ fn save_layout(
     let saved = SavedLayout {
         layers: layers.iter().map(|&(screen, part, to)| SavedLayer { screen, part, to }).collect(),
         pause: Some(pause),
+        dialog: Some(dialog),
         navigation,
         cauldron: Some(cauldron),
         hidden,
@@ -128,11 +133,12 @@ pub fn run(linked: Option<Linked>) {
     }
 
     let data_dir = options.data.clone().map(PathBuf::from).or_else(default_data_dir);
-    let (layout_overrides, pause_rules, cauldron_rules, navigation, hidden, layout_error) = if options.menu_editor {
+    let (layout_overrides, pause_rules, dialog_rules, cauldron_rules, navigation, hidden, layout_error) = if options.menu_editor {
         match load_layout(&data_dir) {
             Ok(saved) => (
                 saved.layers.into_iter().map(|layer| (layer.screen, layer.part, layer.to)).collect(),
                 saved.pause.unwrap_or_default(),
+                saved.dialog.unwrap_or_default(),
                 saved.cauldron.unwrap_or_default(),
                 saved.navigation,
                 saved.hidden,
@@ -140,11 +146,11 @@ pub fn run(linked: Option<Linked>) {
             ),
             Err(error) => {
                 log::warn!("{error}");
-                (Vec::new(), PauseRules::default(), CauldronRules::default(), Vec::new(), Vec::new(), Some(error))
+                (Vec::new(), PauseRules::default(), DialogRules::default(), CauldronRules::default(), Vec::new(), Vec::new(), Some(error))
             }
         }
     } else {
-        (Vec::new(), PauseRules::default(), CauldronRules::default(), Vec::new(), Vec::new(), None)
+        (Vec::new(), PauseRules::default(), DialogRules::default(), CauldronRules::default(), Vec::new(), Vec::new(), None)
     };
     if let Some(dir) = &data_dir {
         report::to_file(dir);
@@ -167,6 +173,7 @@ pub fn run(linked: Option<Linked>) {
         data_dir,
         layout_overrides,
         pause_rules,
+        dialog_rules,
         cauldron_rules,
         navigation,
         hidden,
@@ -446,6 +453,8 @@ struct App {
     layout_overrides: Vec<(usize, usize, [f32; 4])>,
     /// the editor's Pause rules, kept across a game restart.
     pause_rules: PauseRules,
+    /// the editor's Retreat Dialog rules, kept across a game restart.
+    dialog_rules: DialogRules,
     /// the editor's Fiend's Cauldron rules, kept across a game restart.
     cauldron_rules: CauldronRules,
     /// the editor's explicit navigation links, kept across a restart and a
@@ -954,6 +963,7 @@ impl App {
             if let Some(mouse) = system.aim_mouse.as_mut() {
                 mouse.set_editor_overrides(self.layout_overrides.clone());
                 mouse.set_pause_rules(self.pause_rules);
+                mouse.set_dialog_rules(self.dialog_rules);
                 mouse.set_cauldron_rules(self.cauldron_rules);
                 if self.options.menu_editor {
                     mouse.set_editor_navigation(self.navigation.clone());
@@ -1540,16 +1550,17 @@ impl App {
     fn act(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         match action {
             Action::SaveLayout => {
-                let (layers, pause, cauldron, navigation, hidden) = match self.game.as_ref().and_then(|game| game.system.aim_mouse.as_ref()) {
-                    Some(mouse) => (mouse.editor_overrides(), mouse.pause_rules(), mouse.cauldron_rules(), mouse.editor_navigation(), mouse.editor_hidden_layers()),
-                    None => (self.layout_overrides.clone(), self.pause_rules, self.cauldron_rules, self.navigation.clone(), self.hidden.clone()),
+                let (layers, pause, dialog, cauldron, navigation, hidden) = match self.game.as_ref().and_then(|game| game.system.aim_mouse.as_ref()) {
+                    Some(mouse) => (mouse.editor_overrides(), mouse.pause_rules(), mouse.dialog_rules(), mouse.cauldron_rules(), mouse.editor_navigation(), mouse.editor_hidden_layers()),
+                    None => (self.layout_overrides.clone(), self.pause_rules, self.dialog_rules, self.cauldron_rules, self.navigation.clone(), self.hidden.clone()),
                 };
-                let written = save_layout(&self.data_dir, &layers, pause, cauldron, navigation.clone(), hidden.clone());
+                let written = save_layout(&self.data_dir, &layers, pause, dialog, cauldron, navigation.clone(), hidden.clone());
                 let path = layout_path(&self.data_dir);
                 self.menus.message = Some(match written {
                     Ok(path) => {
                         self.layout_overrides = layers;
                         self.pause_rules = pause;
+                        self.dialog_rules = dialog;
                         self.cauldron_rules = cauldron;
                         self.navigation = navigation;
                         self.hidden = hidden;
@@ -1585,6 +1596,12 @@ impl App {
                 self.cauldron_rules = rules;
                 if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
                     mouse.set_cauldron_rules(rules);
+                }
+            }
+            Action::DialogRules(rules) => {
+                self.dialog_rules = rules;
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.set_dialog_rules(rules);
                 }
             }
             Action::PauseRules(rules) => {
@@ -2187,14 +2204,18 @@ impl App {
             .map_or((Vec::new(), Vec::new(), Vec::new(), [true; 4], 1.0), |mouse| (mouse.editor_layers(), mouse.editor_layer_visibility(), mouse.editor_navigation_controls(), mouse.editor_navigation_directions(), mouse.widen()));
         let game = self.game.as_ref().map(|game| {
             let fps = menus::FpsReadout::new(high_refresh, shown, game.fps);
-            // the Pause rules' window unless the editor edits the Cauldron
-            let rules = game.system.aim_mouse.as_ref().map(|mouse| (mouse.pause_rules(), mouse.editor_cauldron_rules()));
-            let (pause_rules, cauldron_rules) = match rules {
-                Some((_, Some(cauldron))) => (None, Some(cauldron)),
-                Some((pause, None)) => (Some(pause), None),
-                None => (None, None),
-            };
-            (game.name.clone(), fps, game.system.recompiled.is_some(), pause_rules, cauldron_rules)
+            // the window of the Screen the editor edits: the Cauldron, the
+            // Retreat Dialog, or Pause's rules for anything else
+            let rules = game.system.aim_mouse.as_ref().map(|mouse| {
+                if let Some(cauldron) = mouse.editor_cauldron_rules() {
+                    menus::EditorRules::Cauldron(cauldron)
+                } else if let Some(dialog) = mouse.editor_dialog_rules() {
+                    menus::EditorRules::RetreatDialog(dialog)
+                } else {
+                    menus::EditorRules::Pause(mouse.pause_rules())
+                }
+            });
+            (game.name.clone(), fps, game.system.recompiled.is_some(), rules)
         });
         let fast = self.fast_forwarding;
         let keyboard = self.game.as_ref().and_then(|game| game.system.keyboard_request().cloned());
@@ -2214,8 +2235,8 @@ impl App {
         let mut actions = Vec::new();
         let overlay = gui.frame(window, |ui| {
             match &game {
-                Some((name, fps, recompiled, pause_rules, cauldron_rules)) => actions.extend(menus.game(
-                    ui, name, show_fps.then_some(*fps), *recompiled, fast, jobs, saved.as_deref(), *pause_rules, *cauldron_rules,
+                Some((name, fps, recompiled, rules)) => actions.extend(menus.game(
+                    ui, name, show_fps.then_some(*fps), *recompiled, fast, jobs, saved.as_deref(), *rules,
                     editor_layers.clone(), editor_visibility.clone(), navigation_controls.clone(), navigation_directions, editor_widen, canvas, editor_open, editor_enabled,
                 )),
                 None => actions.extend(menus.library(ui, library, settings, jobs)),
@@ -2436,13 +2457,17 @@ mod tests {
         let mut cauldron = CauldronRules::default();
         cauldron.rule_mut(zakuro_core::aim_mouse::CauldronRole::Back).visible = false;
         cauldron.rule_mut(zakuro_core::aim_mouse::CauldronRole::Top).to = [20.0, 30.0, 150.0, 100.0];
-        let path = save_layout(&Some(dir.clone()), &layers, rules, cauldron, navigation.clone(), hidden.clone()).expect("the layout is written");
+        let mut dialog = DialogRules::default();
+        dialog.panel.to = [200.0, 20.0, 160.0, 120.0];
+        dialog.span.visible = false;
+        let path = save_layout(&Some(dir.clone()), &layers, rules, dialog, cauldron, navigation.clone(), hidden.clone()).expect("the layout is written");
         assert_eq!(path, layout_path(&Some(dir.clone())));
         let loaded = load_layout(&Some(dir.clone())).expect("the layout is read");
         let loaded_layers: Vec<_> = loaded.layers.into_iter().map(|layer| (layer.screen, layer.part, layer.to)).collect();
         assert_eq!(loaded_layers, layers);
         assert_eq!(loaded.pause, Some(rules));
         assert_eq!(loaded.cauldron, Some(cauldron));
+        assert_eq!(loaded.dialog, Some(dialog));
         assert_eq!(loaded.navigation, navigation);
         assert_eq!(loaded.hidden, hidden);
         std::fs::remove_dir_all(&dir).expect("the test's folder goes");
@@ -2456,7 +2481,7 @@ mod tests {
         let dir = temp_data_dir("layout-before-ring");
         let mut cauldron = CauldronRules::default();
         cauldron.rule_mut(CauldronRole::Back).visible = false;
-        let path = save_layout(&Some(dir.clone()), &[], PauseRules::default(), cauldron, Vec::new(), Vec::new()).expect("the layout is written");
+        let path = save_layout(&Some(dir.clone()), &[], PauseRules::default(), DialogRules::default(), cauldron, Vec::new(), Vec::new()).expect("the layout is written");
         let mut file: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         file["cauldron"].as_array_mut().expect("the Cauldron's rules are a list").pop();
         std::fs::write(&path, toml::to_string(&file).unwrap()).unwrap();
@@ -2466,12 +2491,29 @@ mod tests {
         std::fs::remove_dir_all(&dir).expect("the test's folder goes");
     }
 
+    /// a layout saved before the Retreat Dialog had rules of its own keeps
+    /// everything else, and the dialog loads with none (the defaults).
+    #[test]
+    fn a_layout_saved_without_retreat_dialog_rules_still_loads() {
+        let dir = temp_data_dir("layout-before-dialog");
+        let mut pause = PauseRules::default();
+        pause.center.to[0] = 60.0;
+        let path = save_layout(&Some(dir.clone()), &[], pause, DialogRules::default(), CauldronRules::default(), Vec::new(), Vec::new()).expect("the layout is written");
+        let mut file: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        file.remove("dialog").expect("the dialog's rules are written");
+        std::fs::write(&path, toml::to_string(&file).unwrap()).unwrap();
+        let loaded = load_layout(&Some(dir.clone())).expect("the old layout is read");
+        assert_eq!(loaded.pause, Some(pause));
+        assert_eq!(loaded.dialog, None);
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
     /// a Scripted layer hidden without ever being moved is saved on its own.
     #[test]
     fn a_hidden_layer_is_saved_without_a_move() {
         let dir = temp_data_dir("layout-hidden");
         let hidden = vec![(11, 5), (4, 1)];
-        save_layout(&Some(dir.clone()), &[], PauseRules::default(), CauldronRules::default(), Vec::new(), hidden.clone())
+        save_layout(&Some(dir.clone()), &[], PauseRules::default(), DialogRules::default(), CauldronRules::default(), Vec::new(), hidden.clone())
             .expect("the layout with only a hidden layer is written");
         let loaded = load_layout(&Some(dir.clone())).expect("the layout is read");
         assert!(loaded.layers.is_empty(), "hiding a layer wrote a move");
@@ -2528,7 +2570,7 @@ mod tests {
         let dir = temp_data_dir("layout-error");
         let blocked = dir.join("not-a-folder");
         std::fs::write(&blocked, b"").expect("a file stands where the folder would go");
-        assert!(save_layout(&Some(blocked), &[], PauseRules::default(), CauldronRules::default(), Vec::new(), Vec::new()).is_err());
+        assert!(save_layout(&Some(blocked), &[], PauseRules::default(), DialogRules::default(), CauldronRules::default(), Vec::new(), Vec::new()).is_err());
         std::fs::remove_dir_all(&dir).expect("the test's folder goes");
     }
 

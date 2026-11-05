@@ -10,7 +10,7 @@ use crate::System;
 mod menu_top;
 mod screen_transform;
 use menu_top::MenuTop;
-pub use screen_transform::{CauldronRole, CauldronRules, PauseRules, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
+pub use screen_transform::{CauldronRole, CauldronRules, DialogRules, PauseRules, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
 use screen_transform::{Activate, QuadRole, ScreenLayout, ScreenTransform, CAULDRON_CONTROLS};
 
 /// Kid Icarus: Uprising, the USA cartridge.
@@ -943,19 +943,23 @@ const PAUSE_MENU: [ToTop; 15] = [
     // made again after the top pass's 2D is done, for the right eye's
     // buffer, which 0x00916588 left it drawing into, and once it went back
     // to the left eye's, as the top pass draws its own text in both
-    ToTop { site: 0x00722BA4, place: 0x007258A0, projection: false },
-    ToTop { site: 0x00722C30, place: 0x007258A0, projection: true },
-    ToTop { site: 0x00722C3C, place: 0x007258A0, projection: false },
-    ToTop { site: 0x00722D14, place: 0x007258A0, projection: false },
-    ToTop { site: 0x00722DAC, place: 0x007258A0, projection: false },
-    ToTop { site: 0x00722DB8, place: 0x007258A0, projection: false },
-    ToTop { site: 0x00722BA4, place: 0x007258C0, projection: false },
-    ToTop { site: 0x00722C30, place: 0x007258C0, projection: true },
-    ToTop { site: 0x00722C3C, place: 0x007258C0, projection: false },
-    ToTop { site: 0x00722D14, place: 0x007258C0, projection: false },
-    ToTop { site: 0x00722DAC, place: 0x007258C0, projection: false },
-    ToTop { site: 0x00722DB8, place: 0x007258C0, projection: false },
+    ToTop { site: 0x00722BA4, place: DIALOG_TEXT[0], projection: false },
+    ToTop { site: 0x00722C30, place: DIALOG_TEXT[0], projection: true },
+    ToTop { site: 0x00722C3C, place: DIALOG_TEXT[0], projection: false },
+    ToTop { site: 0x00722D14, place: DIALOG_TEXT[0], projection: false },
+    ToTop { site: 0x00722DAC, place: DIALOG_TEXT[0], projection: false },
+    ToTop { site: 0x00722DB8, place: DIALOG_TEXT[0], projection: false },
+    ToTop { site: 0x00722BA4, place: DIALOG_TEXT[1], projection: false },
+    ToTop { site: 0x00722C30, place: DIALOG_TEXT[1], projection: true },
+    ToTop { site: 0x00722C3C, place: DIALOG_TEXT[1], projection: false },
+    ToTop { site: 0x00722D14, place: DIALOG_TEXT[1], projection: false },
+    ToTop { site: 0x00722DAC, place: DIALOG_TEXT[1], projection: false },
+    ToTop { site: 0x00722DB8, place: DIALOG_TEXT[1], projection: false },
 ];
+
+/// where the dialogs' words are made again in the top pass: for the right
+/// eye, then the left.
+const DIALOG_TEXT: [u32; 2] = [0x007258A0, 0x007258C0];
 
 /// how far right the pause menu goes on the top screen, its 320 pixels in
 /// the middle of the top's 400, and so how far left a touch there goes.
@@ -1577,6 +1581,19 @@ impl AimMouse {
         self.transform.set_pause_rules(rules);
     }
 
+    pub fn dialog_rules(&self) -> DialogRules {
+        self.transform.dialog_rules()
+    }
+
+    pub fn set_dialog_rules(&mut self, rules: DialogRules) {
+        self.transform.set_dialog_rules(rules);
+    }
+
+    /// the Retreat Dialog's rules while the layout editor edits them.
+    pub fn editor_dialog_rules(&self) -> Option<DialogRules> {
+        (self.editor_screen() == Some(Screen::RetreatDialog)).then(|| self.dialog_rules())
+    }
+
     /// caps a Screen at 60, the title's own frames only, or returns it to
     /// the host's rate. Any Screen may be capped this way.
     pub fn set_screen_rate(&mut self, screen: Screen, rate: ScreenRate) {
@@ -1646,7 +1663,7 @@ impl AimMouse {
     /// too, at the pot's value, in pixels as shown.
     fn cauldron_editor_layers(&self) -> Vec<(String, [f32; 4])> {
         let value = self.transform.cauldron_seat().1.unwrap_or(0.0);
-        let names = ["Top picture", "Panel", "Bar", "Dial", "Back", "Move Out", "Rest"];
+        let names = ["Top picture", "Panel", "Bar", "Dial", "Back", "Move Out", "Rest", "Ring"];
         let boxes = self.cauldron_rules().boxes(self.widen, value);
         names.iter().zip(boxes).enumerate().map(|(index, (name, place))| {
             let [x, y, width, height] = place.to;
@@ -1752,11 +1769,16 @@ impl AimMouse {
     /// are seated from the newest completed frame, so a picture in between
     /// its t changes and hit-testing reads the same Controls either way.
     pub fn pause_menu_touch_shown(&self, frame: u64, x: f32, y: f32, shown: crate::PictureKind) -> Option<(f32, f32)> {
-        let edges = self.edges_drawn.is_some_and(|drawn| frame <= drawn + 3);
         // the same placements drawing uses, read backwards, see
         // place_pause_menu
         let layout = self.transform.layout_for(frame, self.widen, shown);
         debug_assert_eq!(layout.frame(), frame, "placements are seated on a completed frame");
+        if self.transform.active(frame) == Some(Screen::RetreatDialog) {
+            // the dialog is all in its panel, placed both ways
+            let [x, y] = layout.place(QuadRole::Center)?.unmap_point([x, y]);
+            return ((0.0..320.0).contains(&x) && (0.0..240.0).contains(&y)).then_some((x, y));
+        }
+        let edges = self.edges_drawn.is_some_and(|drawn| frame <= drawn + 3);
         let (left, right, middle, corner) = (
             layout.place(QuadRole::LeftButton),
             layout.place(QuadRole::RightButton),
@@ -1896,7 +1918,9 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
             }
         }
         _ if ScreenTransform::pause_site(pc) => {
-            if let Some(index) = ScreenTransform::pause_call_at(pc) {
+            // the text is made again twice, for each eye, so every index
+            // with this site keeps its own copy
+            for index in ScreenTransform::pause_calls_at(pc) {
                 let mut recorded = recorded_call(system, pc);
                 if let Some(recorded) = recorded.as_mut().filter(|_| ScreenTransform::pause_call(index).projection) {
                     let mut bytes = [0u8; 0x70];
@@ -2306,18 +2330,19 @@ fn top_screen_pause_menu(system: &mut System, place: u32) {
     };
     let Some(recorded) = aim_mouse.transform.take(index) else { return };
     aim_mouse.transform.mark_drawn(system.frames, index);
+    let screen = ScreenTransform::pause_screen(index);
+    let layout = aim_mouse.transform.screen_layout(screen, system.frames, aim_mouse.widen);
+    let panel = layout.place(QuadRole::Center);
+    // a hidden panel takes the dialog's words with it
+    if screen == Screen::RetreatDialog && DIALOG_TEXT.contains(&place) && panel.is_none() {
+        return top_screen_pause_menu(system, place);
+    }
     call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::PauseMenu(index), Vec::new());
     system.cpu.regs[2] = recorded.regs[2];
     system.cpu.regs[3] = recorded.regs[3];
     system.cpu.vfp.regs[..8].copy_from_slice(&recorded.floats);
-    if let Some(mut matrices) = recorded.matrices {
-        // the projection's second row turns the bottom screen's 320 pixels
-        // into its width, the top's middle 320 of 400 is that much less
-        // and narrower about the middle on a wider one
-        let widen = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.widen);
-        for word in &mut matrices[4..8] {
-            *word = (f32::from_bits(*word) * 320.0 / 400.0 / widen).to_bits();
-        }
+    if let (Some(mut matrices), Some(panel)) = (recorded.matrices, panel) {
+        place_projection(&mut matrices, panel);
         // below the stack the call starts with, put back after it
         let at = system.cpu.regs[13] - 0x70;
         let bytes: Vec<u8> = matrices.iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -2325,6 +2350,25 @@ fn top_screen_pause_menu(system: &mut System, place: u32) {
         system.cpu.regs[1] = at;
         system.cpu.regs[2] = at + 0x40;
         system.cpu.regs[13] = at;
+    }
+}
+
+/// makes a bottom screen projection, the dialogs' words', draw where a
+/// placement puts the bottom screen on the top. its first row turns the
+/// bottom screen's y into -y/120 + 1 and its second its x into -x/160 + 1
+/// (the screens lie on their side); the top's 400 across are -x/200 + 1.
+/// for a placement x' = a x + b, y' = c y + d, each row becomes itself
+/// scaled, plus the w row's part that moves it.
+fn place_projection(matrices: &mut [u32; 28], place: Placement) {
+    let [b, d] = place.map_point([0.0, 0.0]);
+    let [one_x, one_y] = place.map_point([1.0, 1.0]);
+    let (a, c) = (one_x - b, one_y - d);
+    let w: [f32; 4] = std::array::from_fn(|column| f32::from_bits(matrices[12 + column]));
+    for (row, scale, shift) in [(0, c, 1.0 - c - d / 120.0), (1, 0.8 * a, 1.0 - (160.0 * a + b) / 200.0)] {
+        for column in 0..4 {
+            let value = f32::from_bits(matrices[row * 4 + column]) * scale + w[column] * shift;
+            matrices[row * 4 + column] = value.to_bits();
+        }
     }
 }
 
@@ -3262,13 +3306,15 @@ fn place_scissor(system: &mut System, place: impl Fn(f32, f32) -> (f32, f32)) {
 /// the dimming and the band behind Options, spans the top screen, and
 /// Resume, Retreat and Remove Display go by its edges as they are by the
 /// bottom screen's.
-fn place_pause_menu(system: &mut System, widen: f32) {
+fn place_pause_menu(system: &mut System, widen: f32, index: usize) {
     let caller = system.cpu.regs[14];
     let (buttons, corner) = (PAUSE_BUTTONS.contains(&caller), REMOVE_DISPLAY.contains(&caller));
     let Some((at, mut quads)) = flushed_quads(system) else { return };
     let frame = system.frames;
-    let rules = system.aim_mouse.as_ref().map_or_else(PauseRules::default, |aim_mouse| aim_mouse.transform.pause_rules());
-    let layout = rules.layout(frame, widen);
+    // the dialog is placed both ways, Pause across only
+    let screen = ScreenTransform::pause_screen(index);
+    let dialog = screen == Screen::RetreatDialog;
+    let Some(layout) = system.aim_mouse.as_ref().map(|aim_mouse| aim_mouse.transform.screen_layout(screen, frame, widen)) else { return };
     for quad in (0..quads.len()).step_by(0x60) {
         let xs = (0..4).map(|corner| get(&quads, quad + corner * 0x18));
         let (left, right) = xs.fold((f32::MAX, f32::MIN), |(left, right), x| (left.min(x), right.max(x)));
@@ -3291,8 +3337,14 @@ fn place_pause_menu(system: &mut System, widen: f32) {
             continue;
         };
         for corner in (quad..quad + 0x60).step_by(0x18) {
-            let x = place.map_x(get(&quads, corner));
-            set(&mut quads, corner, x);
+            if dialog {
+                let [x, y] = place.map_point([get(&quads, corner), get(&quads, corner + 4)]);
+                set(&mut quads, corner, x);
+                set(&mut quads, corner + 4, y);
+            } else {
+                let x = place.map_x(get(&quads, corner));
+                set(&mut quads, corner, x);
+            }
         }
     }
     system.memory.write_bytes(at, &quads);
@@ -3388,7 +3440,7 @@ fn shrink_hud(system: &mut System) {
             }
             return;
         }
-        Some(Drawing::PauseMenu(_)) => return place_pause_menu(system, widen),
+        Some(Drawing::PauseMenu(index)) => return place_pause_menu(system, widen, index),
         _ => {}
     }
     if drawing(system).is_none() && system.cpu.regs[14] == TRAINING_HUD {
@@ -3678,6 +3730,48 @@ mod tests {
         // a page of Options, all of it in the middle
         assert_eq!(aim_mouse.pause_menu_touch(20, 60.0, 83.0), Some((20.0, 83.0)));
         assert_eq!(aim_mouse.pause_menu_touch(20, 20.0, 83.0), None);
+    }
+
+    /// the Retreat Dialog's touches follow its own panel rule: where its
+    /// No is drawn, in the panel's box, a touch reaches No on the bottom
+    /// screen; the Pause rules under it do not move it, and a hidden panel
+    /// takes no touches.
+    #[test]
+    fn retreat_dialog_touches_follow_its_own_panel_rule() {
+        let mut transform = ScreenTransform::default();
+        transform.mark_drawn(10, 0);
+        transform.mark_drawn(10, 1);
+        let mut aim_mouse = AimMouse { transform, edges_drawn: Some(10), ..AimMouse::default() };
+        // No, 36..155 by 154..188 on the bottom screen, in the middle by default
+        assert_eq!(aim_mouse.pause_menu_touch(11, 135.0, 170.0), Some((95.0, 170.0)));
+
+        let mut dialog = DialogRules::default();
+        dialog.panel.to = [100.0, 20.0, 160.0, 120.0];
+        aim_mouse.set_dialog_rules(dialog);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 147.5, 105.0), Some((95.0, 170.0)));
+        assert_eq!(aim_mouse.pause_menu_touch(11, 135.0, 170.0), None, "outside the moved panel");
+
+        let mut pause = aim_mouse.pause_rules();
+        pause.center.to[0] = 0.0;
+        pause.center.visible = false;
+        aim_mouse.set_pause_rules(pause);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 147.5, 105.0), Some((95.0, 170.0)), "Pause's rules leave the dialog alone");
+
+        dialog.panel.visible = false;
+        aim_mouse.set_dialog_rules(dialog);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 147.5, 105.0), None);
+    }
+
+    /// and the dialog's rules leave Pause alone once it is gone.
+    #[test]
+    fn retreat_dialog_rules_leave_pause_touches_alone() {
+        let mut transform = ScreenTransform::default();
+        transform.mark_drawn(10, 0);
+        let mut aim_mouse = AimMouse { transform, edges_drawn: Some(10), ..AimMouse::default() };
+        let mut dialog = DialogRules::default();
+        dialog.panel.visible = false;
+        aim_mouse.set_dialog_rules(dialog);
+        assert_eq!(aim_mouse.pause_menu_touch(11, 200.0, 134.0), Some((160.0, 134.0)));
     }
 
     /// a rule hidden from the top screen's drawing takes no touches there,

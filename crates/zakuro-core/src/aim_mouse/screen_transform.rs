@@ -712,6 +712,48 @@ impl PauseRules {
     }
 }
 
+/// the Retreat Dialog's editable rules: the dimming across the screen, and
+/// the panel, its box, buttons and words, in the middle by default.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DialogRules {
+    pub span: PlacementRule,
+    pub panel: PlacementRule,
+}
+
+impl Default for DialogRules {
+    fn default() -> DialogRules {
+        let pause = PauseRules::default();
+        DialogRules { span: pause.span, panel: pause.center }
+    }
+}
+
+impl DialogRules {
+    /// the Rust row a layout change would land as.
+    pub fn rust_fragment(&self) -> String {
+        format!("DialogRules {{\n    span: {},\n    panel: {},\n}}\n", rule_rust(self.span), rule_rust(self.panel))
+    }
+
+    /// what changes from the default Retreat Dialog rules.
+    pub fn change_request(&self) -> String {
+        let default = DialogRules::default();
+        change_request(
+            "Retreat Dialog",
+            &[("span", default.span, self.span), ("panel", default.panel, self.panel)],
+            "Acceptance: on a Retreat Dialog capture the box, No, Yes and the question are drawn in the panel's rectangle, and a click on No or Yes picks it.",
+        )
+    }
+
+    /// seats the rules for a completed title frame, in QuadRole order: the
+    /// dimming spans, the panel is the middle, and there are no edges.
+    pub(super) fn layout(self, frame: u64, widen: f32) -> ScreenLayout {
+        let place = |rule: PlacementRule| rule.visible.then(|| rule.placement(widen));
+        let mut placements = [None; ROLES];
+        placements[QuadRole::Span as usize] = place(self.span);
+        placements[QuadRole::Center as usize] = place(self.panel);
+        ScreenLayout { frame, placements }
+    }
+}
+
 /// the Fiend's Cauldron's parts, each in a place of its own: the top's
 /// picture, its intensity panel, the bottom's bar, the bar's dial, Back,
 /// Move Out, the rest (the pot, the pan and the hearts bet), and the
@@ -945,8 +987,10 @@ pub(super) struct ScreenTransform {
     cauldron_rules: CauldronRules,
     cauldron_layout: Option<ScreenLayout>,
     cauldron_seat: (f32, Option<f32>),
-    /// the pause screen's editable placement rules.
+    /// the pause screen's editable placement rules, and the Retreat
+    /// Dialog's over it.
     pause_rules: PauseRules,
+    dialog_rules: DialogRules,
     /// each Screen's High Refresh Mode rate, declared on its row and
     /// overridable while the title runs. A Screen capped at 60 shows real
     /// frames only, instead of being excluded from the mode.
@@ -970,6 +1014,7 @@ impl Default for ScreenTransform {
             cauldron_layout: None,
             cauldron_seat: (1.0, None),
             pause_rules: PauseRules::default(),
+            dialog_rules: DialogRules::default(),
             rates: std::array::from_fn(|index| SCREENS[index].rate),
             active: None,
         }
@@ -993,12 +1038,22 @@ impl ScreenTransform {
         SCREENS[..SCRIPTED_COUNT].iter().position(|spec| spec.update() == Some(pc))
     }
 
-    /// seats the Pause placements for a completed title frame. Drawing and
-    /// hit-testing both call this with the same real frame; a picture in
-    /// between has no frame of its own and reads the newest real one, never
-    /// a blended placement.
+    /// seats the Pause placements for a completed title frame, or the
+    /// Retreat Dialog's while it is shown. Drawing and hit-testing both
+    /// call this with the same real frame; a picture in between has no
+    /// frame of its own and reads the newest real one, never a blended
+    /// placement.
     pub fn layout(&self, frame: u64, widen: f32) -> ScreenLayout {
-        self.pause_rules.layout(frame, widen)
+        self.screen_layout(if self.active(frame) == Some(Screen::RetreatDialog) { Screen::RetreatDialog } else { Screen::Pause }, frame, widen)
+    }
+
+    /// the placements of one of the shared call table's Screens, Pause or
+    /// the Retreat Dialog.
+    pub fn screen_layout(&self, screen: Screen, frame: u64, widen: f32) -> ScreenLayout {
+        match screen {
+            Screen::RetreatDialog => self.dialog_rules.layout(frame, widen),
+            _ => self.pause_rules.layout(frame, widen),
+        }
     }
 
     /// the layout for the picture the presenter shows: a picture in between
@@ -1017,6 +1072,14 @@ impl ScreenTransform {
     #[allow(dead_code)]
     pub fn set_pause_rules(&mut self, rules: PauseRules) {
         self.pause_rules = rules;
+    }
+
+    pub fn dialog_rules(&self) -> DialogRules {
+        self.dialog_rules
+    }
+
+    pub fn set_dialog_rules(&mut self, rules: DialogRules) {
+        self.dialog_rules = rules;
     }
 
     fn index(screen: Screen) -> usize {
@@ -1068,9 +1131,10 @@ impl ScreenTransform {
     /// its per-Screen caps are not the console's state, so a load keeps
     /// them.
     pub fn reset(&mut self) {
-        let (pause_rules, cauldron_rules, rates) = (self.pause_rules, self.cauldron_rules, self.rates);
+        let (pause_rules, dialog_rules, cauldron_rules, rates) = (self.pause_rules, self.dialog_rules, self.cauldron_rules, self.rates);
         *self = Self::default();
         self.pause_rules = pause_rules;
+        self.dialog_rules = dialog_rules;
         self.cauldron_rules = cauldron_rules;
         self.rates = rates;
     }
@@ -1087,8 +1151,9 @@ impl ScreenTransform {
         Self::pause_calls().iter().any(|call| call.site == pc || call.place == pc)
     }
 
-    pub fn pause_call_at(pc: u32) -> Option<usize> {
-        Self::pause_calls().iter().position(|call| call.site == pc)
+    /// every index of the shared call table whose call is made at `pc`.
+    pub fn pause_calls_at(pc: u32) -> impl Iterator<Item = usize> {
+        Self::pause_calls().iter().enumerate().filter(move |(_, call)| call.site == pc).map(|(index, _)| index)
     }
 
     pub fn pause_place_at(pc: u32) -> Option<usize> {
@@ -1301,17 +1366,22 @@ mod tests {
     }
 
     /// Loading a saved state clears what a frame recorded, but the host's
-    /// editable Pause rules are not part of the console's state.
+    /// editable Pause and Retreat Dialog rules are not part of the
+    /// console's state.
     #[test]
     fn reset_keeps_editor_rules() {
         let mut rules = PauseRules::default();
         rules.center.to[0] = 60.0;
         rules.left.scale = RuleScale::Fixed;
+        let mut dialog = DialogRules::default();
+        dialog.panel.visible = false;
         let mut transform = ScreenTransform::default();
         transform.set_pause_rules(rules);
+        transform.set_dialog_rules(dialog);
         transform.mark_drawn(12, 0);
         transform.reset();
         assert_eq!(transform.pause_rules(), rules);
+        assert_eq!(transform.dialog_rules(), dialog);
         assert!(!transform.shown(12));
     }
 
