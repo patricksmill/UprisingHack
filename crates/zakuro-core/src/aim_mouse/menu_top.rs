@@ -914,10 +914,7 @@ pub(super) fn accept_hit(system: &mut System, found: Option<u32>) -> bool {
 
 fn scene(system: &mut System, top: u32) -> Option<(usize, u32, u32, bool)> {
     let mouse = system.aim_mouse.as_ref()?;
-    // The dense native lists exhaust the game's drawing buffer when replayed
-    // for both stereo eyes. Keep their native rendering until that buffer
-    // can be expanded safely.
-    if !mouse.menus_on_top || system.config.slider_3d > 0.0 || mouse.cauldron_shown(system.frames) { return None; }
+    if !mouse.menus_on_top || mouse.cauldron_shown(system.frames) { return None; }
     let bottom = mouse.bottom_scene?;
     let active = mouse.menu_screen.filter(|&(_, _, seen)| system.frames >= seen && system.frames <= seen + 3 + mouse.menu_top.duration);
     let last = mouse.menu_screen;
@@ -1061,16 +1058,16 @@ pub(super) fn begin(system: &mut System) -> bool {
     true
 }
 
-fn place_scene(system: &mut System, top: u32, drawing: u32, place: Placement, stereo: bool, isolated: bool, moved: &mut Vec<(u32, Vec<u8>)>) {
+fn place_scene(system: &mut System, top: u32, drawing: u32, place: Placement, top_camera: bool, isolated: bool, moved: &mut Vec<(u32, Vec<u8>)>) {
     let scale = [place.to[2] / place.from[2], place.to[3] / place.from[3]];
-    let size = [if stereo { 400.0 } else { 320.0 }, 240.0];
+    let size = [if top_camera { 400.0 } else { 320.0 }, 240.0];
     let full = if isolated { place.to } else { [place.to[0] - place.from[0] * scale[0], place.to[1] - place.from[1] * scale[1], size[0] * scale[0], size[1] * scale[1]] };
     let viewport = viewport_bytes(system, top, full);
     change(system, moved, drawing + 0x44, &viewport);
     let scene = read_word(system, drawing + 0x40);
     let screen = read_word(system, drawing + 0x58);
     let camera = read_word(system, scene + SCENE_CAMERAS + screen * 4);
-    if let Some((matrix, part)) = cropped_projection(system, camera, if isolated { place.from } else { [0.0, 0.0, size[0], size[1]] }, size, stereo) {
+    if let Some((matrix, part)) = cropped_projection(system, camera, if isolated { place.from } else { [0.0, 0.0, size[0], size[1]] }, size, top_camera) {
         moved.push((camera + 0x6C, matrix.to_vec()));
         system.memory.write_bytes(camera + 0x6C, &part);
     }

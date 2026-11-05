@@ -890,6 +890,8 @@ impl System {
         }
 
         self.renderer.end_frame();
+        // Kid Icarus draws its right eye even with the 3D off, never shown
+        self.gpu.set_unseen_target(self.aim_mouse.as_ref().map(|_| aim_mouse::RIGHT_EYE));
 
         // pick up any buffer swap the game queued directly in GSP shared
         // memory before the LCDs latch whatever is currently configured.

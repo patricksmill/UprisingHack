@@ -16,6 +16,12 @@ use screen_transform::{Activate, QuadRole, ScreenLayout, ScreenTransform, CAULDR
 /// Kid Icarus: Uprising, the USA cartridge.
 pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
 
+/// the top screen's right eye, which the game draws every frame even with
+/// the 3D off, the same draws as the left eye's (0x18080000) with the right
+/// camera: never shown, so the GPU drops them. the bottom screen draws
+/// into the same VRAM at its own size, 240 by 320, which is kept.
+pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { address: 0x1800_0000, dimensions: 0x011F_F100 };
+
 /// the places below, which the interpreter has to run for it to stop at
 /// them: every function whose code takes one in runs in it, the rest of the
 /// game stays recompiled. one place a function does, the pause menu's top
@@ -777,8 +783,7 @@ fn outline_subtitles(system: &mut System, object: u32, found: Found) -> Option<V
 /// width and height in pixels: about to set the viewport and the top
 /// camera (0x00727804), which go on to the top's 2D too, then draw the
 /// scene's 3D (0x00727C24) when its layers 0xB to 0xD have models in them,
-/// and just after that, which drew it into both eyes' buffers, the left
-/// one's last.
+/// and just after that.
 const TOP_SCENE_3D: u32 = 0x0072A07C;
 const TOP_SCENE_DRAWN: u32 = 0x0072A09C;
 const TOP_LAYER: u32 = 0xB;
@@ -923,7 +928,7 @@ struct ToTop {
 
 /// the pause menu and the dialogs over it, Retreat's for one, in the
 /// middle of the top screen.
-const PAUSE_MENU: [ToTop; 15] = [
+const PAUSE_MENU: [ToTop; 9] = [
     // the bottom battle UI pass, 0x0060D93C, calling 0x00A01A1C while
     // paused: the dimming, Resume and Retreat, Options, the loot and Remove
     // Display, with the pause screen in r0, the 2D context in r1 and in r2
@@ -940,26 +945,18 @@ const PAUSE_MENU: [ToTop; 15] = [
     // (r0) with a projection for the bottom screen: the lights (0x00909D54),
     // the camera (0x0090A5B4), the start (0x0090FFA0), the message and the
     // buttons' text (0x00909ACC, the text in r0), the end (0x0090A6A4).
-    // made again after the top pass's 2D is done, for the right eye's
-    // buffer, which 0x00916588 left it drawing into, and once it went back
-    // to the left eye's, as the top pass draws its own text in both
-    ToTop { site: 0x00722BA4, place: DIALOG_TEXT[0], projection: false },
-    ToTop { site: 0x00722C30, place: DIALOG_TEXT[0], projection: true },
-    ToTop { site: 0x00722C3C, place: DIALOG_TEXT[0], projection: false },
-    ToTop { site: 0x00722D14, place: DIALOG_TEXT[0], projection: false },
-    ToTop { site: 0x00722DAC, place: DIALOG_TEXT[0], projection: false },
-    ToTop { site: 0x00722DB8, place: DIALOG_TEXT[0], projection: false },
-    ToTop { site: 0x00722BA4, place: DIALOG_TEXT[1], projection: false },
-    ToTop { site: 0x00722C30, place: DIALOG_TEXT[1], projection: true },
-    ToTop { site: 0x00722C3C, place: DIALOG_TEXT[1], projection: false },
-    ToTop { site: 0x00722D14, place: DIALOG_TEXT[1], projection: false },
-    ToTop { site: 0x00722DAC, place: DIALOG_TEXT[1], projection: false },
-    ToTop { site: 0x00722DB8, place: DIALOG_TEXT[1], projection: false },
+    // made again once the top pass's 2D is done and it went back to the
+    // shown (left) eye's buffer; the right eye's is never shown
+    ToTop { site: 0x00722BA4, place: DIALOG_TEXT, projection: false },
+    ToTop { site: 0x00722C30, place: DIALOG_TEXT, projection: true },
+    ToTop { site: 0x00722C3C, place: DIALOG_TEXT, projection: false },
+    ToTop { site: 0x00722D14, place: DIALOG_TEXT, projection: false },
+    ToTop { site: 0x00722DAC, place: DIALOG_TEXT, projection: false },
+    ToTop { site: 0x00722DB8, place: DIALOG_TEXT, projection: false },
 ];
 
-/// where the dialogs' words are made again in the top pass: for the right
-/// eye, then the left.
-const DIALOG_TEXT: [u32; 2] = [0x007258A0, 0x007258C0];
+/// where the dialogs' words are made again in the top pass.
+const DIALOG_TEXT: u32 = 0x007258C0;
 
 /// how far right the pause menu goes on the top screen, its 320 pixels in
 /// the middle of the top's 400, and so how far left a touch there goes.
@@ -1918,9 +1915,7 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
             }
         }
         _ if ScreenTransform::pause_site(pc) => {
-            // the text is made again twice, for each eye, so every index
-            // with this site keeps its own copy
-            for index in ScreenTransform::pause_calls_at(pc) {
+            if let Some(index) = ScreenTransform::pause_call_at(pc) {
                 let mut recorded = recorded_call(system, pc);
                 if let Some(recorded) = recorded.as_mut().filter(|_| ScreenTransform::pause_call(index).projection) {
                     let mut bytes = [0u8; 0x70];
@@ -2334,7 +2329,7 @@ fn top_screen_pause_menu(system: &mut System, place: u32) {
     let layout = aim_mouse.transform.screen_layout(screen, system.frames, aim_mouse.widen);
     let panel = layout.place(QuadRole::Center);
     // a hidden panel takes the dialog's words with it
-    if screen == Screen::RetreatDialog && DIALOG_TEXT.contains(&place) && panel.is_none() {
+    if screen == Screen::RetreatDialog && place == DIALOG_TEXT && panel.is_none() {
         return top_screen_pause_menu(system, place);
     }
     call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::PauseMenu(index), Vec::new());
@@ -2437,7 +2432,7 @@ fn top_screen_cauldron(system: &mut System) {
 
 /// before the top's scene drawing, r4, sets its viewport and draws its 3D:
 /// the Cauldron's ring in its place first, then, back here, the picture's
-/// viewport (top_scene_viewport). one picture for both eyes.
+/// viewport (top_scene_viewport).
 fn top_scene_ring(system: &mut System) {
     let top = system.cpu.regs[4];
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
@@ -2718,8 +2713,9 @@ fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
 
 /// a camera's projection, as it is and turned to show only the part from of
 /// a screen of size pixels in the whole view, when it has one kept. the
-/// view of a wider screen is that much wider.
-fn cropped_projection(system: &mut System, camera: u32, from: [f32; 4], size: [f32; 2], stereo: bool) -> Option<([u8; 64], [u8; 64])> {
+/// view of a wider screen is that much wider. top is the top screen's
+/// camera, whose rows the game's camera submit turns round.
+fn cropped_projection(system: &mut System, camera: u32, from: [f32; 4], size: [f32; 2], top: bool) -> Option<([u8; 64], [u8; 64])> {
     if camera == 0 || read_word(system, camera + 8) & 4 == 0 {
         return None;
     }
@@ -2731,13 +2727,13 @@ fn cropped_projection(system: &mut System, camera: u32, from: [f32; 4], size: [f
     let [screen_width, screen_height] = size;
     // the first row gives the view's -1..1 from the bottom of the screen
     // up, the second from its right edge to its left: each gets the
-    // middle of the part and its share of the view. the top's stereo
-    // camera (0x00916234) builds each eye's from it turned back, and its
-    // middles end up the other way round, the second row's going across
-    // the screen from the left and the first's up it
+    // middle of the part and its share of the view. the top's camera
+    // submit (0x00916234) builds the projection it draws with from it
+    // turned back, and its middles end up the other way round, the second
+    // row's going across the screen from the left and the first's up it
     let across = 1.0 - (x + width * 0.5) * 2.0 / screen_width;
     let up = 1.0 - (y + height * 0.5) * 2.0 / screen_height;
-    let rows = match stereo {
+    let rows = match top {
         false => [(up, height / screen_height), (across / widen, width / screen_width / widen)],
         true => [(-across / widen, height / screen_height), (up, width / screen_width / widen)],
     };

@@ -174,6 +174,17 @@ pub struct Gpu {
     resources: raster::Resources,
     /// frame interpolation's record of the draws, none while it is off.
     interpolation: Option<interpolation::Interpolation>,
+    /// a target the title draws into that is never shown, whose draws are
+    /// dropped: a 3D title's right eye with the 3D off.
+    unseen_target: Option<UnseenTarget>,
+}
+
+/// a colour buffer at a size, as the title's draws set it: its physical
+/// address, and the framebuffer dimensions register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnseenTarget {
+    pub address: u32,
+    pub dimensions: u32,
 }
 
 /// number of external register words we track (0x1EF00000..0x1EF04000).
@@ -208,6 +219,7 @@ impl Gpu {
             busy: std::time::Duration::ZERO,
             resources: raster::Resources::default(),
             interpolation: None,
+            unseen_target: None,
         }
     }
 
@@ -697,6 +709,11 @@ impl Gpu {
         let _ = twins;
     }
 
+    /// drops every draw into a target from now on, or none.
+    pub fn set_unseen_target(&mut self, target: Option<UnseenTarget>) {
+        self.unseen_target = target;
+    }
+
     /// the title's frame is done, its draws are the ones the next frame's
     /// match, and how they matched the frame before's.
     pub fn frame_done(&mut self) -> Option<Matches> {
@@ -1054,6 +1071,9 @@ impl Gpu {
     /// where every write paid for the stack a draw needs.
     #[inline(never)]
     fn draw<M: GpuMemory>(&mut self, memory: &mut M, renderer: &mut dyn Renderer, indexed: bool) {
+        if self.unseen() {
+            return;
+        }
         self.draw_calls += 1;
         renderer.draw(DrawCall {
             indexed,
@@ -1098,6 +1118,15 @@ impl Gpu {
         self.vertices_drawn += vertices as u64;
     }
 
+    /// whether the target the draws go into now is the unseen one.
+    fn unseen(&self) -> bool {
+        let target = UnseenTarget {
+            address: (self.internal[REG_COLOR_BUFFER_ADDRESS] & 0x0FFF_FFFF) << 3,
+            dimensions: self.internal[REG_FRAMEBUFFER_DIMENSIONS],
+        };
+        self.unseen_target == Some(target)
+    }
+
     /// trades the vertex shader's float uniforms for the ones given, the
     /// draw in between's, and back.
     fn swap_uniforms(&mut self, uniforms: &mut interpolation::Uniforms) {
@@ -1108,6 +1137,9 @@ impl Gpu {
     #[inline(never)]
     fn draw_immediate<M: GpuMemory>(&mut self, memory: &mut M) {
         let vertices = std::mem::take(&mut self.immediate.vertices);
+        if self.unseen() {
+            return;
+        }
         self.draw_calls += 1;
         self.vertices_drawn += vertices.len() as u64;
         self.prepare_shaders();
@@ -1520,6 +1552,33 @@ mod tests {
         for pixel in memory.0[COLOR_BUFFER as usize..][..8 * 8 * 4].chunks(4) {
             assert_eq!(ColorFormat::Rgba8.decode(pixel), [255, 0, 0, 255]);
         }
+    }
+
+    /// a draw into a target nobody sees, the buffer at its size, leaves the
+    /// buffer as it was; the same buffer at another size, another screen
+    /// drawn into it, still draws.
+    #[test]
+    fn draws_into_an_unseen_target_are_dropped() {
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let triangle = |gpu: &mut Gpu, memory: &mut FlatMemory, renderer: &mut SoftwareRenderer| {
+            gpu.write_internal(memory, renderer, REG_FIXED_ATTRIBUTE_INDEX, 0xF, 0xF);
+            for position in [[-1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [-1.0, 3.0, 0.0, 1.0]] {
+                send_vertex(gpu, memory, renderer, &[position, red]);
+            }
+            gpu.write_internal(memory, renderer, 0x245, 1, 0xF);
+        };
+        let drawn = |memory: &FlatMemory| memory.0[COLOR_BUFFER as usize..][..8 * 8 * 4].iter().any(|&byte| byte != 0);
+
+        let mut memory = FlatMemory(vec![0; 0x2000]);
+        let mut renderer = SoftwareRenderer::default();
+        let mut gpu = gpu_for_immediate_draws(&mut memory, &mut renderer);
+        gpu.set_unseen_target(Some(UnseenTarget { address: COLOR_BUFFER, dimensions: 8 | (7 << 12) }));
+        triangle(&mut gpu, &mut memory, &mut renderer);
+        assert!(!drawn(&memory), "the unseen target is left alone");
+
+        gpu.set_unseen_target(Some(UnseenTarget { address: COLOR_BUFFER, dimensions: 8 | (15 << 12) }));
+        triangle(&mut gpu, &mut memory, &mut renderer);
+        assert!(drawn(&memory), "the same buffer at another size is another screen's");
     }
 
     #[test]

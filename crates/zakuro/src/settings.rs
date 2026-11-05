@@ -208,18 +208,6 @@ pub enum Stereo3d {
 }
 
 impl Stereo3d {
-    pub const ALL: [Stereo3d; 5] = [Stereo3d::Off, Stereo3d::Anaglyph, Stereo3d::SideBySide, Stereo3d::HalfSideBySide, Stereo3d::Interlaced];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Stereo3d::Off => "Off",
-            Stereo3d::Anaglyph => "Red and cyan glasses",
-            Stereo3d::SideBySide => "Side by side",
-            Stereo3d::HalfSideBySide => "Side by side, half width",
-            Stereo3d::Interlaced => "Alternate rows",
-        }
-    }
-
     pub fn mode(self) -> zakuro_gpu::StereoMode {
         match self {
             Stereo3d::Off => zakuro_gpu::StereoMode::Off,
@@ -548,12 +536,15 @@ pub struct Settings {
     /// how wide the top screen shows.
     #[serde(deserialize_with = "or_default")]
     pub top_shape: TopShape,
-    /// how the 3D shows.
-    #[serde(deserialize_with = "or_default")]
+    /// how the 3D shows. hidden and always off: Kid Icarus's right eye is
+    /// no longer drawn, so a saved value is neither read nor written.
+    #[serde(skip)]
     pub stereo: Stereo3d,
     /// how deep games draw the 3D, the console's slider, 0 to 100.
+    #[serde(skip)]
     pub depth_3d: u32,
     /// each eye gets the other's picture.
+    #[serde(skip)]
     pub swap_eyes: bool,
     /// 0 to 1.
     pub volume: f32,
@@ -746,6 +737,17 @@ mod tests {
         }
         let text = toml::to_string_pretty(&Settings::default()).unwrap();
         assert!(!text.contains("high_refresh_mode") && !text.contains("frame_interpolation"), "{text}");
+    }
+
+    /// the 3D stays off whatever a settings file says, so the console's
+    /// slider stays down, and it is not written.
+    #[test]
+    fn saved_3d_stays_off() {
+        let settings: Settings = toml::from_str("stereo = \"anaglyph\"\ndepth_3d = 80\nswap_eyes = true\n").unwrap();
+        assert_eq!(settings.stereo, Stereo3d::Off);
+        assert_eq!(settings.slider_3d(), 0.0);
+        let text = toml::to_string_pretty(&Settings::default()).unwrap();
+        assert!(!text.contains("stereo") && !text.contains("depth_3d") && !text.contains("swap_eyes"), "{text}");
     }
 
     /// the cap offers only rates at or above 60, and at 240 Hz it brings

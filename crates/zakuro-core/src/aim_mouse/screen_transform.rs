@@ -1151,9 +1151,8 @@ impl ScreenTransform {
         Self::pause_calls().iter().any(|call| call.site == pc || call.place == pc)
     }
 
-    /// every index of the shared call table whose call is made at `pc`.
-    pub fn pause_calls_at(pc: u32) -> impl Iterator<Item = usize> {
-        Self::pause_calls().iter().enumerate().filter(move |(_, call)| call.site == pc).map(|(index, _)| index)
+    pub fn pause_call_at(pc: u32) -> Option<usize> {
+        Self::pause_calls().iter().position(|call| call.site == pc)
     }
 
     pub fn pause_place_at(pc: u32) -> Option<usize> {
