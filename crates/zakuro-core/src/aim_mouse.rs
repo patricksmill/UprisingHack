@@ -28,13 +28,14 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 131] = [
+pub const PLACES: [u32; 132] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
     0x002A3374, 0x002A3470, 0x002A34C8, 0x002A3378, 0x002A3474, 0x002A34CC,
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
+    PITCH_LIMITS,
     SPRITE_FLUSH,
     PROJECTION,
     PASS_BEGIN,
@@ -883,6 +884,20 @@ const AFTER_AIM_DELTA: u32 = 0x006D26C4;
 /// edges), the aim object in r4. on the ground the camera turns by how far
 /// the reticle goes past the box.
 const BEFORE_CAMERA_TURN: u32 = 0x006D2ED4;
+
+/// in the ground camera's pitch update (0x007462A4), its limits worked out
+/// and not yet used: s18 how far down it may look, s19 how far up (less
+/// than 0), in radians from level, 15 and 12 degrees as the game has them,
+/// capped at 80; r6 the aim object. the camera turns up or down, and stops
+/// at them, the rest of the way the reticle went.
+const PITCH_LIMITS: u32 = 0x0074651C;
+
+/// how much further the camera may look up and down while the mouse aims
+/// on the ground: the reticle stays in the middle there, so the camera
+/// takes the reach the reticle's box gave it, its 50 of 120 pixels above
+/// and below the middle of a 45 degree view, atan(50/120 tan 22.5),
+/// measured 9.8 either way.
+const CAPTURED_PITCH_REACH: f32 = 10.0 * std::f32::consts::PI / 180.0;
 
 /// the 2D sprite batch's flush, entered with the batch in r0: it draws the
 /// quads added since the last one, which end at [batch+0x38], count
@@ -1822,6 +1837,7 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
                 system.memory.write_bytes(object + 0x5C, &HASH_IDOL_TOSS.to_le_bytes());
             }
         }
+        PITCH_LIMITS => widen_pitch(system),
         AFTER_AIM_DELTA => add_delta(system),
         BEFORE_CAMERA_TURN => close_box(system),
         PROJECTION => widen_view(system),
@@ -1995,17 +2011,22 @@ fn widening(system: &System) -> f32 {
     }
 }
 
+/// whether the mouse aims for the local player on the ground, aim being
+/// its aim object: +0x81 is set on the ground, +0xD5 for anyone but the
+/// local player.
+fn mouse_on_ground(system: &mut System, aim: u32) -> bool {
+    if !system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.captured) {
+        return false;
+    }
+    let mut flags = [0u8; 0xD6];
+    system.memory.read_bytes(aim, &mut flags);
+    flags[0x81] != 0 && flags[0xD5] == 0
+}
+
 /// on the ground, shrinks the box to its middle point, so that any movement
 /// of the reticle is past it and turns the camera.
 fn close_box(system: &mut System) {
-    if !system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.captured) {
-        return;
-    }
-    let aim = system.cpu.regs[4];
-    let mut flags = [0u8; 0xD6];
-    system.memory.read_bytes(aim, &mut flags);
-    // +0x81 is set on the ground, +0xD5 for anyone but the local player
-    if flags[0x81] == 0 || flags[0xD5] != 0 {
+    if !mouse_on_ground(system, system.cpu.regs[4]) {
         return;
     }
     let regs = &mut system.cpu.vfp.regs;
@@ -2015,6 +2036,19 @@ fn close_box(system: &mut System) {
     regs[1] = x.to_bits();
     regs[2] = y.to_bits();
     regs[3] = y.to_bits();
+}
+
+/// with the reticle held in the middle, lets the ground camera look as far
+/// up and down as the reticle reached in its box, see CAPTURED_PITCH_REACH.
+fn widen_pitch(system: &mut System) {
+    if !mouse_on_ground(system, system.cpu.regs[6]) {
+        return;
+    }
+    let regs = &mut system.cpu.vfp.regs;
+    let down = f32::from_bits(regs[18]) + CAPTURED_PITCH_REACH;
+    let up = f32::from_bits(regs[19]) - CAPTURED_PITCH_REACH;
+    regs[18] = down.to_bits();
+    regs[19] = up.to_bits();
 }
 
 /// adds what the mouse moved to the local player's aim delta, divided by
