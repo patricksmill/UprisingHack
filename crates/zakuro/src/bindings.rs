@@ -43,6 +43,8 @@ pub enum Action {
     PowerRight,
     VehicleAbility,
     ExitVehicle,
+    /// the game's X in a battle, its own hint's "Change View".
+    ChangeView,
     /// held, the gyro aims, when its mode is Hold.
     GyroAim,
     Pause,
@@ -57,7 +59,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 25] = [
+    pub const ALL: [Action; 26] = [
         Action::MoveUp,
         Action::MoveDown,
         Action::MoveLeft,
@@ -74,6 +76,7 @@ impl Action {
         Action::PowerRight,
         Action::VehicleAbility,
         Action::ExitVehicle,
+        Action::ChangeView,
         Action::GyroAim,
         Action::Pause,
         Action::NavigateUp,
@@ -103,6 +106,7 @@ impl Action {
             Action::PowerRight => "Powers Right",
             Action::VehicleAbility => "Vehicle Ability",
             Action::ExitVehicle => "Exit Vehicle",
+            Action::ChangeView => "Change View",
             Action::GyroAim => "Gyro Aim (hold)",
             Action::Pause => "Pause",
             Action::NavigateUp => "Menu Up",
@@ -140,6 +144,7 @@ impl Action {
         use Action::*;
         Some(match self {
             Attack => PadState::L,
+            ChangeView => PadState::X,
             PowerUp | NavigateUp => PadState::UP,
             PowerDown | NavigateDown => PadState::DOWN,
             PowerLeft | NavigateLeft => PadState::LEFT,
@@ -239,6 +244,7 @@ impl Default for ActionBindings {
             (PowerRight, vec![key(KeyCode::ArrowRight)]),
             (VehicleAbility, vec![key(KeyCode::KeyF)]),
             (ExitVehicle, vec![key(KeyCode::KeyG)]),
+            (ChangeView, vec![key(KeyCode::KeyV)]),
             (Pause, vec![key(KeyCode::Escape)]),
             (NavigateUp, vec![key(KeyCode::ArrowUp)]),
             (NavigateDown, vec![key(KeyCode::ArrowDown)]),
@@ -257,6 +263,7 @@ impl Default for ActionBindings {
             (PowerRight, vec![pad(Button::DPadRight)]),
             (VehicleAbility, vec![pad(Button::LeftThumb)]),
             (ExitVehicle, vec![pad(Button::RightThumb)]),
+            (ChangeView, vec![pad(Button::North)]),
             (GyroAim, vec![pad(Button::LeftTrigger2)]),
             (Pause, vec![pad(Button::Start)]),
             (NavigateUp, vec![pad(Button::DPadUp)]),
@@ -377,6 +384,7 @@ impl ActionBindings {
             (Input::A, Confirm),
             (Input::B, Back),
             (Input::L, Attack),
+            (Input::X, ChangeView),
             (Input::Up, NavigateUp),
             (Input::Down, NavigateDown),
             (Input::Left, NavigateLeft),
@@ -521,6 +529,7 @@ pub fn migrate(keys: &crate::settings::Keys, pad: &crate::settings::PadButtons) 
         (Action::UsePower, keys.power, fresh_keys.power),
         (Action::VehicleAbility, keys.vehicle_ability, fresh_keys.vehicle_ability),
         (Action::ExitVehicle, keys.vehicle_exit, fresh_keys.vehicle_exit),
+        (Action::ChangeView, keys.x, fresh_keys.x),
         (Action::Confirm, keys.a, fresh_keys.a),
         (Action::Back, keys.b, fresh_keys.b),
     ] {
@@ -533,6 +542,7 @@ pub fn migrate(keys: &crate::settings::Keys, pad: &crate::settings::PadButtons) 
         (Action::Attack, pad.l, fresh_pad.l),
         (Action::VehicleAbility, pad.vehicle_ability, fresh_pad.vehicle_ability),
         (Action::ExitVehicle, pad.vehicle_exit, fresh_pad.vehicle_exit),
+        (Action::ChangeView, pad.x, fresh_pad.x),
     ] {
         keep(action, pad_source(old), pad_source(fresh));
     }
@@ -540,7 +550,7 @@ pub fn migrate(keys: &crate::settings::Keys, pad: &crate::settings::PadButtons) 
 }
 
 /// the console buttons an older file changed that have no single action:
-/// the D-pad, Start, Select, X, Y, R, ZL and ZR, for the player to review.
+/// the D-pad, Start, Select, Y, R, ZL and ZR, for the player to review.
 pub fn unmigrated(keys: &crate::settings::Keys, pad: &crate::settings::PadButtons) -> Vec<&'static str> {
     use crate::settings::{Keys, PadButtons};
     let mut keys_now = keys.clone();
@@ -562,8 +572,8 @@ pub fn unmigrated(keys: &crate::settings::Keys, pad: &crate::settings::PadButton
     changed
 }
 
-const AMBIGUOUS: [&str; 11] =
-    ["X", "Y", "R", "Start", "Select", "D-pad up", "D-pad down", "D-pad left", "D-pad right", "ZL", "ZR"];
+const AMBIGUOUS: [&str; 10] =
+    ["Y", "R", "Start", "Select", "D-pad up", "D-pad down", "D-pad left", "D-pad right", "ZL", "ZR"];
 
 #[cfg(test)]
 mod tests {
@@ -605,6 +615,17 @@ mod tests {
         let mut inputs = Inputs::default();
         inputs.press(&bindings, key(KeyCode::Space), Context::Gameplay);
         assert_eq!(inputs.held(&bindings, Context::Gameplay).buttons, PadState::L);
+    }
+
+    /// Change View is the game's X in a battle, as its own hint says.
+    #[test]
+    fn change_view_presses_x_in_a_battle() {
+        let bindings = ActionBindings::default();
+        let mut inputs = Inputs::default();
+        inputs.press(&bindings, key(KeyCode::KeyV), Context::Gameplay);
+        assert_eq!(inputs.held(&bindings, Context::Gameplay).buttons, PadState::X);
+        let pad = bindings.prompts(Device::Controller, |source| Label::Key(source.name()));
+        assert_eq!(pad.get(Input::X), &Label::Key("Top face".into()));
     }
 
     /// movement keys push the circle pad; opposite keys cancel out.
@@ -724,7 +745,7 @@ mod tests {
     #[test]
     fn older_bindings_migrate_where_unambiguous() {
         use crate::settings::{Keys, PadButtons};
-        let keys = Keys { l: KeyCode::KeyK, circle_up: KeyCode::KeyI, x: KeyCode::KeyV, ..Keys::default() };
+        let keys = Keys { l: KeyCode::KeyK, circle_up: KeyCode::KeyI, x: KeyCode::KeyC, r: KeyCode::KeyV, ..Keys::default() };
         let pad = PadButtons { a: Button::South, b: Button::East, ..PadButtons::default() };
         let bindings = migrate(&keys, &pad);
         assert_eq!(bindings.sources(Device::KeyboardMouse, Action::Attack)[0], key(KeyCode::KeyK));
@@ -732,6 +753,7 @@ mod tests {
         assert_eq!(bindings.sources(Device::KeyboardMouse, Action::MoveUp)[0], key(KeyCode::KeyW));
         assert_eq!(bindings.sources(Device::Controller, Action::Confirm), &[Source::Pad(Button::South)]);
         assert_eq!(bindings.sources(Device::Controller, Action::Back), &[Source::Pad(Button::East)]);
-        assert_eq!(unmigrated(&keys, &pad), vec!["X"]);
+        assert_eq!(bindings.sources(Device::KeyboardMouse, Action::ChangeView)[0], key(KeyCode::KeyC));
+        assert_eq!(unmigrated(&keys, &pad), vec!["R"]);
     }
 }

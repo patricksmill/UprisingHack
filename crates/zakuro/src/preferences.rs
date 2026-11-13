@@ -202,21 +202,21 @@ mod tests {
     /// meaning and listed for review where not.
     #[test]
     fn an_older_settings_file_keeps_its_choices() {
-        let text = "volume = 0.4\n[keys]\nl = \"KeyK\"\nx = \"KeyV\"\n[pad]\na = \"South\"\nb = \"East\"\n";
+        let text = "volume = 0.4\n[keys]\nl = \"KeyK\"\nr = \"KeyV\"\n[pad]\na = \"South\"\nb = \"East\"\n";
         let settings = Settings::parse(text).unwrap();
         assert_eq!(settings.keys.l, KeyCode::KeyK);
         assert_eq!(settings.volume, 0.4);
         let bindings = &settings.pc.bindings;
         assert_eq!(bindings.sources(Device::KeyboardMouse, Action::Attack)[0], Source::Key(KeyCode::KeyK));
         assert_eq!(bindings.sources(Device::Controller, Action::Confirm), &[Source::Pad(gilrs::Button::South)]);
-        assert_eq!(settings.pc.review, vec!["X".to_owned()]);
+        assert_eq!(settings.pc.review, vec!["R".to_owned()]);
         assert_eq!(settings.pc.presentation, Presentation::default());
 
         // saved, the notice waits for the player; a load does not migrate
         // again
         let saved = toml::to_string_pretty(&settings).unwrap();
         let mut changed = Settings::parse(&saved).unwrap();
-        assert_eq!(changed.pc.review, vec!["X".to_owned()]);
+        assert_eq!(changed.pc.review, vec!["R".to_owned()]);
         changed.pc.review.clear();
         changed.pc.bindings.assign(Action::Attack, 0, Source::Key(KeyCode::KeyZ), Resolve::Replace).unwrap();
         let back = Settings::parse(&toml::to_string_pretty(&changed).unwrap()).unwrap();
