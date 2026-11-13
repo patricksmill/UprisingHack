@@ -1406,4 +1406,16 @@ In battle (`trace/s8.state`, held 20 frames): D-pad Down shows the power
 list over the power box (Health Recovery ×3); Select opens Pause; A, B, Y,
 ZR and D-pad Up each showed the same purple burst at Pit, and holding L
 gives a top screen identical to Y's, so in this control scheme they
-attack as L does. X, R and ZL showed nothing visible.
+attack as L does.
+
+Held 45 frames from `user_rail` (air) and `s8` (land), against holding
+nothing (two such runs are pixel-identical): X changes the view in both,
+in the air the camera leaves Pit for the reticle, on land Pit spins his
+weapon in a sparkle; R and ZL change the same number of pixels as each
+other with Pit unchanged, only the enemy in the reticle moving, so no role
+of their own shows. X is Change View: a tap on land turns the camera away
+from Pit, and the game then shows its own hint "X: Change View" at the top
+screen's bottom left (`trace/s8.state`, tap then 30 frames). The other
+battle-control text in the heap is the scheme pages' "Moving Pit: ABXY" and
+"Reticle control: ABXY". Battle pickups take effect at once, and the "item box" in
+the table above is the power panel, so there is no held-item input.

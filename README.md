@@ -21,10 +21,12 @@ so gameplay stays the same.
   to what you do (Attack, Use Power, Move, Pause, Confirm, Back…), each
   with a primary and secondary input per device. Defaults: WASD to move,
   left click or Space to attack, E or right click to use the current power,
-  the arrow keys for the power list in battle and for menus outside it, F
-  and G for the vehicle's ability and exit, Escape to pause in battle and
+  the arrow keys for the power list in battle and for menus outside it, V
+  for the game's Change View, F and G for the vehicle's ability and exit,
+  Escape to pause in battle and
   as Back in a Screen. On a controller: left stick, right stick, RT attack,
-  RB power, the d-pad, A/B, Start, stick clicks for the vehicle. An input
+  RB power, Y/△ Change View, the d-pad, A/B, Start, stick clicks for the
+  vehicle. An input
   acts only in the context it was pressed in, so Escape held into the Pause
   it opened does not close it.
 - **Gyro aim** (optional, off by default): a DualShock 4, DualSense or
