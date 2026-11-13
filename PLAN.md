@@ -9,6 +9,12 @@ stays sharp at any resolution and the layout follows the HUD scale.
 Addresses are for the USA build (0004000000030100). Findings so far are in
 `analysis/FINDINGS.md`.
 
+The approved plan for moving player-facing PC settings into KIU's own Options
+Screens is [KIU-native Options](docs/KIU_SETTINGS_PLAN.md). Its settings store,
+Action Bindings and gyro input are built; the native Screens are not (status
+table there). The ownership decision is
+recorded in [ADR 0007](docs/adr/0007-kiu-native-options-for-pc-preferences.md).
+
 ## Where things stand
 
 | Feature | How | Status |
@@ -696,6 +702,28 @@ Windows executable rebuilt from `main` and copied to
 `260cd369426f3b8ea52ea0a4520371cb8d26f18d509b2d4719761d265dc842e4`); the
 previous build is `dist/zakuro-kiu-mouse-before-save.exe`. Manual
 Windows mouse testing remains.
+
+### Chapter Select List as one row
+
+```
+Relayout the List on Chapter Select: zig-zag strip of 2–3 thumbnails → one horizontal row across the window, just above Back.
+Acceptance: on trace/chapters-many.state at 16:9, a top-screen screenshot shows all 5 open chapters in one row above Back; hovering a Row outlines that chapter and clicking it opens the Fiend's Cauldron; at a width where they do not all fit, wheel steps scroll the row without changing the Outline and keys pull it back to the Outline.
+```
+
+Decided: one row, Chapter 1 at the left; open chapters only; Rows keep the
+native thumbnail (label, laurel, cursor) at a fixed size, so wider windows
+show more; plain and Shift wheel both scroll it, stopping at both ends; a
+short List starts at the left; hover outlines without scrolling, a click is
+A; keys stay native and pull the view to the Outline, the wheel never moves
+the Outline; Back and the Gear Hint strip stay where they were; the native
+scrollbar is gone. `trace/chapters-many.state` is the user's slot 3
+(Chapters 1–5 open, Chapter 5 outlined).
+
+Status: built and checked headless (FINDINGS "Chapter Select List as one
+row"). Windows release rebuilt as `dist/zakuro-kiu-mouse.exe` (SHA-256
+`5ee20608623d60b1e39b25cf7d25e48cc6e2417e001e4639ec0457fb3815f998`; Rows uncropped; editor layers Title, Picture, Stats, Back, Hint strip, then a Row per chapter); the
+previous build is `dist/zakuro-kiu-mouse-before-chapter-row.exe`. Manual
+Windows testing remains.
 
 ### Screen Transform pipeline (in progress)
 

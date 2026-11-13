@@ -91,8 +91,27 @@ Per-frame update `0x006D2D8C(aim)`:
 4. `0x006D269C(aim, out, cam)`: applies camera turn.
 5. `0x006D2ABC`, `0x006D2820`.
 
-Reticle position: aim+0xA4 (x), aim+0xA8 (y). aim+0xD5 = 1 when not the
-local player. Game camera (`aim+0x8C → +0x2C`): fovy at +0x2B8, aspect at +0x2BC.
+Reticle position: aim+0xA4 (x), aim+0xA8 (y). aim+0xD5 combines non-local
+ownership with camera disable; it is not an ownership-only flag. At
+`0x006D2E18`, r0 is zero for a local controller and r4 is the aim object.
+`0x006D2E2C` then forces +0xD5 to one when camera+0x179 is zero. State 2's
+Exo Tank takes that path, so checking +0xD5 discarded its mouse motion.
+The mouse hooks now retain the ownership decision before the camera override.
+State 2 replay verified horizontal/vertical mouse response and Circle Pad
+movement; the regression covers local vehicle input and remote rejection.
+Game camera (`aim+0x8C → +0x2C`): fovy at +0x2B8, aspect at +0x2BC.
+
+Vehicle actions share the battle power panel (`UI+0x140 → context+0xB64`).
+Fresh State 2 touch/release at (30,220) writes command bit `0x4` at panel+8
+from `0x00A12F88`; (85,220) writes `0x8` from `0x00A12FA0`. The battle
+command consumer `0x00A30D00` routes them to `0x006E88C8` (ability) and
+`0x006E7DF8` (exit). The native hit-test `0x00A171B4` requires panel input
+enabled (first word bit `0x100000` clear) and vehicle-control animation
+panel+0xF0 at least float bits `0x3F7EFEFF`. The binding request expires
+after three frames and is consumed once, preserving other command bits.
+State 2 smoke reached the native ability request store at `0x006E891C`
+and showed the activated effect and completed dismount after 40 frames.
+`kiutrace` commands `vehicle ability` / `vehicle exit` exercise this path.
 
 Ground camera pitch (`trace/s8.state`, found 5 November by tracing writes and
 disassembling with capstone): the game camera's matrix object is at
@@ -947,6 +966,60 @@ How the screens are drawn (all from `trace/s12.state`):
 - Your cauldron states were saved with the 16:9 widening in both lenses
   (aspect 1.7778 and 1.4222, the game's are 1.6667 and 1.3333): harness
   scripts write the game's back after loading.
+- "Not enough hearts": the bar model `MenBetHeartBt0002`'s `noheart` node
+  (shown while the bet costs more than there is) and one text line drawn
+  by the bottom pass's text call (0x007C912C, through the font hook at
+  0x00A36FA4). The text's anchor is projected through whatever camera
+  crop a replay uses, so before the fix it showed up in Rest's and Move
+  Out's boxes. It is now drawn only with the dial.
+  Windows release rebuilt as `dist/zakuro-kiu-mouse.exe`, SHA-256
+  `06c6d27c7c16c68d520aebc1c5eddfb7f782b8090a19ce07a580f790c38fd098`; the
+  previous build is `dist/zakuro-kiu-mouse-before-cauldron-tag.exe`.
+- Top camera crops (`cropped_projection`, top): the stereo submit moves
+  each projection row's shift, as written, onto the other axis. Shifts
+  were therefore wrong whenever the source window was not the full height
+  (vertical) or the screen was widened (horizontal): the panel lost its
+  rounded bottom and drifted with the window's aspect. Each middle is now
+  scaled by its own row's share over the other's. Checked with crops of
+  the heart icon at 16:9 and 21:9 (`trace/s12.state`, lens aspects reset
+  with `poke 0xE14BC8 1.6666666` / `poke 0xE14DA8 1.3333334`, since the
+  state was saved widened): every box within 1 px of the expected one.
+  The widening a crop divides by is now read from the camera's own lens.
+  The 55 save states in `trace/` give identical top screens with the old
+  and new top crop, so the Scripted Menus' top crops are unchanged.
+  The default panel window is now the whole panel, `[-6, 170, 140, 72]`.
+  Windows release rebuilt as `dist/zakuro-kiu-mouse.exe`, SHA-256
+  `068a04db22ddedfed77e88aef11e63e08c043961d221373822cbf95445205126`; the
+  previous build is `dist/zakuro-kiu-mouse-before-crop-shifts.exe`.
+- Cauldron parts are no longer cropped: each is drawn through the whole
+  top screen with its camera moving and scaling it (`Placement::whole`),
+  isolated by models and, for the shared bar model `MenBetHeartBt0002`, by
+  mesh node (rendered one at a time: `base` the bar, `num` its numbers,
+  `ber` the dial and its stem, `cursor` its lit outline, `noheart` the
+  tag). The board keeps its window, the mask its hidden frame gave: without
+  it the strip's neighbouring boards show. Windows release rebuilt as
+  `dist/zakuro-kiu-mouse.exe`, SHA-256
+  `37fde4aa7345bc6aadeed34fc62f9536c1027daa02579eae9cdd33ed00ff27b2`; the
+  previous build is `dist/zakuro-kiu-mouse-before-uncropped.exe`.
+- The hint line ("Bet hearts to…") never went through the font hook the
+  old 0.7 scaling sat in: it is drawn by the text loop at 0x00A35750,
+  whose camera calls (0x00A35AF4, 0x00A35BBC, 0x0090A5B4 with the
+  projection in r1, 0x00DB72D0 for the top) take a placement as the
+  dialog's words do. It is now the ninth Cauldron part, Hint, placed
+  there (`cauldron_hint`). The flag marking layer 0xB's text was being
+  cleared when the game came back into `TOP_TEXT` after its viewport
+  call; it is now set on the first entry only. Windows release rebuilt as
+  `dist/zakuro-kiu-mouse.exe`, SHA-256
+  `d9a5ada9476db4faef1ecec888502c53bd66921826d856332313b4d1ee723a5b`; the
+  previous build is `dist/zakuro-kiu-mouse-before-hint.exe`.
+- Menu editor: the arrow keys nudge the selection (1 pixel, 10 with
+  Shift) while no text field is focused and no drag is active. Dragging
+  prefers any already-selected item under the press over a covering one,
+  so an item picked from the list pane can be dragged without moving what
+  covers it. Windows release rebuilt as `dist/zakuro-kiu-mouse.exe`,
+  SHA-256
+  `bc9194fbfb58c5d844710a0563a407a6ac4d1771d237e8dd62a013b895fdf7b7`; the
+  previous build is `dist/zakuro-kiu-mouse-before-nudge.exe`.
 
 ## Weapon effects: geometry shader mode 2
 
@@ -1105,6 +1178,67 @@ and copied to `C:\Users\Patrick\Downloads\zakuro-kiu\zakuro-kiu.exe`.
 The previous executable is `dist/zakuro-kiu-mouse-before-chapter-layout.exe`.
 Manual Windows testing remains.
 
+Entrance: while chapter select slides in, its update has not run yet, so
+`menu_top::scene` found it only by model name. `MenStageselect*` fell to the
+generic native fallback (kind 8): for about 20 frames after A on the Solo
+hub, the top showed the two native screens side by side over black, then
+snapped to the layout. `MenStageselectBt` now maps to index 1 the way
+`MenSelfileBt` maps to File Select, so the slide-in plays inside the final
+layout from its first frame (Solo hub from `trace/s11.state` + B, then A,
+shot every 3 frames).
+Windows release rebuilt as `dist/zakuro-kiu-mouse.exe`, SHA-256
+`cba7c34a0c1116df7df93c20eb62abdd27e298b9af8c6cae0ed7fec53996ec58`; the
+previous build is `dist/zakuro-kiu-mouse-before-chapter-entry.exe`.
+
+## Chapter Select List as one row
+
+The List (`MenStageselectBt0000`) is one model with a skeleton: model
+`+0x22C` is the skeleton, its `+8` the CGFX SOBJ, whose bone DICT
+(`SOBJ+0x1C`, relative) names the bones in the order of the world matrices
+at skeleton `+0x40` (3x4, 48 bytes; locals at `+0x20`, 4x4 worlds at
+`+0x30`). Bone 0 is the root, 1 `ML_B0000`, 2 `ML_B0001`, and so on, with
+`ML_B0009_0/_1` and `ML_B0023_0/_1` as children. Translation is `+0xC`
+(across) and `+0x1C` (up): each chapter is 8 units further along, the root
+at -8 per chapter outlined, and the zig-zag is 6.4 / -2.6. Measured against
+bottom-screen captures, a bone at (x, y) is drawn centred at
+(163.75 + 8.75x, 123.9 - 10.22y). The game recomputes these every update,
+so writes to them never reach a draw. Every open chapter's node stays shown
+wherever it is scrolled; only the native List window cuts them.
+
+The laurels are one `MenStageselectBt0004` model per chapter, each with its
+world matrix at model `+0x8C` (translation `+0x98`, `+0xA8`) placed on its
+chapter (uncleared ones at y 100). `MenStageselectBt0003` is the red cursor,
+kept on the outlined chapter. The chapter object (0x14040DA8 in
+`trace/chapters-many.state`) keeps the scroll target at `+0x178` (-8 per
+chapter).
+
+Each open chapter is a Row Part: its source is 144x90 around its bone's
+centre, read every frame, and its slot is in one band above Back. A Row
+replays only its own `ML_B` node, its own laurel and, when outlined, the
+cursor, and no scissor at all: a cut to the slot cropped the laurel (which
+overhangs the thumbnail's left edge) and the cursor, and the native List
+window hides chapters scrolled off its screen. Rows skip the bottom text
+pass (chapter labels are in the thumbnail textures); uncut, it drew the Gear
+hint enlarged across the screen once per Row.
+Replaying the whole List in every Row blacked out the frame by the fourth
+Row (the drawing-buffer limit seen on Armory). The editor layers before the
+Rows are cut from the two screens' drawings (`CHAPTER_LAYERS`): Title,
+Picture and Stats from the top (the rainbow band, rule and grey board behind
+them are the backdrop pass), Back and the Gear Hint strip from the bottom;
+the native thumbnails, laurels and scrollbar are not drawn in them. Their
+defaults reproduce the earlier whole-screen placement exactly. Layout files
+saved before the split index Chapter Select's layers differently and need
+re-editing. Hovering a Row picks its chapter by `PICK_CHAPTER` directly (the
+native hit test cannot reach a chapter scrolled off the bottom screen);
+native thumbnail hits are ignored. The wheel moves only the row's own scroll.
+
+Checked headless on `trace/chapters-many.state`: at 16:9 all five chapters in
+one row with laurels and the cursor on Chapter 5; `mhover 112.5 190` outlines
+Chapter 2 (`+0x12C` = 1) and the details follow without the row moving; the
+click is taken and opens the Fiend's Cauldron. At 1:1 two Rows fit:
+Chapters 4–5 shown, `wheel -5` shows 1–2 with the Outline still on 5, and
+LEFT outlines 4 and pulls the view to 3–4.
+
 ## Button prompts in the stand-in system font
 
 Hint strips and dialogs write the console's button symbols as Private Use
@@ -1134,3 +1268,142 @@ to keyboard labels showed an `Esc` keycap in the same strip two frames later.
 Windows release rebuilt as `dist/zakuro-kiu-mouse.exe`, SHA-256
 `442ba2bdf5e0c8cb41f1952fe21ead02ef4739800ecb5de109d5818632ad5e75`.
 The previous executable is `dist/zakuro-kiu-mouse-before-prompts.exe`.
+
+## Resizing on a placed menu froze the old width's projection
+
+Widening the window on Chapter Select (or any Screen whose parts are drawn
+through a placed camera) left the top screen's 3D at the old width: the
+backdrop, picture and title stretched past their Placements and were cut by
+their scissors. Entering the Screen at the final width was fine.
+
+The top camera (`0x00E14BEC`, lens `0x00E14BB4`) caches its projection at
+`camera+0x6C`; bit 2 of `camera+8` marks it built. On a placed menu a
+placed projection is in the camera whenever the getter `0x003901C4` runs
+(the game's own pass is placed through `menu_top.native`, parts through
+replays), so the game's matrix lives only in the copies kept for
+`put_back`. A width change makes `widen_view` write the lens aspect and
+clear bit 2; the game rebuilds `+0x6C` for the new width, then `put_back`
+writes the kept old-width matrix over it. Bit 2 stays set and the lens
+aspect matches what was written, so nothing rebuilds it again.
+
+`crop_camera` now records each placed projection, and `put_back` leaves one
+the game has since replaced. Deferring the lens change until no projection
+is placed does not work: on these Screens one always is.
+
+Validation: `trace/chapters-many.state`, `wide` 1.78→3.03, 3.03→1.78 and
+1.0→2.33 each leave the lens following the width and `+0x6C` built from it
+(before: built for the old width). Entering from `trace/solo.state` at 16:9
+then widening to 3.03 now draws the title, picture and backdrop as an entry
+at 3.03 does. Regression test
+`a_projection_rebuilt_for_a_new_width_is_not_put_back_over`.
+
+The previous executable is `dist/zakuro-kiu-mouse-before-resize-projection.exe`.
+
+## Chapter Select's cuts were measured from a squeezed picture
+
+Even entered at the window's width, Chapter Select cut the picture's torn
+left edge, the tip of the Back arrow and Chapter 1's card. The Title,
+Picture and Stats are not separate assets: each part replays the whole top
+drawing (`MenStageselectUp0000` without its `PN_U0002` background, plus the
+font text) and its `CHAPTER_LAYERS` rectangle is what keeps it from showing
+the others. Back is a rectangle of the bottom drawing. Rows draw only their
+thumbnail's nodes, unclipped, from a source centred on `chapter_center`.
+
+Those rectangles and `chapter_center`'s scale were measured from renders
+whose lenses were already widened: a state saved at one width and loaded in
+a fresh process makes `widen_view` take the widened aspect as the game's own
+(`trace/chapters-many.state` gives the top lens 1.90 rather than 5:3). The
+art there is narrower than it really is, so its true extent overran its
+rectangle, and the Rows' sources sat beside their art.
+
+From a clean render (entered from `trace/solo.state` by navigation at 5:3):
+picture x 57.7–355, Back arrow x 7–48, and the List's cards at x
+`160.7 + 9.68 × bone x` (Chapter 1/2/3 at −1.0, 76.4, 153.9 for bones
+−16.7, −8.7, −0.7), not `163.75 + 8.75 × x`. The top parts are now full-width
+bands (Title y 18–66, Picture 66–166, Stats 166–240) and Back reaches x 0;
+`cut` keeps each part's art where it was, so only the window grows.
+
+Validation: a placed 5:3 render from that clean state, with the picture's
+left border, the arrow's tip and Chapter 1's frame each found where the
+clean art puts them; red with the old constants (picture border missing,
+arrow from its box edge at 131.3, Chapter 1 from x 0), green after. At 3.03
+with cleared Chapter 2 selected, its laurels, the picture, the three cards
+and Back are whole.
+
+Loading a state saved at another width still compounds the widening; not
+fixed here.
+
+Windows release rebuilt as `dist/zakuro-kiu-mouse.exe`, SHA-256
+`3cbce89304341a358a1d3144f4a75a6565860cba24d591368376922911a6d05e`.
+The previous executable is `dist/zakuro-kiu-mouse-before-resize-projection.exe`.
+
+## Native Options inventory (settings plan, slice 1)
+
+Screenshots of the saved states with `menutop 0` (13 Nov), bottom screen:
+
+| State | Screen | Controls |
+| --- | --- | --- |
+| `s15` | Options | Controls, Volume, Other, Back (artwork labels) |
+| `s16` | Other | Profile, Subtitles, SpotPass On/Off |
+| `s17` | Controls | Control Configuration, Reticle/Camera, More Controls |
+| `s18` | Volume | Music, SFX, Voice sliders, To Music Gallery |
+| `s19` / `s25` | Profile / Profile Yes/No | Player name and birthday |
+| `s20` | Subtitles (Pause, in battle) | Upper, Lower, Off |
+| `s21` | Reticle/Camera | Air Battle, Land Battle |
+| `s22` | Control Configuration | "Step 1: Choose how to move Pit": Circle Pad (Default), and a second scheme drawn as `????` |
+| `s23` | More Controls | Guide Arrow, Shot Homing, Aim Assist, Autofire (On/Off), Try It! |
+| `s26` | Reticle/Camera — Air Battle (Pause) | speed Slow–Fast, Stop Quickly–Slowly, Invert Vertical Movement, Invert Vertical, Invert Horizontal, OK |
+| `s27` | SpotPass Dialog | No, Yes |
+
+So the game already owns vertical/horizontal inversion, aim assist, autofire
+and the movement scheme; PC Preferences must not duplicate them. The
+Options main page's category labels are artwork in their models, while
+Row labels on Other, Control Configuration, More Controls and the Air
+Battle page are drawn with the system font (`Step 1: …`, `Invert Vertical
+Movement`). Adding a category to Options therefore needs new label
+artwork or a font-drawn label over a cloned button model; adding a Row to
+a font-labelled page needs the page's string source.
+
+Open questions recorded before any new native Control is built:
+
+- Whether the Air/Land Battle speed sliders scale the mouse's aim deltas
+  (`0x00B12218` return) or only stylus drags. If they do, the mouse's host
+  sensitivity is a second Control for the same thing.
+- The `????` scheme label: a glyph missing from the stand-in font or the
+  game's own text. Darkshade's patch extends this page (Step 1 movement,
+  Step 2 aim source) and ships RomFS assets for it.
+- Where Pause's Options (battle UI code, `ctx+0x243C`, pages above) and
+  the Scripted Menu Options get their Row strings.
+
+Darkshade base patch (USA v172, Emulator package) against our hooks,
+measured 13 Nov by comparing every `0x00xxxxxx` address in
+`aim_mouse*.rs` with the patched `exefs/code.bin`: of 344 referenced
+addresses in the code image, 3 differ, each one word turned into a branch
+to the patch's code past the original image (code.bin 12,992,512 →
+15,032,320 bytes, 25,198 bytes changed in the original range):
+
+| Address | Our use | Original | Patched |
+| --- | --- | --- | --- |
+| `0x003901C4` | `PROJECTION`, projection getter entry | `e92d4030` push | `ea26947d` b |
+| `0x0060D68C` | Pause `ToTop` place | `e2845a03` | `ea1c9f32` b |
+| `0x006D2ED4` | `BEFORE_CAMERA_TURN`, the `bl 0x006D2ABC` | `ebfffef8` | `eb21b449` bl |
+
+None of the five 60 FPS IPS words are patched. The package's RomFS is
+`us/0.arc` and 56 stage `.zrc` files. Zakuro already lays a mod's
+`code.bin`/`exheader.bin`/RomFS (`zakuro-core/src/mods.rs`), but refuses a
+recompiled library built from the unmodified code when a mod changes it.
+
+Native text for new Controls (13 Nov, `trace/s16.state`, Other): the
+font hook `0x00A36FA4` runs once a frame there, with `r1` a UTF-16 string
+in the heap message table (`0x1573F112`, "Adjust name, birth date, and Mii
+settings.", followed by the other Options hints). So the top screen's hint
+line is drawn from a string pointer a hook can substitute. Other's Row
+labels (Profile, Subtitles, SpotPass) make no font call per frame: they
+are model textures, drawn once or baked, so a new Row needs either their
+text texture rebuilt or a font call of our own over a cloned Row model.
+
+In battle (`trace/s8.state`, held 20 frames): D-pad Down shows the power
+list over the power box (Health Recovery ×3); Select opens Pause; A, B, Y,
+ZR and D-pad Up each showed the same purple burst at Pit, and holding L
+gives a top screen identical to Y's, so in this control scheme they
+attack as L does. X, R and ZL showed nothing visible.

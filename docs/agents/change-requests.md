@@ -32,6 +32,7 @@ Closed set. Extend it only when a request genuinely fits none of these.
 | relabel | Change displayed text or artwork label | Relabel the Back Control on Armory — Gear |
 | rebind | Change which input activates a Control | Rebind the List on Music Gallery to the mouse wheel |
 | reorder | Change the order of Rows in a List or Board | Reorder the Rows on Options |
+| relayout | Place the Rows of one List in a new arrangement, keeping their order and input | Relayout the List on Chapter Select as one horizontal row |
 | hide | Stop drawing a Control while keeping its game state | Hide the Hint strip on Pause |
 
 ## Acceptance

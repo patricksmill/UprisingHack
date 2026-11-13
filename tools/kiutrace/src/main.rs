@@ -17,6 +17,8 @@
 //!   shot <name>                   write both screens as out/<name>_top.ppm and _bottom.ppm
 //!   shotscaled <name>             the same at the hardware renderer's scale, KIUTRACE_SCALE=<n>
 //!                                 also writes <name>_right.ppm when the game draws in 3D
+//!   shotbetween <name>            the picture in between High Refresh Mode shows, as shotscaled;
+//!                                 needs KIUTRACE_DIRECT=1, KIUTRACE_SCALE and interpolation 1
 //!   stereo <0..1>                 set the console's 3D slider (0 is off)
 //!   save <file> / load <file>     a Zakuro saved state
 //!   scan                          list objects whose first word is an aim vtable
@@ -48,7 +50,7 @@
 //!   cdrag <x0> <y0> <x1> <y1> <frames>  and drag across it
 //!   chover <x> <y>                move the mouse over it there, without touching
 //!   cauldronrule <role> <to x y w h> <from x y w h> <anchor> <anchor_y>  set one Fiend's Cauldron placement rule:
-//!                                 role top, panel, bar, dial, back, moveout or rest; to is the box at its design
+//!                                 role top, panel, bar, dial, back, moveout, rest, ring or hint; to is the box at its design
 //!                                 width as shown, from the part of its screen shown (panel and dial at intensity 0)
 //!   cauldronvisible <role> <0|1>  hide/show one Fiend's Cauldron part, drawing and touches both
 //!   hover <x> <y> / unhover       move the mouse over the bottom screen's pixel, or off it, with
@@ -204,6 +206,15 @@ fn main() {
                     write_ppm(&path, width, height, &image);
                 }
             }
+            "shotbetween" => {
+                for (screen, suffix) in [(Screen::Top, "top"), (Screen::Bottom, "bottom")] {
+                    let path = out.join(format!("{}_{suffix}.ppm", words[1]));
+                    match system.upright_screen(screen, true) {
+                        Some((image, width, height)) => write_ppm(&path, width, height, &image),
+                        None => println!("  no picture in between for the {suffix} screen"),
+                    }
+                }
+            }
             "save" => std::fs::write(words[1], system.save_state().expect("save the state")).expect("write the state"),
             "load" => system.load_state(&std::fs::read(words[1]).expect("read the state")).expect("load the state"),
             "scan" => scan(&mut system),
@@ -258,6 +269,12 @@ fn main() {
                 let aim_mouse = system.aim_mouse.get_or_insert_with(Default::default);
                 aim_mouse.captured = true;
                 aim_mouse.add(float(1), float(2));
+            }
+            "vehicle" => {
+                let frame = system.frames;
+                let exit = words.get(1) == Some(&"exit");
+                let accepted = system.aim_mouse.get_or_insert_with(Default::default).use_vehicle(frame, exit);
+                println!("  [{frame}] vehicle {}: {accepted}", if exit { "exit" } else { "ability" });
             }
             "power" => {
                 let frame = system.frames;
@@ -361,7 +378,7 @@ fn main() {
             "cauldronrule" | "cauldronvisible" => {
                 use zakuro_core::aim_mouse::CauldronRole;
                 let role = words.get(1).and_then(|name| CauldronRole::from_name(name))
-                    .unwrap_or_else(|| panic!("{} requires a Cauldron role: top, panel, bar, dial, back, moveout, rest or ring", words[0]));
+                    .unwrap_or_else(|| panic!("{} requires a Cauldron role: top, panel, bar, dial, back, moveout, rest, ring or hint", words[0]));
                 let mouse = system.aim_mouse.get_or_insert_with(Default::default);
                 let mut rules = mouse.cauldron_rules();
                 let rule = rules.rule_mut(role);

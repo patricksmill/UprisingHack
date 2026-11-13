@@ -17,7 +17,7 @@ An out-of-battle game screen laid out by the game's scripted layout system: file
 _Avoid_: Front-end menu, out-of-battle menu, static screen, 2D scene
 
 **Frontend Menu**:
-Zakuro's own Esc overlay, drawn by the emulator and containing no game UI.
+Zakuro's own host-drawn interface for emulator configuration, diagnostics and recovery, containing no game UI.
 _Avoid_: Emulator menu, settings overlay, debug menu
 
 **Screen**:
@@ -75,6 +75,18 @@ The host's mouse position in window space.
 _Avoid_: Cursor (when the mouse is meant)
 
 ### Input
+
+**PC Preferences**:
+Control, audio, display and presentation choices for the PC version that apply across save books, independently of game progress.
+_Avoid_: Emulator settings (for player-facing choices), PC save data
+
+**Action Binding**:
+A keyboard, mouse or controller assignment to a named player action, such as Attack or Use Power, rather than to a virtual 3DS button.
+_Avoid_: 3DS mapping (for action-based assignments)
+
+**Gyro Aim**:
+Optional controller-motion aiming that supplements stick aiming during gameplay.
+_Avoid_: Motion controls (when referring specifically to aiming)
 
 **Air Aim**:
 Absolute mouse coordinate mapping used during aerial flight sections.

@@ -2,6 +2,10 @@
 
 High Refresh Mode keeps the game updating 60 times a second (the 60 FPS patch) and has zakuro's presenter draw pictures in between the last two real frames at the host's refresh rate. We did not run the game's own update faster with a smaller timestep, even though its actors already take a frame-scaled dt: a native 120 Hz spike (analysis/PERFORMANCE.md §5) kept movement and HUD timers correct but desynced dialogue audio, because the game's sound code steps once per update, and dropped frames from the doubled per-refresh work. Holding the update at a fixed 60 also keeps the game deterministic per update, which a future lockstep multiplayer mode would need.
 
+## Status
+
+Switched off, 4 November 2026: in play the mode slowed the emulation down until the sound ran dry. The Settings toggle and cap are hidden and the mode is always off; a saved `high_refresh_mode` (or `frame_interpolation`) is ignored. The presenter code and this decision stay for a later fix (analysis/PERFORMANCE.md).
+
 ## Consequences
 
 - Up to one 60th of a second of extra display latency, the cost of interpolating rather than predicting.

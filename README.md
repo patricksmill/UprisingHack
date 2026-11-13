@@ -16,6 +16,21 @@ so gameplay stays the same.
 
 - **Air battles**: the mouse aims where you point, absolutely.
 - **Ground battles**: the mouse turns the camera, relative like a PC shooter.
+- **Exo Tank**: mouse look remains active when the vehicle disables the ordinary ground camera.
+- **Action Bindings**: keys, mouse buttons and controller buttons are bound
+  to what you do (Attack, Use Power, Move, Pause, Confirm, Back…), each
+  with a primary and secondary input per device. Defaults: WASD to move,
+  left click or Space to attack, E or right click to use the current power,
+  the arrow keys for the power list in battle and for menus outside it, F
+  and G for the vehicle's ability and exit, Escape to pause in battle and
+  as Back in a Screen. On a controller: left stick, right stick, RT attack,
+  RB power, the d-pad, A/B, Start, stick clicks for the vehicle. An input
+  acts only in the context it was pressed in, so Escape held into the Pause
+  it opened does not close it.
+- **Gyro aim** (optional, off by default): a DualShock 4, DualSense or
+  Switch controller's gyroscope feeds the console's, Always On in battle or
+  held with LT; sensitivity, inversion and calibration. The game aims with
+  it only with the C-Stick & Gyro patch installed.
 - No touch screen involved.
 
 ### One screen
@@ -50,6 +65,8 @@ grouped lists and compact hints.
   main menu, the Solo hub, Arms Altar, Practice Range, Idol Toss, Treasure
   Hunt, the Vault, the Armory, and the Fiend's Cauldron.
 - Armory lists scroll with the wheel; Shift + wheel scrolls horizontally.
+- Chapter select shows its chapters in one row across the window; the wheel
+  scrolls it without changing the chapter picked.
 - Click-and-hold and dragging stay native touch.
 
 ### Performance
@@ -71,9 +88,13 @@ grouped lists and compact hints.
   being restored.
 - Boss coverage: natural boss defeat, and bosses beyond Medusa, Hewdraw and
   Twinbellows, still need checks.
-- Picking a different power and using items from the keyboard are next.
-- The project's own settings (HUD scale, aim sensitivity, overclock) are still
-  environment variables; moving them into Zakuro's settings menu is planned.
+- The arrow keys and d-pad reach the game's own power list in battle (Down
+  shows it); moving through it and using items from the keyboard still
+  need checking.
+- KIU's own Options Screens don't show the PC Preferences yet. Until they
+  do, F12 opens the Frontend Menu, whose Settings window has a Kid Icarus
+  section for the bindings, sensitivities, gyro and HUD/portrait sizes.
+  The CPU overclock is still `ZAKURO_OVERCLOCK`.
 - Dialog text can occasionally stack in some scenes; the cause is known and
   the fix is planned.
 
@@ -89,8 +110,9 @@ cargo run --release --manifest-path tools/zakuro/Cargo.toml -p zakuro -- dumps/k
 ```
 
 Recompile the game once from Zakuro's library (the Recompile button) so it runs
-at full speed. Esc opens the menu over the game, where the controls, sound and
-graphics settings live.
+at full speed. F12 (or a controller's Home button) opens the menu over the
+game, where the sound and graphics settings live; in Kid Icarus Escape is the
+game's own Pause and Back.
 
 The one-screen features can be turned off for comparison with the original
 layout: `ZAKURO_MENUS_TOP=0`, `ZAKURO_NARRATION_TOP=0`, `ZAKURO_MIRROR_BOTTOM=0`,
@@ -116,7 +138,8 @@ layout: `ZAKURO_MENUS_TOP=0`, `ZAKURO_NARRATION_TOP=0`, `ZAKURO_MIRROR_BOTTOM=0`
 - `ghidra/`: headless import, decompile and disassembly scripts for code.bin.
 - `scripts/`: float scans, the 60 FPS IPS builder, code diffs, screenshot
   conversion.
-- `overrides/`: 3dsrecomp C overrides from the first approach (a placeholder;
-  the hooks are in the Zakuro fork now).
+- `overrides/`: game functions recovered as C Overrides, built with
+  `3dsrecomp build --overrides overrides/`; `docs/decomp/LEDGER.md` counts
+  them and records how each was checked.
 - `analysis/`, `trace/`, `build/`, `dist/`: generated output, kept out of git
   because it holds game code or binaries.
