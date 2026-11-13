@@ -3,13 +3,16 @@
 //! at a time.
 
 mod audio;
+mod bindings;
 mod camera;
 mod cli;
 mod gamepad;
 mod gui;
+mod gyro;
 mod input;
 mod library;
 mod menus;
+mod preferences;
 mod present;
 mod recompile;
 mod report;
@@ -129,7 +132,7 @@ pub fn run(linked: Option<Linked>) {
         let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
         hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_nanos()));
         settings.console_id = hasher.finish() | 1;
-        settings.save();
+        let _ = settings.save();
     }
 
     let data_dir = options.data.clone().map(PathBuf::from).or_else(default_data_dir);
@@ -161,6 +164,7 @@ pub fn run(linked: Option<Linked>) {
     let mut app = App {
         keyboard: Keyboard::new(settings.keys.clone()),
         gamepads: gamepad::Gamepads::new(settings.pad.clone()),
+        gyro: gyro::Gyro::new(),
         prompt_faces: None,
         prompts_shown: None,
         scale: options.scale.unwrap_or(settings.scale).max(1),
@@ -194,7 +198,6 @@ pub fn run(linked: Option<Linked>) {
         tilting_from: None,
         aim_captured: false,
         released_for_pause: false,
-        aim_sensitivity: std::env::var("ZAKURO_AIM_SENSITIVITY").ok().and_then(|value| value.parse().ok()).unwrap_or(0.5),
         cursor: (0.0, 0.0),
         last_title_update: Instant::now(),
         next_frame: Instant::now(),
@@ -476,6 +479,8 @@ struct App {
     window: Option<Window>,
     keyboard: Keyboard,
     gamepads: gamepad::Gamepads,
+    /// a controller's gyroscope, for aiming with it.
+    gyro: gyro::Gyro,
     /// the controller whose buttons the game's prompts show, none for the
     /// keyboard and mouse: whichever the player used last.
     prompt_faces: Option<gamepad::Faces>,
@@ -503,8 +508,6 @@ struct App {
     /// the mouse was let go for the pause menu on the top screen, and is
     /// held again once it is gone.
     released_for_pause: bool,
-    /// reticle pixels a count of the mouse moves it, ZAKURO_AIM_SENSITIVITY.
-    aim_sensitivity: f32,
     cursor: (f32, f32),
     last_title_update: Instant,
     /// when the next frame is due. frames run to a schedule rather than one
@@ -795,9 +798,16 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. }
+                if self.capture_binding(bindings::Source::Mouse(button)) => {}
             WindowEvent::MouseInput { state, button, .. } if self.aim_captured => {
-                if button == MouseButton::Left {
-                    self.keyboard.mouse_button(zakuro_core::services::hid::PadState::L, state == ElementState::Pressed);
+                let pressed = state == ElementState::Pressed;
+                if self.keyboard.acting() {
+                    let started = self.keyboard.source(bindings::Source::Mouse(button), pressed);
+                    self.do_actions(started);
+                    self.prompt_faces = None;
+                } else if button == MouseButton::Left {
+                    self.keyboard.mouse_button(zakuro_core::services::hid::PadState::L, pressed);
                     self.prompt_faces = None;
                 }
             }
@@ -826,7 +836,7 @@ impl ApplicationHandler for App {
 
     fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
         if let (true, DeviceEvent::MouseMotion { delta }) = (self.aim_captured, event) {
-            let sensitivity = self.aim_sensitivity;
+            let sensitivity = self.settings.pc.aim.mouse_sensitivity;
             if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
                 aim_mouse.add(delta.0 as f32 * sensitivity, delta.1 as f32 * sensitivity);
             }
@@ -941,13 +951,11 @@ impl App {
                     system.recompiled = None;
                 }
             }
-            // the HUD made for a small screen, drawn smaller on a big one,
-            // ZAKURO_HUD_SCALE, 1 as the game draws it
-            let hud_scale = std::env::var("ZAKURO_HUD_SCALE").ok().and_then(|value| value.parse().ok()).unwrap_or(0.7);
+            // the HUD, reticle and portraits at the PC Preferences' scales
+            let hud_scale = self.settings.pc.presentation.hud_scale;
             // the narration drawn on the top screen as well, ZAKURO_NARRATION_TOP=0 leaves it below
             let narration_on_top = std::env::var("ZAKURO_NARRATION_TOP").map_or(true, |value| value != "0");
-            // and the portraits, in the top screen's bottom corners at ZAKURO_PORTRAIT_SCALE, 0 for not
-            let portrait_scale = std::env::var("ZAKURO_PORTRAIT_SCALE").ok().and_then(|value| value.parse().ok()).unwrap_or(0.5);
+            let portrait_scale = self.settings.pc.presentation.portrait_scale;
             // and the hearts, item box and power icon, ZAKURO_MIRROR_BOTTOM=0 leaves them below
             let mirror_bottom = std::env::var("ZAKURO_MIRROR_BOTTOM").map_or(true, |value| value != "0");
             // and the pause menu, where the mouse touches it, ZAKURO_PAUSE_TOP=0 leaves it below
@@ -1017,6 +1025,7 @@ impl App {
         self.link_room();
         self.menus.menu_open = false;
         self.keyboard.release();
+        self.apply_bindings();
         self.paused = false;
         self.next_frame = Instant::now();
         if let Some(window) = &self.window {
@@ -1043,8 +1052,11 @@ impl App {
     fn key(&mut self, event: KeyEvent, consumed: bool) {
         let pressed = event.state == ElementState::Pressed;
         let PhysicalKey::Code(code) = event.physical_key else { return };
-        // Escape leaves a controller binding waiting for a button as it was
-        if pressed && code == KeyCode::Escape && self.menus.rebinding_pad.take().is_some() {
+        // Escape leaves a binding waiting for an input as it was
+        if pressed && code == KeyCode::Escape && (self.menus.rebinding_pad.take().is_some() || self.menus.rebinding_action.take().is_some()) {
+            return;
+        }
+        if pressed && !event.repeat && self.capture_binding(bindings::Source::Key(code)) {
             return;
         }
         // a binding waiting for a key takes it, Escape leaves it as it was
@@ -1058,7 +1070,11 @@ impl App {
             }
             return;
         }
-        if code == KeyCode::Tab && !event.repeat && !self.settings.keys.binds(KeyCode::Tab) {
+        let tab_bound = match self.keyboard.acting() {
+            true => self.settings.pc.bindings.binds(bindings::Source::Key(KeyCode::Tab)),
+            false => self.settings.keys.binds(KeyCode::Tab),
+        };
+        if code == KeyCode::Tab && !event.repeat && !tab_bound {
             // fast forward while it is held; the editor owns the keyboard
             self.fast_forward_key = pressed && self.game.is_some() && !self.menus.editor_open;
         }
@@ -1077,11 +1093,15 @@ impl App {
                     self.keyboard.release();
                     return;
                 }
-                KeyCode::Escape if self.game.is_some() => {
-                    self.released_for_pause = false;
-                    self.set_aim_captured(false);
-                    self.menus.menu_open = !self.menus.menu_open;
-                    self.keyboard.release();
+                // the Frontend Menu: F12 always, Escape and Home too for a
+                // title whose Escape is the console's; Kid Icarus's Escape is
+                // its own Pause and Back
+                KeyCode::F12 if self.game.is_some() => {
+                    self.toggle_frontend_menu();
+                    return;
+                }
+                KeyCode::Escape if self.game.is_some() && !self.keyboard.acting() => {
+                    self.toggle_frontend_menu();
                     return;
                 }
                 KeyCode::F1 => {
@@ -1090,12 +1110,12 @@ impl App {
                 }
                 KeyCode::F9 => {
                     self.settings.layout = self.settings.layout.next();
-                    self.settings.save();
+                    self.save_settings();
                     self.apply_layout();
                 }
                 KeyCode::F10 if self.settings.layout.other_screen() != self.settings.layout => {
                     self.settings.layout = self.settings.layout.other_screen();
-                    self.settings.save();
+                    self.save_settings();
                     self.apply_layout();
                 }
                 KeyCode::F11 => self.toggle_fullscreen(),
@@ -1103,6 +1123,23 @@ impl App {
                 KeyCode::F8 if self.game.is_some() => self.load_state(),
                 _ => {}
             }
+        }
+        let to_game = self.game.is_some()
+            && !self.menus.menu_open
+            && !self.menus.settings_open
+            && !self.menus.editor_open
+            && !consumed
+            && !self.gui.as_ref().is_some_and(Gui::wants_keyboard);
+        if self.keyboard.acting() {
+            // letting go always gets through, so that no action stays held
+            if (to_game && !event.repeat) || !pressed {
+                let started = self.keyboard.key(event.physical_key, pressed);
+                self.do_actions(started);
+            }
+            if to_game && pressed {
+                self.prompt_faces = None;
+            }
+            return;
         }
         // the power key uses a power in a battle, and anywhere else does what
         // else it is bound to, if anything. held, it uses no more than the one;
@@ -1118,12 +1155,22 @@ impl App {
                 }
             }
         }
-        let to_game = self.game.is_some()
-            && !self.menus.menu_open
-            && !self.menus.settings_open
-            && !self.menus.editor_open
-            && !consumed
-            && !self.gui.as_ref().is_some_and(Gui::wants_keyboard);
+        if to_game && pressed && !event.repeat {
+            let exit = if code == self.settings.keys.vehicle_ability {
+                Some(false)
+            } else if code == self.settings.keys.vehicle_exit {
+                Some(true)
+            } else {
+                None
+            };
+            if let (Some(exit), Some(game)) = (exit, &mut self.game) {
+                let frame = game.system.frames;
+                if game.system.aim_mouse.as_mut().is_some_and(|mouse| mouse.use_vehicle(frame, exit)) {
+                    self.prompt_faces = None;
+                    return;
+                }
+            }
+        }
         // letting go always gets through, so that no button stays held
         if to_game || !pressed {
             self.keyboard.key(event.physical_key, pressed);
@@ -1133,19 +1180,107 @@ impl App {
         }
     }
 
+    /// opens or closes the Frontend Menu over the game.
+    fn toggle_frontend_menu(&mut self) {
+        self.released_for_pause = false;
+        self.set_aim_captured(false);
+        self.menus.menu_open = !self.menus.menu_open;
+        self.keyboard.release();
+    }
+
+    /// does what the actions a press started do outside the console's
+    /// buttons: a power, or a vehicle's ability or exit.
+    fn do_actions(&mut self, started: Vec<bindings::Action>) {
+        let Some(mouse) = self.game.as_mut().and_then(|game| {
+            let frame = game.system.frames;
+            game.system.aim_mouse.as_mut().map(|mouse| (mouse, frame))
+        }) else {
+            return;
+        };
+        let (mouse, frame) = mouse;
+        for action in started {
+            match action {
+                bindings::Action::UsePower => mouse.use_power(frame),
+                bindings::Action::VehicleAbility => _ = mouse.use_vehicle(frame, false),
+                bindings::Action::ExitVehicle => _ = mouse.use_vehicle(frame, true),
+                _ => {}
+            }
+        }
+    }
+
+    /// gives a Kid Icarus action waiting for an input this one, when it is
+    /// the device's, asking first when another action already uses it.
+    fn capture_binding(&mut self, source: bindings::Source) -> bool {
+        let Some((action, device, slot)) = self.menus.rebinding_action else { return false };
+        if source.device() != device {
+            return false;
+        }
+        self.menus.rebinding_action = None;
+        let conflicts = self.settings.pc.bindings.conflicts(action, source);
+        if conflicts.is_empty() {
+            if let Err(error) = self.settings.pc.bindings.assign(action, slot, source, bindings::Resolve::Replace) {
+                log::warn!("binding {} refused: {error:?}", action.name());
+            }
+            self.apply_settings();
+        } else {
+            self.menus.binding_conflict = Some((action, slot, source, conflicts));
+        }
+        true
+    }
+
     /// takes in the controllers' buttons, a binding waiting for one takes
     /// it, and Home opens and closes the menu over the game.
     fn poll_gamepads(&mut self) {
-        for button in self.gamepads.poll() {
-            if let Some(index) = self.menus.rebinding_pad.take() {
+        if std::mem::take(&mut self.menus.calibrate_gyro) {
+            self.gyro.calibrate();
+        }
+        self.gyro.update();
+        self.menus.gyro_status = match (self.gyro.status(), self.gyro.controller()) {
+            (gyro::Status::Ready, Some(name)) => format!("Gyroscope: {name}"),
+            (gyro::Status::Calibrating, _) => "Gyroscope: calibrating, keep the controller still".to_owned(),
+            (gyro::Status::NoGyroscope, _) => "Gyro unavailable for this controller".to_owned(),
+            (gyro::Status::NoController, _) => "No controller connected".to_owned(),
+            (gyro::Status::Unavailable, _) | (gyro::Status::Ready, None) => "Controller gyroscopes can't be read on this system".to_owned(),
+        };
+        for (button, pressed) in self.gamepads.poll() {
+            if pressed && button == gilrs::Button::Mode && self.menus.rebinding_action.take().is_some() {
+                continue;
+            }
+            if pressed && self.capture_binding(bindings::Source::Pad(button)) {
+                continue;
+            }
+            if let (true, Some(index)) = (pressed, self.menus.rebinding_pad) {
+                self.menus.rebinding_pad = None;
                 if let Some((_, bound)) = self.settings.pad.all_mut().into_iter().nth(index) {
                     *bound = button;
                 }
                 self.apply_settings();
-            } else if button == gilrs::Button::Mode && self.game.is_some() {
-                self.menus.menu_open = !self.menus.menu_open;
-                self.keyboard.release();
+            } else if pressed && button == gilrs::Button::Mode && self.game.is_some() {
+                self.toggle_frontend_menu();
+            } else if self.keyboard.acting() {
+                let to_game = !self.menus.menu_open && !self.menus.settings_open && !self.menus.editor_open;
+                if to_game || !pressed {
+                    let started = self.keyboard.source(bindings::Source::Pad(button), pressed);
+                    self.do_actions(started);
+                }
+            } else if pressed && !self.menus.menu_open && !self.menus.settings_open && !self.menus.editor_open {
+                let exit = if button == self.settings.pad.vehicle_ability {
+                    Some(false)
+                } else if button == self.settings.pad.vehicle_exit {
+                    Some(true)
+                } else {
+                    None
+                };
+                if let (Some(exit), Some(game)) = (exit, &mut self.game) {
+                    let frame = game.system.frames;
+                    if let Some(mouse) = &mut game.system.aim_mouse {
+                        mouse.use_vehicle(frame, exit);
+                    }
+                }
             }
+        }
+        if self.gamepads.disconnected() {
+            self.keyboard.release_where(|source| matches!(source, bindings::Source::Pad(_)));
         }
         if let Some(faces) = self.gamepads.used() {
             self.prompt_faces = Some(faces);
@@ -1159,9 +1294,16 @@ impl App {
         if self.prompts_shown == Some(self.prompt_faces) {
             return;
         }
-        let prompts = match self.prompt_faces {
-            Some(faces) => self.gamepads.prompts(faces),
-            None => input::prompts(&self.settings.keys, game.system.aim_mouse.is_some()),
+        let bindings = &self.settings.pc.bindings;
+        let prompts = match (self.prompt_faces, self.keyboard.acting()) {
+            // Kid Icarus shows the inputs on its actions
+            (Some(faces), true) => bindings.prompts(bindings::Device::Controller, |source| match source {
+                bindings::Source::Pad(button) => gamepad::label(button, faces),
+                other => input::label(other),
+            }),
+            (None, true) => bindings.prompts(bindings::Device::KeyboardMouse, input::label),
+            (Some(faces), false) => self.gamepads.prompts(faces),
+            (None, false) => input::prompts(&self.settings.keys),
         };
         game.system.set_prompts(prompts);
         self.prompts_shown = Some(self.prompt_faces);
@@ -1187,6 +1329,9 @@ impl App {
             window.set_cursor_visible(true);
             self.keyboard.touch(None);
             self.keyboard.mouse_button(zakuro_core::services::hid::PadState::L, false);
+            // a mouse button held into the release lets go of its actions
+            // now, as its own release no longer reaches them
+            self.keyboard.release_where(|source| matches!(source, bindings::Source::Mouse(_)));
         }
         self.aim_captured = captured;
         self.mouse_down = false;
@@ -1358,9 +1503,16 @@ impl App {
         self.older_frame_host = Duration::ZERO;
     }
 
+    /// saves the settings, telling the player when they could not be.
+    fn save_settings(&mut self) {
+        if let Err(error) = self.settings.save() {
+            self.menus.message = Some(format!("The settings can't be saved: {error}"));
+        }
+    }
+
     /// saves the settings and puts to use what can change right away.
     fn apply_settings(&mut self) {
-        self.settings.save();
+        self.save_settings();
         // a cap change takes effect at once, and the pacer starts over so
         // no picture keeps the old pace
         let host_step = self.settings.high_refresh_cap.step(self.display_step);
@@ -1385,13 +1537,26 @@ impl App {
             if game.system.config.slider_3d != slider {
                 game.system.set_slider_3d(slider);
             }
+            if let Some(mouse) = game.system.aim_mouse.as_mut() {
+                let shown = &self.settings.pc.presentation;
+                mouse.hud_scale = shown.hud_scale;
+                mouse.portrait_scale = shown.portrait_scale;
+            }
         }
         self.apply_camera();
         self.keyboard.set_keys(self.settings.keys.clone());
+        self.apply_bindings();
         self.gamepads.set_buttons(self.settings.pad.clone());
         self.prompts_shown = None;
         self.apply_volume();
         self.apply_layout();
+    }
+
+    /// Kid Icarus takes its input through its Action Bindings; any other
+    /// title through the console's buttons.
+    fn apply_bindings(&mut self) {
+        let kiu = self.game.as_ref().is_some_and(|game| game.system.aim_mouse.is_some());
+        self.keyboard.set_bindings(kiu.then(|| self.settings.pc.bindings.clone()));
     }
 
     /// gives the running game's cameras what the settings say they see,
@@ -1637,7 +1802,7 @@ impl App {
             Action::ChooseFolder => {
                 if let Some(folder) = rfd::FileDialog::new().set_title("Where your games are").pick_folder() {
                     self.settings.games = Some(folder.clone());
-                    self.settings.save();
+                    self.save_settings();
                     self.library.scan(&folder);
                 }
             }
@@ -1674,7 +1839,7 @@ impl App {
                     .pick_file();
                 if let Some(file) = picked {
                     self.settings.background = Some(file);
-                    self.settings.save();
+                    self.save_settings();
                 }
             }
             Action::Rescan => {
@@ -1714,7 +1879,7 @@ impl App {
                     if on {
                         names.push(cheat.name.clone());
                     }
-                    self.settings.save();
+                    self.save_settings();
                 } else {
                     self.save_cheats();
                 }
@@ -1785,8 +1950,11 @@ impl App {
         let playing =
             self.game.is_some() && !self.paused && !self.menus.menu_open && !self.menus.settings_open && !typing;
         // Tab or a controller's right trigger, or the right stick's click
-        // while ZR has the trigger, whichever no button of the console's is on
-        let free = |button: gilrs::Button| self.settings.pad.map().iter().all(|&(_, bound)| bound != button);
+        // while ZR has the trigger, whichever no binding is on
+        let free = |button: gilrs::Button| match self.keyboard.acting() {
+            true => !self.settings.pc.bindings.binds(bindings::Source::Pad(button)),
+            false => self.settings.pad.map().iter().all(|&(_, bound)| bound != button),
+        };
         let trigger = [gilrs::Button::RightTrigger2, gilrs::Button::RightThumb].into_iter().find(|&button| free(button));
         let fast = playing && (self.fast_forward_key || trigger.is_some_and(|trigger| self.gamepads.holding(trigger)));
         if fast {
@@ -1937,12 +2105,28 @@ impl App {
         let Some(game) = &mut self.game else { return };
         game.system.host_clock = host_clock;
         // Kid Icarus: Uprising draws a view as wide as the top screen shows
+        // and its inputs act in the context it is in, a battle or a Screen
+        let mut battle = false;
         if let Some(aim_mouse) = &mut game.system.aim_mouse {
             aim_mouse.widen = top_width / 400.0;
+            battle = aim_mouse.in_battle(game.system.frames);
+            self.keyboard.set_context(if battle { bindings::Context::Gameplay } else { bindings::Context::Screens });
         }
+        let aim = &self.settings.pc.aim;
+        let sticks = match self.keyboard.acting() {
+            true => gamepad::Sticks { dead_zone: aim.dead_zone, right_scale: aim.stick_sensitivity },
+            false => gamepad::Sticks::default(),
+        };
         let input = match &mut game.replay {
             Some(replay) => replay.input(game.frame),
-            None => self.gamepads.apply(self.keyboard.state()),
+            None => {
+                let mut input = self.gamepads.apply(self.keyboard.state(), sticks, self.keyboard.acting());
+                // Kid Icarus's gyro aims only in a battle, as its preferences say
+                if self.keyboard.acting() {
+                    input.gyro = self.gyro.turning(aim, battle, self.keyboard.gyro_held());
+                }
+                input
+            }
         };
         game.frame += 1;
         if let Some(recorder) = &mut game.recorder {

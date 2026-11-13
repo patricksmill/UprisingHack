@@ -28,11 +28,12 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 132] = [
+pub const PLACES: [u32; 134] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
     0x002A3374, 0x002A3470, 0x002A34C8, 0x002A3378, 0x002A3474, 0x002A34CC,
+    AIM_OWNERSHIP,
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
     PITCH_LIMITS,
@@ -72,6 +73,7 @@ pub const PLACES: [u32; 132] = [
     menu_top::BOTTOM_TEXT,
     menu_top::BOTTOM_TRANSLUCENT,
     menu_top::FONT_CALL[0],
+    HINT_CAMERA[0],
     menu_top::START,
     menu_top::FINISHED,
     MENU_NO_TOUCH,
@@ -318,8 +320,9 @@ fn outline_file(system: &mut System, object: u32, found: Found) -> Option<Vec<Me
 /// is picked by 0x00343FF8(object, chapter, 1), as left and right do,
 /// which scrolls the list to it. each chapter is an element of the list,
 /// named ML_B0001 to ML_B0026 by its number (two of them twice, _0 and
-/// _1), those not open yet not found under the mouse. A, 0x003675C0, goes
-/// to the chapter's Fiend's Cauldron or back.
+/// _1). on the top screen the list is a row of Rows (menu_top), each
+/// picking its own chapter. A, 0x003675C0, goes to the chapter's Fiend's
+/// Cauldron or back.
 const CHAPTER_OUTLINED: u32 = 0x6C;
 const CHAPTER: u32 = 0x12C;
 const CHAPTER_LIST: u32 = 0x4D6A_3DE7;
@@ -332,12 +335,11 @@ fn outline_chapter(system: &mut System, object: u32, found: Found) -> Option<Vec
     let outlined = read_word(system, object + CHAPTER_OUTLINED);
     match found.hash {
         CHAPTER_BACK => Some(if outlined == CHAPTER_BACK { Vec::new() } else { vec![(OUTLINE_CHAPTER_BACK, [object, 0, 0])] }),
-        CHAPTER_LIST => {
-            let mut name = [0u8; 8];
-            let at = read_word(system, found.element);
-            system.memory.read_bytes(at, &mut name);
-            let number: u32 = std::str::from_utf8(name.strip_prefix(b"ML_B")?).ok()?.parse().ok()?;
-            let chapter = number.checked_sub(1)?;
+        // the List is drawn as Rows, which give their chapter (from 0) in
+        // name with no element; the native thumbnails under the controls
+        // are hidden and found by no one
+        CHAPTER_LIST if found.element == 0 => {
+            let chapter = found.name;
             let mut calls = Vec::new();
             if outlined != CHAPTER_LIST {
                 calls.push((OUTLINE_CHAPTER_LIST, [object, 0, 0]));
@@ -796,6 +798,11 @@ const TOP_LAYER: u32 = 0xB;
 const TOP_TEXT: u32 = 0x00727F10;
 const TOP_TEXT_DRAWN: u32 = 0x00727F14;
 
+/// in the text's drawing (the loop at 0x00A35750), each line's camera call,
+/// 0x0090A5B4 with the projection in r1, and just after it: the Fiend's
+/// Cauldron's hint gets its Hint placement in that projection.
+const HINT_CAMERA: [u32; 2] = [0x00A35AF4, 0x00A35BBC];
+
 /// a scene's bottom screen drawing, 0x007C8ECC(drawing), and its vtable.
 /// with the scene at +0x40 and the viewport at +0x44 as for the top's, it
 /// sets the viewport, the camera +0x54 says (1, the bottom's), and when
@@ -833,6 +840,13 @@ const CAULDRON_PARTS: [&[&str]; 3] = [&["MenBetHeartBt0002", "MenBetHeartBt0005"
 /// the groups past CAULDRON_PARTS: the rest, then the ring.
 const CAULDRON_REST: usize = CAULDRON_PARTS.len();
 const CAULDRON_RING_GROUP: usize = CAULDRON_PARTS.len() + 1;
+
+/// the bar's model and its mesh nodes that are the dial: the dial and its
+/// stem (`ber`), its lit outline, and the "Not enough hearts" tag's banner,
+/// shown while the intensity costs more hearts than there are (its text
+/// is drawn by the bottom pass's own text, after the layers). the rest,
+/// the bar and its numbers, is the bar's.
+const CAULDRON_DIAL: (&str, [&str; 3]) = ("MenBetHeartBt0002", ["ber", "cursor", "noheart"]);
 
 /// which group a model of the Cauldron's bottom screen is drawn with.
 fn cauldron_group(name: &str) -> usize {
@@ -878,6 +892,11 @@ const VSYNC_MANAGER: u32 = 0x00D63824;
 /// left at sp+8 as reticle pixels a second, with the aim object in r4 and
 /// the time the step covers in s16.
 const AFTER_AIM_DELTA: u32 = 0x006D26C4;
+
+/// Before the camera can override +0xD5: r0 is zero for the local
+/// controller, r4 is its aim object. Vehicles disable the ordinary camera
+/// without making their controller remote.
+const AIM_OWNERSHIP: u32 = 0x006D2E18;
 
 /// where 0x006D2D8C calls 0x006D2ABC, with the box the reticle moves in
 /// before the camera turns loaded in s0 to s3 (right, left, bottom, top
@@ -1276,6 +1295,8 @@ pub struct AimMouse {
     /// whether the mouse is aiming, which on the ground keeps the reticle
     /// in the middle and turns the camera by all of the mouse's movement.
     pub captured: bool,
+    /// Local ownership before the game's camera-disable override.
+    local_aim: Option<u32>,
     /// how big the top screen's HUD and reticle are drawn, 1 as the game
     /// draws them.
     pub hud_scale: f32,
@@ -1318,6 +1339,17 @@ pub struct AimMouse {
     cursor_wanted: Option<usize>,
     /// the bottom screen's scene drawing the last bottom pass made.
     bottom_scene: Option<u32>,
+    /// the Cauldron's bottom text ("Not enough hearts") as the last native
+    /// bottom pass drew it, each call's size and anchor in order, and
+    /// whether that pass is drawing now.
+    cauldron_text: Vec<[f32; 4]>,
+    cauldron_text_native: bool,
+    /// the window of the replay that draws that text again, the dial's,
+    /// and the next of its calls; none for the other parts, which skip it.
+    cauldron_text_place: Option<(Placement, usize)>,
+    /// the projection the Cauldron's hint line was placed in, and what it
+    /// was, put back after the call (see cauldron_hint).
+    hint_back: Option<(u32, [u8; 64])>,
     /// the top screen's viewport while the top's picture is drawn smaller,
     /// put back before its 2D, and the one it is drawn in.
     top_viewport: Option<([u8; 16], [u8; 16])>,
@@ -1328,9 +1360,15 @@ pub struct AimMouse {
     /// where it is kept, and the game's and the one that shows that part:
     /// the text's place on the screen comes from it, so it gets the game's.
     top_projection: Option<(u32, [u8; 64], [u8; 64])>,
+    /// projections placed in cameras and not yet put back: where, and what
+    /// was written there. one the game has built again since, for a new
+    /// width, stays rather than the old width's being put back.
+    placed: Vec<(u32, [u8; 64])>,
     /// the frame the power key was pressed in, for the battle UI's next
     /// update to use the current power, unless that is long after.
     power_requested: Option<u64>,
+    vehicle_available: Option<u64>,
+    vehicle_requested: Option<(u64, u32)>,
     /// whether the mouse over a menu's options lights the one under it, as
     /// on a PC, without using it, and over none lights none. keys bring the
     /// game's own cursor back until the mouse moves again.
@@ -1397,6 +1435,7 @@ impl Default for AimMouse {
         AimMouse {
             pending: [0.0; 2],
             captured: false,
+            local_aim: None,
             hud_scale: 1.0,
             narration_on_top: false,
             portrait_scale: 0.0,
@@ -1414,10 +1453,17 @@ impl Default for AimMouse {
             hovered_part: None,
             cursor_wanted: None,
             bottom_scene: None,
+            cauldron_text: Vec::new(),
+            cauldron_text_native: false,
+            cauldron_text_place: None,
+            hint_back: None,
             top_viewport: None,
             top_moved: Vec::new(),
             top_projection: None,
+            placed: Vec::new(),
             power_requested: None,
+            vehicle_available: None,
+            vehicle_requested: None,
             menu_hover: false,
             menus_on_top: true,
             menu_top: MenuTop::default(),
@@ -1562,6 +1608,12 @@ impl AimMouse {
     /// or activate an item, and never carry a wheel gesture into a battle.
     pub fn scroll_menu(&mut self, frame: u64, delta: [f32; 2]) -> bool {
         let Some((index, object, seen)) = self.menu_screen else { return false };
+        // Chapter Select's row scrolls by itself, with no game call
+        if index == 1 && frame <= seen + self.menu_age() && self.menu_hover && !self.captured
+            && delta.iter().all(|value| value.is_finite()) {
+            self.scroll_chapters(delta[0] + delta[1]);
+            return true;
+        }
         if index < 14 || frame > seen + self.menu_age() || !self.menu_hover || self.captured || self.pointer.is_none() || self.menu_button_down
             || delta.iter().any(|value| !value.is_finite()) {
             return false;
@@ -1582,6 +1634,16 @@ impl AimMouse {
     /// game draws in every other one, and in a slow one a little less.
     pub fn pause_menu_shown(&self, frame: u64) -> bool {
         self.transform.shown(frame)
+    }
+
+    /// Requests the vehicle's native touch action once, only while its
+    /// controls are available. `exit` selects dismount rather than ability.
+    pub fn use_vehicle(&mut self, frame: u64, exit: bool) -> bool {
+        if !self.in_battle(frame) || !self.vehicle_available.is_some_and(|seen| frame <= seen + 3) {
+            return false;
+        }
+        self.vehicle_requested = Some((frame, if exit { 8 } else { 4 }));
+        true
     }
 
     /// the pause screen's editable placement rules.
@@ -1675,7 +1737,7 @@ impl AimMouse {
     /// too, at the pot's value, in pixels as shown.
     fn cauldron_editor_layers(&self) -> Vec<(String, [f32; 4])> {
         let value = self.transform.cauldron_seat().1.unwrap_or(0.0);
-        let names = ["Top picture", "Panel", "Bar", "Dial", "Back", "Move Out", "Rest", "Ring"];
+        let names = ["Top picture", "Panel", "Bar", "Dial", "Back", "Move Out", "Rest", "Ring", "Hint"];
         let boxes = self.cauldron_rules().boxes(self.widen, value);
         names.iter().zip(boxes).enumerate().map(|(index, (name, place))| {
             let [x, y, width, height] = place.to;
@@ -1692,9 +1754,8 @@ impl AimMouse {
     fn set_cauldron_editor_layer(&mut self, index: usize, to: [f32; 4]) {
         let Some(&role) = CauldronRole::ALL.get(index) else { return };
         let mut rules = self.cauldron_rules();
-        let value = self.transform.cauldron_seat().1.unwrap_or(0.0);
         let [x, y, width, height] = to;
-        rules.set_box(role, self.widen, value, [x / self.widen, y, width / self.widen, height]);
+        rules.set_box(role, self.widen, [x / self.widen, y, width / self.widen, height]);
         self.set_cauldron_rules(rules);
     }
 
@@ -1837,6 +1898,11 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
                 system.memory.write_bytes(object + 0x5C, &HASH_IDOL_TOSS.to_le_bytes());
             }
         }
+        AIM_OWNERSHIP => {
+            if let Some(mouse) = &mut system.aim_mouse {
+                mouse.local_aim = (system.cpu.regs[0] == 0).then_some(system.cpu.regs[4]);
+            }
+        }
         PITCH_LIMITS => widen_pitch(system),
         AFTER_AIM_DELTA => add_delta(system),
         BEFORE_CAMERA_TURN => close_box(system),
@@ -1872,7 +1938,10 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
                 aim_mouse.context = Some(system.cpu.regs[1]);
             }
         }
-        UI_COMMANDS => power_command(system),
+        UI_COMMANDS => {
+            vehicle_command(system);
+            power_command(system);
+        }
         PAUSE_KEY => pause_key(system),
         PAUSE_TOUCH => hover_pause(system),
         PAUSE_INPUT_DONE => hovered_pause(system),
@@ -1890,6 +1959,7 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         TOP_TEXT | TOP_TEXT_DRAWN => {
             if !menu_top::text(system, pc) { top_text_viewport(system, pc); }
         }
+        _ if HINT_CAMERA.iter().any(|&site| pc == site || pc == site + 4) => cauldron_hint(system, pc),
         menu_top::SCISSOR => menu_top::scissor(system),
         menu_top::SCISSOR_DONE => menu_top::scissor_done(system),
         menu_top::BOTTOM_TEXT => menu_top::bottom_text(system),
@@ -1900,12 +1970,22 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         BOTTOM_SCENE_DRAW => {
             if !matches!(drawing(system), Some(Drawing::Cauldron(_) | Drawing::CauldronRing | Drawing::MenuTop(_))) {
                 let scene = system.cpu.regs[0];
+                let frame = system.frames;
                 if let Some(aim_mouse) = &mut system.aim_mouse {
                     aim_mouse.bottom_scene = Some(scene);
+                    aim_mouse.cauldron_text_native = aim_mouse.cauldron_on_top_shown(frame);
+                    if aim_mouse.cauldron_text_native {
+                        aim_mouse.cauldron_text.clear();
+                    }
                 }
             }
         }
-        BOTTOM_SCENE_3D_DRAWN => cauldron_drawn(system),
+        BOTTOM_SCENE_3D_DRAWN => {
+            if let Some(aim_mouse) = &mut system.aim_mouse {
+                aim_mouse.cauldron_text_native = false;
+            }
+            cauldron_drawn(system);
+        }
         MENU_NO_TOUCH => {
             let (frame, touch) = (system.frames, system.cpu.regs[0]);
             if read_word(system, touch) == MENU_TOUCH {
@@ -2011,16 +2091,15 @@ fn widening(system: &System) -> f32 {
     }
 }
 
-/// whether the mouse aims for the local player on the ground, aim being
-/// its aim object: +0x81 is set on the ground, +0xD5 for anyone but the
-/// local player.
+/// Whether the captured mouse controls this ground controller. Ownership
+/// is recorded before the game folds camera availability into +0xD5.
 fn mouse_on_ground(system: &mut System, aim: u32) -> bool {
-    if !system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.captured) {
+    if !system.aim_mouse.as_ref().is_some_and(|mouse| mouse.captured && mouse.local_aim == Some(aim)) {
         return false;
     }
-    let mut flags = [0u8; 0xD6];
-    system.memory.read_bytes(aim, &mut flags);
-    flags[0x81] != 0 && flags[0xD5] == 0
+    let mut ground = [0u8];
+    system.memory.read_bytes(aim + 0x81, &mut ground);
+    ground[0] != 0
 }
 
 /// on the ground, shrinks the box to its middle point, so that any movement
@@ -2055,11 +2134,12 @@ fn widen_pitch(system: &mut System) {
 /// the time the step covers since the delta is a speed.
 fn add_delta(system: &mut System) {
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    let aim = system.cpu.regs[4];
+    if aim_mouse.local_aim != Some(aim) {
+        return;
+    }
     let [dx, dy] = std::mem::take(&mut aim_mouse.pending);
     let (widen, half_width) = (aim_mouse.widen, aim_mouse.half_width);
-    let aim = system.cpu.regs[4];
-    let mut remote = [0u8];
-    system.memory.read_bytes(aim + 0xD5, &mut remote);
     // on a wider top screen the mouse moves as far: in the air the reticle
     // as far across the window, on the ground the camera by as many degrees,
     // where the game turns by the reticle's share of the view's width
@@ -2071,7 +2151,7 @@ fn add_delta(system: &mut System) {
         (false, false) => dx / widen,
     };
     let dt = f32::from_bits(system.cpu.vfp.regs[16]);
-    if remote[0] != 0 || dt <= 0.0 {
+    if dt <= 0.0 {
         return;
     }
     let out = system.cpu.regs[13] + 8;
@@ -2082,6 +2162,24 @@ fn add_delta(system: &mut System) {
     delta[0..4].copy_from_slice(&x.to_le_bytes());
     delta[4..8].copy_from_slice(&y.to_le_bytes());
     system.memory.write_bytes(out, &delta);
+}
+
+/// Uses the same command bits as releasing the vehicle touch controls.
+/// The native panel hit-test enables these when +0xF0 has finished showing
+/// the vehicle controls and the panel's input-disable flag is clear.
+fn vehicle_command(system: &mut System) {
+    let object = system.cpu.regs[0];
+    let panel = read_word(system, object + 0x140) + POWER_PANEL;
+    let flags = read_word(system, panel);
+    let shown = f32::from_bits(read_word(system, panel + 0xF0));
+    let available = system.cpu.regs[1] == 0 && flags & 0x0010_0000 == 0 && shown >= f32::from_bits(0x3F7E_FEFF);
+    let Some(mouse) = &mut system.aim_mouse else { return };
+    mouse.vehicle_available = available.then_some(system.frames);
+    let requested = mouse.vehicle_requested.take().filter(|&(frame, _)| system.frames <= frame + 3);
+    if let Some((_, command)) = requested.filter(|_| available) {
+        let command = read_word(system, panel + POWER_COMMAND) | command;
+        system.memory.write_bytes(panel + POWER_COMMAND, &command.to_le_bytes());
+    }
 }
 
 /// asks the battle UI to use the current power, when the power key was
@@ -2371,7 +2469,7 @@ fn top_screen_pause_menu(system: &mut System, place: u32) {
     system.cpu.regs[3] = recorded.regs[3];
     system.cpu.vfp.regs[..8].copy_from_slice(&recorded.floats);
     if let (Some(mut matrices), Some(panel)) = (recorded.matrices, panel) {
-        place_projection(&mut matrices, panel);
+        place_projection(&mut matrices, panel, 320.0);
         // below the stack the call starts with, put back after it
         let at = system.cpu.regs[13] - 0x70;
         let bytes: Vec<u8> = matrices.iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -2382,23 +2480,57 @@ fn top_screen_pause_menu(system: &mut System, place: u32) {
     }
 }
 
-/// makes a bottom screen projection, the dialogs' words', draw where a
-/// placement puts the bottom screen on the top. its first row turns the
-/// bottom screen's y into -y/120 + 1 and its second its x into -x/160 + 1
-/// (the screens lie on their side); the top's 400 across are -x/200 + 1.
-/// for a placement x' = a x + b, y' = c y + d, each row becomes itself
-/// scaled, plus the w row's part that moves it.
-fn place_projection(matrices: &mut [u32; 28], place: Placement) {
+/// makes a screen's projection, source_width across (320 the bottom's,
+/// the dialogs' words', 400 the top's), draw where a placement puts it on
+/// the top screen. its first row turns the screen's y into -y/120 + 1 and
+/// its second its x into -x/(source_width/2) + 1 (the screens lie on their
+/// side); the top's 400 across are -x/200 + 1. for a placement x' = a x +
+/// b, y' = c y + d, each row becomes itself scaled, plus the w row's part
+/// that moves it.
+fn place_projection(matrices: &mut [u32], place: Placement, source_width: f32) {
     let [b, d] = place.map_point([0.0, 0.0]);
     let [one_x, one_y] = place.map_point([1.0, 1.0]);
     let (a, c) = (one_x - b, one_y - d);
+    let half = source_width * 0.5;
     let w: [f32; 4] = std::array::from_fn(|column| f32::from_bits(matrices[12 + column]));
-    for (row, scale, shift) in [(0, c, 1.0 - c - d / 120.0), (1, 0.8 * a, 1.0 - (160.0 * a + b) / 200.0)] {
+    for (row, scale, shift) in [(0, c, 1.0 - c - d / 120.0), (1, a * half / 200.0, 1.0 - (half * a + b) / 200.0)] {
         for column in 0..4 {
             let value = f32::from_bits(matrices[row * 4 + column]) * scale + w[column] * shift;
             matrices[row * 4 + column] = value.to_bits();
         }
     }
+}
+
+/// at a camera call of the top's text (HINT_CAMERA) while the Fiend's
+/// Cauldron's hint is drawn: the projection in r1 gets the Hint placement
+/// (none, hidden, draws it nowhere), put back just after the call. the
+/// text is in the top screen's 400 as drawn, the game's own screen
+/// squeezed into its middle when it is shown wider.
+fn cauldron_hint(system: &mut System, pc: u32) {
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    if let Some((at, old)) = aim_mouse.hint_back.take() {
+        system.memory.write_bytes(at, &old);
+    }
+    if !HINT_CAMERA.contains(&pc) || !aim_mouse.menu_top.cauldron_font {
+        return;
+    }
+    let widen = aim_mouse.widen;
+    let hint = aim_mouse.transform.cauldron_layout(system.frames).and_then(|layout| layout.place(CauldronRole::Hint));
+    let place = match hint {
+        Some(hint) => {
+            let [x, y, width, height] = hint.from;
+            Placement { from: [200.0 + (x - 200.0) / widen, y, width / widen, height], to: hint.to }
+        }
+        None => Placement { from: [0.0, 0.0, 400.0, 240.0], to: [-1000.0, -1000.0, 0.001, 0.001] },
+    };
+    let at = system.cpu.regs[1];
+    let mut old = [0u8; 64];
+    system.memory.read_bytes(at, &mut old);
+    let mut matrix: Vec<u32> = old.as_chunks::<4>().0.iter().map(|word| u32::from_le_bytes(*word)).collect();
+    place_projection(&mut matrix, place, 400.0);
+    let bytes: Vec<u8> = matrix.iter().flat_map(|word| word.to_le_bytes()).collect();
+    system.memory.write_bytes(at, &bytes);
+    system.aim_mouse.as_mut().unwrap().hint_back = Some((at, old));
 }
 
 /// draws the Fiend's Cauldron's bottom screen on the top screen as well,
@@ -2455,13 +2587,14 @@ fn top_screen_cauldron(system: &mut System) {
         (CauldronRole::MoveOut, 2),
         (CauldronRole::Rest, CAULDRON_REST),
     ];
-    let Some((next, place, group)) = (next.max(2)..BOTTOM_PARTS.len() + 2).find_map(|next| {
+    let Some((next, role, place, group)) = (next.max(2)..BOTTOM_PARTS.len() + 2).find_map(|next| {
         let (role, group) = BOTTOM_PARTS[next - 2];
-        layout.place(role).map(|place| (next, place, group))
+        layout.place(role).map(|place| (next, role, place, group))
     }) else {
         return;
     };
-    replay_cauldron_part(system, top, bottom, place, group, Drawing::Cauldron(next));
+    // the "Not enough hearts" tag hangs under the dial and goes with it
+    replay_cauldron_part(system, top, bottom, place, group, role == CauldronRole::Dial, Drawing::Cauldron(next));
 }
 
 /// before the top's scene drawing, r4, sets its viewport and draws its 3D:
@@ -2477,7 +2610,7 @@ fn top_scene_ring(system: &mut System) {
         put_back(system, &back.moved);
     } else if let Some((layout, bottom)) = cauldron_scenes(system, top).filter(|_| top_layer_drawn(system, top)) {
         if let Some(place) = layout.place(CauldronRole::Ring) {
-            replay_cauldron_part(system, top, bottom, place, CAULDRON_RING_GROUP, Drawing::CauldronRing);
+            replay_cauldron_part(system, top, bottom, place, CAULDRON_RING_GROUP, false, Drawing::CauldronRing);
             return;
         }
     }
@@ -2485,8 +2618,13 @@ fn top_scene_ring(system: &mut System) {
 }
 
 /// draws the Cauldron's bottom scene, bottom, in place on the top screen,
-/// top, with only the models of group, coming back as drawing.
-fn replay_cauldron_part(system: &mut System, top: u32, bottom: u32, place: Placement, group: usize, drawing: Drawing) {
+/// top, with only the models of group, coming back as drawing: through the
+/// whole screen, moved and scaled as placed, so nothing is cut at the box's
+/// edges. the bar and the dial share their models: each draws only its own
+/// mesh nodes, and the dial alone its "Not enough hearts" tag, the banner
+/// and the text (see cauldron_text).
+fn replay_cauldron_part(system: &mut System, top: u32, bottom: u32, place: Placement, group: usize, dial: bool, drawing: Drawing) {
+    let place = place.whole();
     let scene = read_word(system, top + 0x40);
     let viewport = cauldron_viewport(system, top, place.to);
     let mut moved = Vec::new();
@@ -2504,10 +2642,7 @@ fn replay_cauldron_part(system: &mut System, top: u32, bottom: u32, place: Place
     // the part of the bottom screen shown
     let screen = read_word(system, bottom + 0x58);
     let camera = read_word(system, scene + SCENE_CAMERAS + screen * 4);
-    if let Some((matrix, part)) = cropped_projection(system, camera, place.from, [320.0, 240.0], false) {
-        moved.push((camera + 0x6C, matrix.to_vec()));
-        system.memory.write_bytes(camera + 0x6C, &part);
-    }
+    crop_camera(system, camera, place.from, [320.0, 240.0], false, &mut moved);
     let layers = read_word(system, scene + SCENE_LAYERS);
     for layer in BOTTOM_LAYERS {
         let list = read_word(system, layers + layer * LAYER_SIZE + 4);
@@ -2519,14 +2654,66 @@ fn replay_cauldron_part(system: &mut System, top: u32, bottom: u32, place: Place
             continue;
         }
         let models: Vec<u32> = (start..end).step_by(4).map(|at| read_word(system, at)).collect();
-        let kept: Vec<u32> = models.iter().copied().filter(|&model| cauldron_group(&model_name(system, model)) == group).collect();
+        let kept: Vec<u32> = models
+            .iter()
+            .copied()
+            .filter(|&model| {
+                let name = model_name(system, model);
+                cauldron_group(&name) == group && (!dial || name == CAULDRON_DIAL.0)
+            })
+            .collect();
         if kept.len() < models.len() {
             let bytes: Vec<u8> = kept.iter().flat_map(|model| model.to_le_bytes()).collect();
             change(system, &mut moved, start, &bytes);
             change(system, &mut moved, list + 0x1C, &(start + bytes.len() as u32).to_le_bytes());
         }
+        for &model in &kept {
+            if model_name(system, model) == CAULDRON_DIAL.0 {
+                show_nodes(system, &mut moved, model, |node| CAULDRON_DIAL.1.contains(&node) == dial);
+            }
+        }
+    }
+    if let Some(aim_mouse) = &mut system.aim_mouse {
+        aim_mouse.cauldron_text_place = dial.then_some((place, 0));
     }
     call_here(system, BOTTOM_SCENE_DRAW, bottom, 0, drawing, moved);
+}
+
+/// a line of text the Fiend's Cauldron's bottom screen draws (only the
+/// "Not enough hearts" tag's), its manager in r0 with the size and the
+/// anchor at +0x24, in the bottom screen's pixels. the native pass keeps
+/// them; a part's replay projects the anchor through its own crop, which
+/// puts it on any part's box, so only the replay with the tag draws them,
+/// moved and scaled by its window as its models are. whether the call was
+/// taken care of here, skipped or changed.
+fn cauldron_text(system: &mut System) -> bool {
+    let replaying = matches!(drawing(system), Some(Drawing::Cauldron(2..) | Drawing::CauldronRing));
+    let at = system.cpu.regs[0] + 0x24;
+    let values: [f32; 4] = std::array::from_fn(|i| f32::from_bits(read_word(system, at + i as u32 * 4)));
+    let Some(aim_mouse) = &mut system.aim_mouse else { return false };
+    if !replaying {
+        if aim_mouse.cauldron_text_native {
+            aim_mouse.cauldron_text.push(values);
+        }
+        return false;
+    }
+    let texts = &aim_mouse.cauldron_text;
+    let kept = aim_mouse.cauldron_text_place.as_mut().and_then(|(place, next)| {
+        *next += 1;
+        texts.get(*next - 1).map(|&values| (*place, values))
+    });
+    let Some((place, [width, height, x, y])) = kept else {
+        system.cpu.regs[15] += 4;
+        return true;
+    };
+    let [from_x, from_y, from_width, from_height] = place.from;
+    let (across, down) = (320.0 / from_width, 240.0 / from_height);
+    let placed = [width * across, height * down, (x - from_x) * across, (y - from_y) * down];
+    let old = values.map(f32::to_le_bytes).concat().try_into().unwrap();
+    aim_mouse.menu_top.font_back = Some((at, old));
+    let bytes: Vec<u8> = placed.into_iter().flat_map(f32::to_le_bytes).collect();
+    system.memory.write_bytes(at, &bytes);
+    true
 }
 
 /// once the Fiend's Cauldron's cursor's update, r4, has handled the keys,
@@ -2706,6 +2893,16 @@ fn outline_menu(system: &mut System, pc: u32) {
     if looked.is_none() {
         aim_mouse.menu_looked = Some(((x, y), frame));
     }
+    // a Chapter Select Row can show a chapter the game scrolled off its
+    // screen, out of its own hit test's reach: pick the Row's chapter
+    if let Some(chapter) = aim_mouse.hovered_chapter_row().filter(|_| index == 1) {
+        let found = Found { hash: CHAPTER_LIST, name: chapter - 1, element: 0, part: 0 };
+        aim_mouse.menu_part = Some(found);
+        let calls = outline_chapter(system, object, found).unwrap_or_default();
+        system.aim_mouse.as_mut().unwrap().menu_calls = calls;
+        next_menu_call(system, index, object, at);
+        return;
+    }
     aim_mouse.menu_part = None;
     let mut record = [0u8; 0x18];
     record[0x10..0x14].copy_from_slice(&x.to_le_bytes());
@@ -2746,14 +2943,20 @@ fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
 }
 
 /// a camera's projection, as it is and turned to show only the part from of
-/// a screen of size pixels in the whole view, when it has one kept. the
-/// view of a wider screen is that much wider. top is the top screen's
-/// camera, whose rows the game's camera submit turns round.
+/// a screen of size pixels in the whole view, when it has one kept. a lens
+/// made wider than the screen's own shape (by widen_view, or saved so) has
+/// a view that much wider. top is the top screen's camera, whose rows the
+/// game's camera submit turns round.
 fn cropped_projection(system: &mut System, camera: u32, from: [f32; 4], size: [f32; 2], top: bool) -> Option<([u8; 64], [u8; 64])> {
     if camera == 0 || read_word(system, camera + 8) & 4 == 0 {
         return None;
     }
-    let widen = system.aim_mouse.as_ref().map_or(1.0, |aim_mouse| aim_mouse.widen);
+    let lens = read_word(system, camera + 4);
+    let widen = match lens != 0 && read_word(system, lens) == PERSPECTIVE_LENS {
+        true => f32::from_bits(read_word(system, lens + LENS_ASPECT)) * size[1] / size[0],
+        false => 1.0,
+    };
+    let widen = if widen.is_finite() && widen > 0.0 { widen } else { 1.0 };
     let mut matrix = [0u8; 64];
     system.memory.read_bytes(camera + 0x6C, &mut matrix);
     let mut m: Vec<f32> = matrix.as_chunks::<4>().0.iter().map(|word| f32::from_le_bytes(*word)).collect();
@@ -2763,13 +2966,16 @@ fn cropped_projection(system: &mut System, camera: u32, from: [f32; 4], size: [f
     // up, the second from its right edge to its left: each gets the
     // middle of the part and its share of the view. the top's camera
     // submit (0x00916234) builds the projection it draws with from it
-    // turned back, and its middles end up the other way round, the second
-    // row's going across the screen from the left and the first's up it
+    // turned back: each row's shift lands, as it is in the row, on the
+    // other row, the second's going across the screen from the left and
+    // the first's up it, so each middle is given scaled by its own row's
+    // share over the other's (measured with crops of a known part)
     let across = 1.0 - (x + width * 0.5) * 2.0 / screen_width;
     let up = 1.0 - (y + height * 0.5) * 2.0 / screen_height;
+    let (high, wide) = (height / screen_height, width / screen_width / widen);
     let rows = match top {
-        false => [(up, height / screen_height), (across / widen, width / screen_width / widen)],
-        true => [(-across / widen, height / screen_height), (up, width / screen_width / widen)],
+        false => [(up, high), (across / widen, wide)],
+        true => [(-across / widen * high / wide, high), (up * wide / high, wide)],
     };
     for (row, (middle, half)) in rows.into_iter().enumerate() {
         for column in 0..4 {
@@ -2781,12 +2987,24 @@ fn cropped_projection(system: &mut System, camera: u32, from: [f32; 4], size: [f
     Some((matrix, part))
 }
 
+/// shows only the part from of a screen of size pixels through camera, its
+/// projection kept in moved for put_back.
+fn crop_camera(system: &mut System, camera: u32, from: [f32; 4], size: [f32; 2], top: bool, moved: &mut Vec<(u32, Vec<u8>)>) {
+    let Some((matrix, part)) = cropped_projection(system, camera, from, size, top) else { return };
+    moved.push((camera + 0x6C, matrix.to_vec()));
+    system.memory.write_bytes(camera + 0x6C, &part);
+    if let Some(aim_mouse) = &mut system.aim_mouse {
+        aim_mouse.placed.push((camera + 0x6C, part));
+    }
+}
+
 /// starts drawing the top picture's panel in its place: the top's scene
-/// drawing's own setup called again, with its viewport the place's, its
-/// camera showing the panel's part, and only the panel's node of the
-/// picture's models shown, then (see top_screen_cauldron) its 3D, without
-/// the hint (see top_text_viewport).
+/// drawing's own setup called again, through the whole screen with its
+/// camera moving and scaling the panel as placed, nothing of it cut, and
+/// only the panel's node of the picture's models shown, then (see
+/// top_screen_cauldron) its 3D, without the hint (see top_text_viewport).
 fn top_panel(system: &mut System, top: u32, place: Placement) {
+    let place = place.whole();
     let scene = read_word(system, top + 0x40);
     let layers = read_word(system, scene + SCENE_LAYERS);
     let list = read_word(system, layers + TOP_LAYER * LAYER_SIZE + 4);
@@ -2804,10 +3022,7 @@ fn top_panel(system: &mut System, top: u32, place: Placement) {
     }
     let screen = read_word(system, top + 0x58);
     let camera = read_word(system, scene + SCENE_CAMERAS + screen * 4);
-    if let Some((matrix, part)) = cropped_projection(system, camera, place.from, [400.0, 240.0], true) {
-        moved.push((camera + 0x6C, matrix.to_vec()));
-        system.memory.write_bytes(camera + 0x6C, &part);
-    }
+    crop_camera(system, camera, place.from, [400.0, 240.0], true, &mut moved);
     let pictures = top_pictures(system, list);
     for &model in &pictures {
         show_nodes(system, &mut moved, model, |name| name == TOP_PANEL);
@@ -2859,6 +3074,8 @@ fn cauldron_viewport(system: &mut System, top: u32, view: [f32; 4]) -> Vec<u8> {
 fn top_scene_viewport(system: &mut System) {
     let top = system.cpu.regs[4];
     let Some((layout, _)) = cauldron_scenes(system, top) else { return };
+    // the board is one of a strip of them, one for each intensity, which
+    // the frame (hidden here) masks: its window is that mask, not a crop
     let picture = layout.place(CauldronRole::Top);
     // with no models in the layer it does not reach its 3D, nor
     // top_screen_cauldron
@@ -3120,9 +3337,21 @@ fn start_narration(system: &mut System) {
 }
 
 /// writes back what memory held before a call changed it, the last change
-/// first.
+/// first. a placed projection the game has since built again, for a new
+/// width, is left: the one kept is the old width's, and the camera would
+/// keep it for good.
 fn put_back(system: &mut System, moved: &[(u32, Vec<u8>)]) {
     for (at, bytes) in moved.iter().rev() {
+        if let Some(aim_mouse) = &mut system.aim_mouse {
+            if let Some(index) = aim_mouse.placed.iter().rposition(|(placed, _)| placed == at) {
+                let (_, part) = aim_mouse.placed.remove(index);
+                let mut now = [0u8; 64];
+                system.memory.read_bytes(*at, &mut now);
+                if now != part {
+                    continue;
+                }
+            }
+        }
         system.memory.write_bytes(*at, bytes);
     }
 }
@@ -3574,6 +3803,78 @@ fn shrink_reticle(system: &mut System) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn vehicle_actions_expire_and_follow_native_control_availability() {
+        let mut system = armory_test_system();
+        let object = 0x1400_0000;
+        let context: u32 = 0x1400_1000;
+        let panel = context + POWER_PANEL;
+        system.memory.write_bytes(object + 0x140, &context.to_le_bytes());
+        system.cpu.regs[0] = object;
+        system.cpu.regs[1] = 0;
+        system.aim_mouse = Some(AimMouse { battle_drawn: Some(0), ..AimMouse::default() });
+        system.memory.write_bytes(panel + 0xF0, &1.0f32.to_le_bytes());
+        vehicle_command(&mut system);
+        assert!(system.aim_mouse.as_mut().unwrap().use_vehicle(0, false));
+        system.memory.write_bytes(panel + POWER_COMMAND, &0x10u32.to_le_bytes());
+        vehicle_command(&mut system);
+        assert_eq!(read_word(&mut system, panel + POWER_COMMAND), 0x14);
+        system.memory.write_bytes(panel + POWER_COMMAND, &0u32.to_le_bytes());
+        vehicle_command(&mut system);
+        assert_eq!(read_word(&mut system, panel + POWER_COMMAND), 0, "one activation per request");
+        assert!(system.aim_mouse.as_mut().unwrap().use_vehicle(0, true));
+        vehicle_command(&mut system);
+        assert_eq!(read_word(&mut system, panel + POWER_COMMAND), 8);
+        for disabled in [true, false] {
+            system.memory.write_bytes(panel + POWER_COMMAND, &0u32.to_le_bytes());
+            assert!(system.aim_mouse.as_mut().unwrap().use_vehicle(0, false));
+            if disabled {
+                system.memory.write_bytes(panel, &0x0010_0000u32.to_le_bytes());
+            } else {
+                system.memory.write_bytes(panel + 0xF0, &0.0f32.to_le_bytes());
+            }
+            vehicle_command(&mut system);
+            assert_eq!(read_word(&mut system, panel + POWER_COMMAND), 0);
+            assert!(!system.aim_mouse.as_mut().unwrap().use_vehicle(0, false));
+            system.memory.write_bytes(panel, &0u32.to_le_bytes());
+            system.memory.write_bytes(panel + 0xF0, &1.0f32.to_le_bytes());
+            vehicle_command(&mut system);
+        }
+        assert!(system.aim_mouse.as_mut().unwrap().use_vehicle(0, false));
+        system.frames = 4;
+        vehicle_command(&mut system);
+        assert_eq!(read_word(&mut system, panel + POWER_COMMAND), 0, "stale requests must not activate later");
+        assert!(!system.aim_mouse.as_mut().unwrap().use_vehicle(4, false), "stale battle state must not accept input");
+    }
+
+    #[test]
+    fn vehicle_camera_disable_does_not_discard_local_mouse_input() {
+        let mut system = armory_test_system();
+        let aim = 0x1400_0000;
+        let stack = 0x1400_1000;
+        system.aim_mouse = Some(AimMouse { captured: true, pending: [20.0, -4.0], ..AimMouse::default() });
+        system.cpu.regs[4] = aim;
+        system.cpu.regs[0] = 0;
+        apply(&mut system, AIM_OWNERSHIP);
+        // The vehicle's camera subsequently sets the combined disable flag.
+        system.memory.write_bytes(aim + 0xD5, &[1]);
+        system.memory.write_bytes(aim + 0x81, &[1]);
+        assert!(mouse_on_ground(&mut system, aim));
+        system.cpu.regs[13] = stack;
+        system.cpu.vfp.regs[16] = 0.5f32.to_bits();
+        apply(&mut system, AFTER_AIM_DELTA);
+        assert_eq!(f32::from_bits(read_word(&mut system, stack + 8)), 40.0);
+        assert_eq!(f32::from_bits(read_word(&mut system, stack + 12)), -8.0);
+
+        system.aim_mouse.as_mut().unwrap().pending = [6.0, 2.0];
+        system.cpu.regs[0] = 1;
+        apply(&mut system, AIM_OWNERSHIP);
+        assert!(!mouse_on_ground(&mut system, aim));
+        apply(&mut system, AFTER_AIM_DELTA);
+        assert_eq!(f32::from_bits(read_word(&mut system, stack + 8)), 40.0);
+        assert_eq!(system.aim_mouse.as_ref().unwrap().pending, [6.0, 2.0]);
+    }
+
     fn panel_quad(bounds: UiBox) -> Vec<u8> {
         let mut quad = vec![0; 0x60];
         for (i, (x, y, u, v)) in [
@@ -3700,6 +4001,26 @@ mod tests {
             assert!((get(&quads, 4) - 212.0).abs() < 0.001);
             assert!((get(&quads, 0x18) - 39.0 * 0.7 / widen).abs() < 0.001);
             assert!((get(&quads, 3 * 0x60 + 0x18) - (400.0 - 17.0 * 0.7 / widen)).abs() < 0.001);
+        }
+    }
+
+    /// a screen's projection placed on the top screen takes each pixel of
+    /// it where the placement puts it, at the top's width and the bottom's.
+    #[test]
+    fn a_placed_projection_moves_each_pixel_as_placed() {
+        for source_width in [400.0_f32, 320.0] {
+            let half = source_width * 0.5;
+            // a pixel (x, y) in, -y/120 + 1 and -x/half + 1 out
+            let rows: [f32; 16] = [0.0, -1.0 / 120.0, 0.0, 1.0, -1.0 / half, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+            let mut matrix: Vec<u32> = rows.iter().map(|value| value.to_bits()).collect();
+            let place = Placement { from: [20.0, 10.0, 200.0, 100.0], to: [150.0, 30.0, 100.0, 70.0] };
+            place_projection(&mut matrix, place, source_width);
+            let m: Vec<f32> = matrix.iter().map(|word| f32::from_bits(*word)).collect();
+            for point in [[20.0, 10.0], [120.0, 60.0], [220.0, 110.0]] {
+                let [x, y] = place.map_point(point);
+                let row = |r: usize| m[r * 4] * point[0] + m[r * 4 + 1] * point[1] + m[r * 4 + 3];
+                assert!((row(0) - (1.0 - y / 120.0)).abs() < 1e-4 && (row(1) - (1.0 - x / 200.0)).abs() < 1e-4, "{source_width} {point:?}");
+            }
         }
     }
 
@@ -3914,6 +4235,52 @@ mod tests {
         let mut system = System::new(crate::Config::default());
         system.memory.map(0x1400_0000, 0x2000_0000, 0x10000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
         system
+    }
+
+    #[test]
+    fn a_projection_rebuilt_for_a_new_width_is_not_put_back_over() {
+        let mut system = armory_test_system();
+        let (camera, lens) = (0x1400_0000, 0x1400_0100);
+        let projection = |system: &mut System| {
+            let mut bytes = [0u8; 64];
+            system.memory.read_bytes(camera + 0x6C, &mut bytes);
+            bytes
+        };
+        // what the game's lens virtual builds, at the aspect it is given
+        let build = |system: &mut System, aspect: f32| {
+            let mut m = [0.0f32; 16];
+            (m[1], m[4], m[10], m[11], m[14]) = (3.33, -3.33 / aspect, 1.0, 1.0, -1.0);
+            let bytes: Vec<u8> = m.iter().flat_map(|value| value.to_le_bytes()).collect();
+            system.memory.write_bytes(camera + 0x6C, &bytes);
+            let flags = read_word(system, camera + 8) | 4;
+            system.memory.write_bytes(camera + 8, &flags.to_le_bytes());
+        };
+        for (at, value) in [(camera + 4, lens), (camera + 8, 0x73), (lens, PERSPECTIVE_LENS),
+            (lens + LENS_FOVY, 0.785f32.to_bits()), (lens + LENS_ASPECT, (5.0f32 / 3.0).to_bits())] {
+            system.memory.write_bytes(at, &value.to_le_bytes());
+        }
+        system.aim_mouse = Some(AimMouse::default());
+        system.cpu.regs[0] = camera;
+        widen_view(&mut system);
+        build(&mut system, 5.0 / 3.0);
+        let native = projection(&mut system);
+        // a placed part leaves the game's projection as it was
+        let mut moved = Vec::new();
+        crop_camera(&mut system, camera, [0.0, 0.0, 100.0, 60.0], [400.0, 240.0], true, &mut moved);
+        assert_ne!(projection(&mut system), native);
+        put_back(&mut system, &moved);
+        assert_eq!(projection(&mut system), native);
+        // the window widens while a part is placed: the game builds the
+        // projection again when asked, and the part's end must keep that one
+        let mut moved = Vec::new();
+        crop_camera(&mut system, camera, [0.0, 0.0, 100.0, 60.0], [400.0, 240.0], true, &mut moved);
+        system.aim_mouse.as_mut().unwrap().widen = 1.8;
+        widen_view(&mut system);
+        assert_eq!(read_word(&mut system, camera + 8) & 4, 0);
+        build(&mut system, 3.0);
+        let wider = projection(&mut system);
+        put_back(&mut system, &moved);
+        assert_eq!(projection(&mut system), wider, "the camera keeps the projection built for the new width");
     }
 
     #[test]

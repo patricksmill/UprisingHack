@@ -6,9 +6,9 @@ use zakuro_core::services::prompts::{Direction, Input, Label, Prompts};
 
 use crate::settings::PadButtons;
 
-/// how far a stick has to lean before it counts, some rest a little off
-/// center.
-const DEADZONE: f32 = 0.15;
+/// how far a stick has to lean before it counts by default, some rest a
+/// little off center.
+pub const DEADZONE: f32 = 0.15;
 
 /// how far a stick has to lean before the player counts as using the
 /// controller rather than the keyboard.
@@ -37,6 +37,25 @@ pub struct Gamepads {
     buttons: PadButtons,
     /// the controller pressed or leaned since the last look, see used.
     used: Option<Faces>,
+    /// the d-pad directions an axis d-pad holds, up, down, left, right, so
+    /// it presses and lets go as a d-pad of buttons does.
+    dpad_axes: [bool; 4],
+    /// a controller went away since the last look, see disconnected.
+    gone: bool,
+}
+
+/// how the sticks read: how far one leans before it counts, and how far the
+/// right one turns, 1 as it leans.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sticks {
+    pub dead_zone: f32,
+    pub right_scale: f32,
+}
+
+impl Default for Sticks {
+    fn default() -> Self {
+        Sticks { dead_zone: DEADZONE, right_scale: 1.0 }
+    }
 }
 
 impl Gamepads {
@@ -44,23 +63,40 @@ impl Gamepads {
         let gilrs = Gilrs::new()
             .inspect_err(|error| log::warn!("controllers are not available, {error}"))
             .ok();
-        Gamepads { gilrs, buttons, used: None }
+        Gamepads { gilrs, buttons, used: None, dpad_axes: [false; 4], gone: false }
     }
 
     pub fn set_buttons(&mut self, buttons: PadButtons) {
         self.buttons = buttons;
     }
 
-    /// takes in what the controllers did since the last call, and returns the
-    /// buttons pressed meanwhile.
-    pub fn poll(&mut self) -> Vec<Button> {
-        let mut pressed = Vec::new();
-        let Some(gilrs) = &mut self.gilrs else { return pressed };
+    /// takes in what the controllers did since the last call, and returns
+    /// the buttons pressed (true) and let go (false) meanwhile, an axis
+    /// d-pad's as its buttons.
+    pub fn poll(&mut self) -> Vec<(Button, bool)> {
+        let mut changed = Vec::new();
+        let Some(gilrs) = &mut self.gilrs else { return changed };
         while let Some(event) = gilrs.next_event() {
             match event.event {
                 EventType::ButtonPressed(button, _) => {
-                    pressed.push(button);
+                    changed.push((button, true));
                     self.used = Some(Faces::of(gilrs.gamepad(event.id).name()));
+                }
+                EventType::ButtonReleased(button, _) => changed.push((button, false)),
+                EventType::AxisChanged(axis @ (Axis::DPadX | Axis::DPadY), value, _) => {
+                    let ways = match axis {
+                        Axis::DPadY => [(0, Button::DPadUp, value > 0.5), (1, Button::DPadDown, value < -0.5)],
+                        _ => [(2, Button::DPadLeft, value < -0.5), (3, Button::DPadRight, value > 0.5)],
+                    };
+                    for (at, button, held) in ways {
+                        if self.dpad_axes[at] != held {
+                            self.dpad_axes[at] = held;
+                            changed.push((button, held));
+                        }
+                    }
+                    if value.abs() > USE_LEAN {
+                        self.used = Some(Faces::of(gilrs.gamepad(event.id).name()));
+                    }
                 }
                 EventType::AxisChanged(_, value, _) if value.abs() > USE_LEAN => {
                     self.used = Some(Faces::of(gilrs.gamepad(event.id).name()));
@@ -68,11 +104,21 @@ impl Gamepads {
                 EventType::Connected => {
                     log::info!("controller connected, {}", gilrs.gamepad(event.id).name());
                 }
-                EventType::Disconnected => log::info!("controller disconnected"),
+                EventType::Disconnected => {
+                    log::info!("controller disconnected");
+                    self.gone = true;
+                    self.dpad_axes = [false; 4];
+                }
                 _ => {}
             }
         }
-        pressed
+        changed
+    }
+
+    /// whether a controller went away since the last call, whose buttons
+    /// then never let go.
+    pub fn disconnected(&mut self) -> bool {
+        std::mem::take(&mut self.gone)
     }
 
     /// the face buttons of the controller used since the last call, none
@@ -116,42 +162,57 @@ impl Gamepads {
         self.gilrs.as_ref().is_some_and(|gilrs| gilrs.gamepads().any(|(_, pad)| pad.is_pressed(button)))
     }
 
-    /// what the controllers hold down, over what the keyboard does.
-    pub fn apply(&self, mut state: InputState) -> InputState {
+    /// what the controllers hold down, over what the keyboard does: their
+    /// buttons as the console's unless Action Bindings take them, and the
+    /// sticks as the circle pad and C-stick.
+    pub fn apply(&self, mut state: InputState, sticks: Sticks, acting: bool) -> InputState {
         let Some(gilrs) = &self.gilrs else { return state };
         for (_, pad) in gilrs.gamepads() {
-            for (button, bound) in self.buttons.map() {
-                if pad.is_pressed(bound) {
-                    state.buttons.set(button, true);
+            if !acting {
+                for (button, bound) in self.buttons.map() {
+                    if pad.is_pressed(bound) {
+                        state.buttons.set(button, true);
+                    }
                 }
-            }
-            // the d-pad of some controllers is a pair of axes
-            let dpad = [
-                (PadState::RIGHT, pad.value(Axis::DPadX) > 0.5),
-                (PadState::LEFT, pad.value(Axis::DPadX) < -0.5),
-                (PadState::UP, pad.value(Axis::DPadY) > 0.5),
-                (PadState::DOWN, pad.value(Axis::DPadY) < -0.5),
-            ];
-            for (button, held) in dpad {
-                if held {
-                    state.buttons.set(button, true);
+                // the d-pad of some controllers is a pair of axes
+                let dpad = [
+                    (PadState::RIGHT, pad.value(Axis::DPadX) > 0.5),
+                    (PadState::LEFT, pad.value(Axis::DPadX) < -0.5),
+                    (PadState::UP, pad.value(Axis::DPadY) > 0.5),
+                    (PadState::DOWN, pad.value(Axis::DPadY) < -0.5),
+                ];
+                for (button, held) in dpad {
+                    if held {
+                        state.buttons.set(button, true);
+                    }
                 }
             }
             // the left stick is the circle pad and the right one the
             // C-stick, up positive as the console has it
-            let (x, y) = (pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY));
-            if x.hypot(y) > DEADZONE {
-                state.circle_x = x.clamp(-1.0, 1.0);
-                state.circle_y = y.clamp(-1.0, 1.0);
+            let left = (pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY));
+            if let Some((x, y)) = lean(left, sticks.dead_zone, 1.0) {
+                (state.circle_x, state.circle_y) = (x, y);
             }
-            let (x, y) = (pad.value(Axis::RightStickX), pad.value(Axis::RightStickY));
-            if x.hypot(y) > DEADZONE {
-                state.c_stick_x = x.clamp(-1.0, 1.0);
-                state.c_stick_y = y.clamp(-1.0, 1.0);
+            let right = (pad.value(Axis::RightStickX), pad.value(Axis::RightStickY));
+            if let Some((x, y)) = lean(right, sticks.dead_zone, sticks.right_scale) {
+                (state.c_stick_x, state.c_stick_y) = (x, y);
             }
         }
         state
     }
+}
+
+/// a stick's lean past the dead zone, scaled, none inside it. the dead
+/// zone is taken out, so the stick starts from nothing at its edge rather
+/// than jumping to it.
+fn lean((x, y): (f32, f32), dead_zone: f32, scale: f32) -> Option<(f32, f32)> {
+    let length = x.hypot(y);
+    let dead_zone = dead_zone.clamp(0.0, 0.9);
+    if length <= dead_zone {
+        return None;
+    }
+    let past = ((length.min(1.0) - dead_zone) / (1.0 - dead_zone)) * scale / length;
+    Some(((x * past).clamp(-1.0, 1.0), (y * past).clamp(-1.0, 1.0)))
 }
 
 /// a controller button as a person would call it.
@@ -181,7 +242,7 @@ pub fn button_name(button: Button) -> &'static str {
 }
 
 /// how a controller button looks in a prompt.
-fn label(button: Button, faces: Faces) -> Label {
+pub fn label(button: Button, faces: Faces) -> Label {
     let round = |name: &str| Label::Round(name.into());
     let shoulder = |name: &str| Label::Shoulder(name.into());
     match (button, faces) {
@@ -231,7 +292,7 @@ mod tests {
             return;
         }
         let state = InputState { buttons: PadState::A, circle_x: 1.0, circle_y: 0.0, touch: Some((1, 2)), ..InputState::default() };
-        let applied = gamepads.apply(state);
+        let applied = gamepads.apply(state, Sticks::default(), false);
         assert_eq!(applied.buttons, PadState::A);
         assert_eq!((applied.circle_x, applied.circle_y, applied.touch), (1.0, 0.0, Some((1, 2))));
     }

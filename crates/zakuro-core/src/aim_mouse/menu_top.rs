@@ -38,10 +38,20 @@ pub(super) struct MenuTop {
     passthrough: bool,
     started: u64,
     duration: u64,
-    cauldron_font: bool,
-    font_back: Option<(u32, [u8; 16])>,
+    /// the top's text being drawn is the Fiend's Cauldron's hint line,
+    /// placed by its Hint rule (see cauldron_hint).
+    pub(super) cauldron_font: bool,
+    pub(super) font_back: Option<(u32, [u8; 16])>,
     text_parent: Option<Box<Saved>>,
     drawing_text: bool,
+    /// Chapter Select's Rows: the chapter number of each part from
+    /// `CHAPTER_FIRST_ROW` on, the first one shown, the wheel's leftover,
+    /// how many are open and fit, and the chapter last outlined.
+    chapter_rows: Vec<u32>,
+    chapter_scroll: usize,
+    chapter_wheel: f32,
+    chapter_span: (usize, usize),
+    chapter_outlined: Option<u32>,
     pub(super) grab: Option<usize>,
     pub(super) blocked: bool,
 }
@@ -101,10 +111,11 @@ impl MenuTop {
     }
 
     fn part(&self, sequence: usize) -> Option<&Part> {
-        let index = if self.draw_order.is_empty() && self.active.is_none() {
-            sequence
-        } else { *self.draw_order.get(sequence)? };
-        self.parts.get(index).filter(|part| self.enabled(part) && !part.backdrop)
+        self.parts.get(self.part_index(sequence)?).filter(|part| self.enabled(part) && !part.backdrop)
+    }
+
+    fn part_index(&self, sequence: usize) -> Option<usize> {
+        if self.draw_order.is_empty() && self.active.is_none() { Some(sequence) } else { self.draw_order.get(sequence).copied() }
     }
 
     fn enabled(&self, part: &Part) -> bool {
@@ -119,6 +130,101 @@ impl MenuTop {
             _ => true,
         }
     }
+
+    /// The chapter a Chapter Select Row shows, by part index.
+    fn row_chapter(&self, index: usize) -> Option<u32> {
+        let part = self.parts.get(index)?;
+        if !part.chapter || part.top { return None; }
+        self.chapter_rows.get(index.checked_sub(CHAPTER_FIRST_ROW)?).copied()
+    }
+}
+
+/// Chapter Select's List as one row: Rows follow `CHAPTER_LAYERS`, each cut
+/// around its chapter's thumbnail.
+const CHAPTER_FIRST_ROW: usize = CHAPTER_LAYERS.len();
+/// A thumbnail with its outline, in bottom-screen pixels, around its bone.
+const CHAPTER_ROW_SOURCE: [f32; 2] = [144.0, 90.0];
+const CHAPTER_ROW_SCALE: f32 = 0.52;
+const CHAPTER_ROW_GAP: f32 = 4.0;
+/// The row's bottom edge, just above Back.
+const CHAPTER_ROW_BOTTOM: f32 = 214.0;
+/// The List model's skeleton, and its bones' world matrices (3x4, 48 bytes).
+const MODEL_SKELETON: u32 = 0x22C;
+const SKELETON_WORLD: u32 = 0x40;
+
+/// Where the visible Rows go: their row index and box, after the first
+/// `scroll`, and how many fit `width`. A short List starts at the left.
+fn chapter_slots(width: f32, count: usize, scroll: usize) -> (Vec<(usize, [f32; 4])>, usize) {
+    let size = CHAPTER_ROW_SOURCE.map(|value| value * CHAPTER_ROW_SCALE);
+    let pitch = size[0] + CHAPTER_ROW_GAP;
+    let fit = (((width - CHAPTER_ROW_GAP) / pitch).floor() as usize).max(1);
+    let scroll = scroll.min(count.saturating_sub(fit));
+    let slots = (scroll..count.min(scroll + fit)).map(|row| {
+        (row, [CHAPTER_ROW_GAP + (row - scroll) as f32 * pitch, CHAPTER_ROW_BOTTOM - size[1], size[0], size[1]])
+    }).collect();
+    (slots, fit)
+}
+
+/// The bottom-screen pixel a List bone's world position draws at, measured
+/// from the native strip with the bottom lens at its own 4:3: 8 units a
+/// chapter is 77.4 pixels across.
+fn chapter_center(x: f32, y: f32) -> [f32; 2] {
+    [160.7 + 9.68 * x, 123.9 - 10.22 * y]
+}
+
+/// Open chapters, by number, with their thumbnails' centers on the bottom
+/// screen as the game has scrolled them this frame. Locked chapters' mesh
+/// nodes are hidden by the game.
+fn chapter_list(system: &mut System, bottom: u32) -> Vec<(u32, [f32; 2])> {
+    let scene = read_word(system, bottom + 0x40);
+    let layers = read_word(system, scene + SCENE_LAYERS);
+    for layer in BOTTOM_LAYERS {
+        let list = read_word(system, layers + layer * LAYER_SIZE + 4);
+        if list == 0 { continue; }
+        let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
+        if end < start || end - start > 0x1000 { continue; }
+        for at in (start..end).step_by(4) {
+            let model = read_word(system, at);
+            if model_name(system, model) == "MenStageselectBt0000" { return chapter_bones(system, model); }
+        }
+    }
+    Vec::new()
+}
+
+fn chapter_bones(system: &mut System, model: u32) -> Vec<(u32, [f32; 2])> {
+    let cmdl = read_word(system, model + 8);
+    let dictionary = read_word(system, cmdl + 0xD0);
+    let skeleton = read_word(system, model + MODEL_SKELETON);
+    if dictionary == 0 || !system.memory.is_readable(skeleton, SKELETON_WORLD + 4) { return Vec::new(); }
+    let dictionary = cmdl + 0xD0 + dictionary;
+    let nodes = read_word(system, model + MODEL_NODES);
+    let count = read_word(system, dictionary + 8).min(read_word(system, model + MODEL_NODES + 4).wrapping_sub(nodes) / 8);
+    let mut open = Vec::new();
+    for node in 0..count {
+        let at = dictionary + 0x24 + node * 0x10;
+        let name_at = at.wrapping_add(read_word(system, at));
+        let name = c_string(system, name_at);
+        let number = name.strip_prefix("ML_B").filter(|digits| digits.len() == 4).and_then(|digits| digits.parse::<u32>().ok());
+        if let Some(number) = number.filter(|_| read_word(system, nodes + node * 8 + 4) != 0) { open.push(number); }
+    }
+    // the skeleton's SOBJ names its bones in the order of their matrices
+    let sobj = read_word(system, skeleton + 8);
+    let bones = sobj + 0x1C;
+    let bones = bones.wrapping_add(read_word(system, bones));
+    let world = read_word(system, skeleton + SKELETON_WORLD);
+    let bone_count = read_word(system, bones + 8).min(64);
+    let names: Vec<String> = (0..bone_count).map(|bone| {
+        let at = bones + 0x24 + bone * 0x10;
+        let name_at = at.wrapping_add(read_word(system, at));
+        c_string(system, name_at)
+    }).collect();
+    open.into_iter().filter_map(|number| {
+        let bone = names.iter().position(|name| *name == format!("ML_B{number:04}"))? as u32;
+        let matrix = world + bone * 48;
+        if !system.memory.is_readable(matrix, 48) { return None; }
+        let [x, y] = [0xC, 0x1C].map(|at| f32::from_bits(read_word(system, matrix + at)));
+        Some((number, chapter_center(x, y)))
+    }).collect()
 }
 
 fn draw_order(system: &mut System, bottom: u32, parts: &[Part]) -> Vec<usize> {
@@ -286,18 +392,70 @@ const BOARD_TEXT: &[&str] = &[
     "MenEquipBt0204", "MenEquipBt0211", "MenEquipBt0212",
 ];
 
+/// Chapter Select's layers before its Rows, in editor order: name, whether
+/// cut from the top screen (else the bottom), and the source rectangle.
+/// The scenery behind them, rainbow band and grey board included, is the
+/// backdrop pass. Each part replays its whole screen, so the rectangle is
+/// what keeps it from showing the others: the top's three are bands across
+/// the screen (a cleared chapter's laurels and the picture's torn edges go
+/// past the art's own box), and Back reaches the screen's left edge, where
+/// its arrow starts.
+const CHAPTER_LAYERS: [(&str, bool, [f32; 4]); 5] = [
+    ("Title", true, [0.0, 18.0, 400.0, 48.0]),
+    ("Picture", true, [0.0, 66.0, 400.0, 100.0]),
+    ("Stats", true, [0.0, 166.0, 400.0, 74.0]),
+    ("Back", false, [0.0, 190.0, 64.0, 50.0]),
+    ("Hint strip", false, [200.0, 186.0, 90.0, 26.0]),
+];
+
+/// Editor overrides are kept for a 400-wide top screen. Wider, a box keeps
+/// its share of the room between the edges, or its gap to the edge it
+/// overhangs; one spanning the screen stretches. Narrower, it shrinks
+/// evenly, keeping its share of the room vertically too.
+fn seat_override(to: [f32; 4], width: f32) -> [f32; 4] {
+    let scale = (width / 400.0).min(1.0);
+    let [x, w] = seat_axis(to[0], to[2], 400.0, width, scale);
+    let [y, h] = seat_axis(to[1], to[3], 240.0, 240.0, scale);
+    [x, y, w, h]
+}
+
+fn seat_axis(at: f32, size: f32, from: f32, to: f32, scale: f32) -> [f32; 2] {
+    if size >= from { return [at * to / from, size * to / from]; }
+    let shown = size * scale;
+    let at = if at < 0.0 { at } else if at > from - size { at + (to - shown) - (from - size) } else { at / (from - size) * (to - shown) };
+    [at, shown]
+}
+
+/// The inverse of `seat_override`: a box placed at `width`, kept at 400.
+fn unseat_override(to: [f32; 4], width: f32) -> [f32; 4] {
+    let scale = (width / 400.0).min(1.0);
+    let [x, w] = unseat_axis(to[0], to[2], 400.0, width, scale);
+    let [y, h] = unseat_axis(to[1], to[3], 240.0, 240.0, scale);
+    [x, y, w, h]
+}
+
+fn unseat_axis(at: f32, shown: f32, from: f32, to: f32, scale: f32) -> [f32; 2] {
+    if shown >= to { return [at * from / to, shown * from / to]; }
+    let size = (shown / scale).min(from - 0.01);
+    let at = if at < 0.0 { at } else if at > to - shown { at - (to - shown) + (from - size) } else { at / (to - shown) * (from - size) };
+    [at, size]
+}
+
 fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
     let extra = index.checked_sub(ScreenTransform::scripted_len());
     let kind = extra.is_none().then(|| ScreenTransform::scripted(index).layout);
     if matches!(kind, Some(LayoutKind::Chapter)) {
         let native = Placement { from: [0.0, 0.0, 400.0, 240.0], to: [0.0, 0.0, width, 240.0] };
         let scale = 0.48_f32.min((width - 16.0) / 400.0);
-        let details = Placement { from: native.from, to: [(width - 400.0 * scale) * 0.5, 4.0, 400.0 * scale, 240.0 * scale] };
-        let controls = Placement { from: [0.0, 0.0, 320.0, 240.0], to: [(width - 320.0 * scale) * 0.5, 122.0, 320.0 * scale, 240.0 * scale] };
-        return (native, vec![
-            Part { visible: true, backdrop: false, chapter: true, idol: None, top: true, model: None, place: details },
-            Part { visible: true, backdrop: false, chapter: true, idol: None, top: false, model: None, place: controls },
-        ]);
+        let details = [(width - 400.0 * scale) * 0.5, 4.0];
+        let controls = [(width - 320.0 * scale) * 0.5, 122.0];
+        // Each layer is cut from the same screen's drawing and starts where
+        // the whole screen, shrunk, put it.
+        let cut = |origin: [f32; 2], from: [f32; 4]| Placement {
+            from, to: [origin[0] + from[0] * scale, origin[1] + from[1] * scale, from[2] * scale, from[3] * scale],
+        };
+        let part = |top: bool, place: Placement| Part { visible: true, backdrop: false, chapter: true, idol: None, top, model: None, place };
+        return (native, CHAPTER_LAYERS.iter().map(|&(_, top, from)| part(top, cut(if top { details } else { controls }, from))).collect());
     }
     let hint = match extra {
         Some(kind) => hint_extra(kind),
@@ -757,6 +915,23 @@ impl AimMouse {
 
     pub fn hovered_menu_part(&self) -> Option<u32> { self.menu_part.map(|part| part.hash) }
 
+    /// The chapter of the Chapter Select Row under the pointer, if any.
+    pub(super) fn hovered_chapter_row(&self) -> Option<u32> {
+        let &(index, _) = self.menu_top.candidates.get(self.menu_top.candidate)?;
+        self.menu_top.row_chapter(index)
+    }
+
+    /// Scrolls Chapter Select's row by wheel steps, positive right. Only
+    /// the view moves: the Outline stays on its chapter.
+    pub(super) fn scroll_chapters(&mut self, steps: f32) {
+        let menu_top = &mut self.menu_top;
+        menu_top.chapter_wheel += steps;
+        let whole = menu_top.chapter_wheel.trunc();
+        menu_top.chapter_wheel -= whole;
+        let (count, fit) = menu_top.chapter_span;
+        menu_top.chapter_scroll = (menu_top.chapter_scroll as f32 + whole).clamp(0.0, count.saturating_sub(fit) as f32) as usize;
+    }
+
     /// the edited Screen's layers: label and target box, in pixels as shown.
     /// the Cauldron's parts, the active Scripted Menu's, or none on Pause.
     pub fn editor_layers(&self) -> Vec<(String, [f32; 4])> {
@@ -771,6 +946,10 @@ impl AimMouse {
             } else if part.backdrop {
                 let screen = self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen));
                 if screen.is_some_and(details_of) { "Details card" } else { "Top screen" }.to_owned()
+            } else if let Some(chapter) = self.menu_top.row_chapter(index) {
+                format!("Chapter {chapter}")
+            } else if part.chapter {
+                CHAPTER_LAYERS.get(index).map_or("controls", |&(name, ..)| name).to_owned()
             } else if self.menu_screen.is_some_and(|(screen, ..)| screen == 11) && !self.menu_top.idol_dialog {
                 match index { 0 => "Dialog", 1 => "No", 2 => "Yes", _ => "hint" }.to_owned()
             } else { part.model.map_or_else(|| if part.top { "hint" } else { "controls" }.to_owned(), str::to_owned) };
@@ -835,9 +1014,10 @@ impl AimMouse {
         }
         self.clear_menus_top_pointer();
         let Some(screen) = screen else { return };
+        let kept = unseat_override(to, 400.0 * self.widen);
         match self.menu_top.overrides.iter_mut().find(|(kept, part, _)| *kept == screen && *part == index) {
-            Some(entry) => entry.2 = to,
-            None => self.menu_top.overrides.push((screen, index, to)),
+            Some(entry) => entry.2 = kept,
+            None => self.menu_top.overrides.push((screen, index, kept)),
         }
     }
 
@@ -867,6 +1047,7 @@ impl AimMouse {
         self.saved = None;
         self.top_viewport = None;
         self.top_projection = None;
+        self.placed.clear();
         self.top_moved.clear();
         self.transform.reset();
         self.battle_drawn = None;
@@ -949,6 +1130,7 @@ fn scene(system: &mut System, top: u32) -> Option<(usize, u32, u32, bool)> {
                 else if name.starts_with("MenOptionCtlTpenBt") { Some(6) }
                 else if name.starts_with("MenSelnameBt") { Some(10) }
                 else if name.starts_with("MenSelfileBt") { Some(0) }
+                else if name.starts_with("MenStageselectBt") { Some(1) }
                 else if name.starts_with("MenEquipBt0001") { Some(14) }
                 else if name.starts_with("MenEquipBt0211") { Some(18) }
                 else if name.starts_with("MenEquipBt0120") { Some(19) }
@@ -995,6 +1177,8 @@ pub(super) fn begin(system: &mut System) -> bool {
     let current = read_word(system, top + 0x40);
     let idol_dialog = matches!(index, 10 | 11) && scene_has_idol(system, current);
     let controls_more = index == 5 && read_word(system, object + 0x11C) & 0x100 != 0;
+    let chapters = if index == 1 { chapter_list(system, bottom) } else { Vec::new() };
+    let outlined = (index == 1 && object != 0).then(|| read_word(system, object + CHAPTER) + 1);
     log::debug!("menu begin index {index} idol dialog {idol_dialog}");
     // the native fallback screens past the registry draw themselves and have
     // no Screen row to cap
@@ -1010,18 +1194,46 @@ pub(super) fn begin(system: &mut System) -> bool {
         mouse.menu_part = None;
         mouse.menu_top.pointer = None;
         mouse.menu_top.candidates.clear();
+        mouse.menu_top.chapter_scroll = 0;
+        mouse.menu_top.chapter_wheel = 0.0;
+        mouse.menu_top.chapter_outlined = None;
     }
     let (mut native, mut parts) = layout_with_dialog(index, 400.0 * mouse.widen, idol_dialog);
     for &(screen, part, to) in &mouse.menu_top.overrides {
         if screen == index {
             if let Some(part) = parts.get_mut(part) {
-                part.place.to = to;
+                part.place.to = seat_override(to, 400.0 * mouse.widen);
             }
         }
     }
     for &(screen, part) in &mouse.menu_top.hidden {
         if screen == index {
             if let Some(part) = parts.get_mut(part) { part.visible = false; }
+        }
+    }
+    let menu_top = &mut mouse.menu_top;
+    menu_top.chapter_rows.clear();
+    if index == 1 {
+        let width = 400.0 * mouse.widen;
+        let count = chapters.len();
+        let fit = chapter_slots(width, 0, 0).1;
+        // Keys pull the row to a newly outlined chapter; the wheel never
+        // moves the Outline, so it may scroll it out of view.
+        if outlined != menu_top.chapter_outlined {
+            menu_top.chapter_outlined = outlined;
+            if let Some(row) = outlined.and_then(|number| chapters.iter().position(|&(chapter, _)| chapter == number)) {
+                if row < menu_top.chapter_scroll { menu_top.chapter_scroll = row; }
+                if row >= menu_top.chapter_scroll + fit { menu_top.chapter_scroll = row + 1 - fit; }
+            }
+        }
+        menu_top.chapter_scroll = menu_top.chapter_scroll.min(count.saturating_sub(fit));
+        menu_top.chapter_span = (count, fit);
+        for (row, to) in chapter_slots(width, count, menu_top.chapter_scroll).0 {
+            let (number, [x, y]) = chapters[row];
+            let [w, h] = CHAPTER_ROW_SOURCE;
+            let from = [x - w * 0.5, y - h * 0.5, w, h];
+            parts.push(Part { visible: true, backdrop: false, chapter: true, idol: None, top: false, model: None, place: Placement { from, to } });
+            menu_top.chapter_rows.push(number);
         }
     }
     // The game's own top drawing follows its editable backdrop layer.
@@ -1048,7 +1260,7 @@ pub(super) fn begin(system: &mut System) -> bool {
         file_models(system, top, None, &mut moved);
     }
     if index == 12 { filter_models(system, top, true, false, &mut moved, |name| name != "MenCmnUpHeart0000"); }
-    if index == 1 { chapter_models(system, top, true, false, &mut moved); }
+    if index == 1 { chapter_models(system, top, true, false, None, &mut moved); }
     let mouse = system.aim_mouse.as_mut().unwrap();
     mouse.menu_top.native = moved;
     // A hidden backdrop keeps the game's pass but clips all of it away.
@@ -1067,10 +1279,7 @@ fn place_scene(system: &mut System, top: u32, drawing: u32, place: Placement, to
     let scene = read_word(system, drawing + 0x40);
     let screen = read_word(system, drawing + 0x58);
     let camera = read_word(system, scene + SCENE_CAMERAS + screen * 4);
-    if let Some((matrix, part)) = cropped_projection(system, camera, if isolated { place.from } else { [0.0, 0.0, size[0], size[1]] }, size, top_camera) {
-        moved.push((camera + 0x6C, matrix.to_vec()));
-        system.memory.write_bytes(camera + 0x6C, &part);
-    }
+    crop_camera(system, camera, if isolated { place.from } else { [0.0, 0.0, size[0], size[1]] }, size, top_camera, moved);
 }
 
 fn filter_models(system: &mut System, drawing: u32, top: bool, foreground: bool, moved: &mut Vec<(u32, Vec<u8>)>, keep: impl Fn(&str) -> bool) {
@@ -1094,9 +1303,8 @@ fn filter_models(system: &mut System, drawing: u32, top: bool, foreground: bool,
 
 // File Select's books are 3D meshes: keep their native depth and material
 // ordering. The 2D foreground override flattens their covers behind other faces.
-// Keep the original full-Board viewport too: fonts use that viewport rather
-// than the 3D projection, and off-screen book faces must stay off-screen.
-// Only the scissor expands past an individual book's nominal Control box.
+// Book meshes use the full shown viewport and a placed projection. Font
+// ownership is checked in native coordinates, not projected coordinates.
 fn file_models(system: &mut System, drawing: u32, part: Option<&Part>, moved: &mut Vec<(u32, Vec<u8>)>) {
     let scene = read_word(system, drawing + 0x40);
     let layers = read_word(system, scene + SCENE_LAYERS);
@@ -1118,11 +1326,28 @@ fn file_models(system: &mut System, drawing: u32, part: Option<&Part>, moved: &m
     }
 }
 
+/// What one Chapter Select Row draws: its chapter, the thumbnail's center
+/// on the bottom screen, and whether the game outlines it.
+#[derive(Clone, Copy)]
+struct RowDraw {
+    chapter: u32,
+    center: [f32; 2],
+    outlined: bool,
+}
+
+/// A model's world position (its 3x4 matrix's translation).
+const MODEL_WORLD_X: u32 = 0x98;
+const MODEL_WORLD_Y: u32 = 0xA8;
+
 // Chapter scenery and information share a model. Select mesh nodes so
 // the scenery can fill the screen while the complete information shrinks.
-fn chapter_models(system: &mut System, drawing: u32, top: bool, details: bool, moved: &mut Vec<(u32, Vec<u8>)>) {
+// On the bottom, a Row draws only its own chapter's thumbnail, laurel and,
+// when outlined, the cursor: replaying the whole List in every Row runs
+// out of the game's drawing buffer by the fourth. The controls draw the rest.
+fn chapter_models(system: &mut System, drawing: u32, top: bool, details: bool, row: Option<RowDraw>, moved: &mut Vec<(u32, Vec<u8>)>) {
     let scene = read_word(system, drawing + 0x40);
     let layers = read_word(system, scene + SCENE_LAYERS);
+    let thumbnail = row.map(|row| format!("ML_B{:04}", row.chapter));
     for layer in if top { 0..16 } else { BOTTOM_LAYERS } {
         let list = read_word(system, layers + layer * LAYER_SIZE + 4);
         if list == 0 { continue; }
@@ -1134,32 +1359,24 @@ fn chapter_models(system: &mut System, drawing: u32, top: bool, details: bool, m
             if std::env::var_os("KIUTRACE_MENU_MODELS").is_some() {
                 log_model_nodes(system, layer, model, &name);
             }
-            let selected = if top { name.starts_with("MenStageselectUp") } else {
-                matches!(name.as_str(), "MenStageselectBt0000" | "MenStageselectBt0002" | "MenStageselectBt0003" | "MenStageselectBt0004" | "MenStageselectBt9999")
-            };
+            let selected = if top { name.starts_with("MenStageselectUp") } else if let Some(row) = row {
+                match name.as_str() {
+                    "MenStageselectBt0000" => true,
+                    "MenStageselectBt0003" => row.outlined,
+                    // one laurel per chapter, kept where its chapter is
+                    "MenStageselectBt0004" => {
+                        let [x, y] = [MODEL_WORLD_X, MODEL_WORLD_Y].map(|at| f32::from_bits(read_word(system, model + at)));
+                        let [cx, cy] = chapter_center(x, y);
+                        (cx - row.center[0]).abs() < 30.0 && (cy - row.center[1]).abs() < 30.0
+                    }
+                    _ => false,
+                }
+            } else { name == "MenStageselectBt9999" };
             if selected && (details || !top) { foreground_materials(system, model, moved); }
             show_nodes(system, moved, model, |node| selected && if top {
                 let background = name == "MenStageselectUp0000" && node != "PN_U0002";
                 background != details
-            } else { name != "MenStageselectBt0000" || node != "NN_B0000" });
-            // Experiment: the game shows only the chapters inside the list's
-            // window. Show every one of them, to see where they lie.
-            if !top && name == "MenStageselectBt0000" && std::env::var_os("KIUTRACE_CHAPTER_ALL").is_some() {
-                show_all_nodes(system, moved, model, |node| node.starts_with("ML_B"));
-            }
-            // The same for one chapter alone, the rest off: where one hidden
-            // in the list's window lies.
-            if !top && name == "MenStageselectBt0000" {
-                if let Some(one) = std::env::var_os("KIUTRACE_CHAPTER_ONLY") {
-                    let one = one.to_string_lossy().into_owned();
-                    show_all_nodes(system, moved, model, |node| node == one);
-                    hide_nodes(system, moved, model, |node| node.starts_with("ML_B") && node != one);
-                }
-                if let Some(one) = std::env::var_os("KIUTRACE_CHAPTER_HIDE") {
-                    let one = one.to_string_lossy().into_owned();
-                    hide_nodes(system, moved, model, |node| node == one);
-                }
-            }
+            } else { name != "MenStageselectBt0000" || thumbnail.as_deref().is_some_and(|thumbnail| node.starts_with(thumbnail)) });
         }
     }
 }
@@ -1181,41 +1398,6 @@ fn log_model_nodes(system: &mut System, layer: u32, model: u32, name: &str) {
         }
     }
     log::info!("model layer {layer:X} {model:08X} {name}: {}", list.join(", "));
-}
-
-/// For the harness: show the mesh nodes a predicate picks, whatever the
-/// game set, so a hidden part of a model can be seen where it lies.
-fn show_all_nodes(system: &mut System, moved: &mut Vec<(u32, Vec<u8>)>, model: u32, picked: impl Fn(&str) -> bool) {
-    let cmdl = read_word(system, model + 8);
-    let dictionary = read_word(system, cmdl + 0xD0);
-    if dictionary == 0 { return; }
-    let dictionary = cmdl + 0xD0 + dictionary;
-    let nodes = read_word(system, model + MODEL_NODES);
-    let count = read_word(system, dictionary + 8).min(read_word(system, model + MODEL_NODES + 4).wrapping_sub(nodes) / 8);
-    for node in 0..count {
-        let at = dictionary + 0x24 + node * 0x10;
-        let at = at.wrapping_add(read_word(system, at));
-        if picked(&c_string(system, at)) {
-            change(system, moved, nodes + node * 8 + 4, &[1]);
-        }
-    }
-}
-
-/// For the harness: hide the mesh nodes a predicate picks.
-fn hide_nodes(system: &mut System, moved: &mut Vec<(u32, Vec<u8>)>, model: u32, picked: impl Fn(&str) -> bool) {
-    let cmdl = read_word(system, model + 8);
-    let dictionary = read_word(system, cmdl + 0xD0);
-    if dictionary == 0 { return; }
-    let dictionary = cmdl + 0xD0 + dictionary;
-    let nodes = read_word(system, model + MODEL_NODES);
-    let count = read_word(system, dictionary + 8).min(read_word(system, model + MODEL_NODES + 4).wrapping_sub(nodes) / 8);
-    for node in 0..count {
-        let at = dictionary + 0x24 + node * 0x10;
-        let at = at.wrapping_add(read_word(system, at));
-        if picked(&c_string(system, at)) {
-            change(system, moved, nodes + node * 8 + 4, &[0]);
-        }
-    }
 }
 
 fn foreground_materials(system: &mut System, model: u32, moved: &mut Vec<(u32, Vec<u8>)>) {
@@ -1257,6 +1439,11 @@ pub(super) fn scissor(system: &mut System) {
     let Some((place, top)) = mouse.menu_top.clip else { return };
     let widen = mouse.widen;
     let text_clip = mouse.menu_top.text_parent.is_some();
+    // A Row draws only its own chapter, so it needs no cut at all: not its
+    // slot, which would crop its laurel and cursor, nor the native List
+    // window, which hides a chapter the game scrolled off its screen.
+    let row = matches!(drawing(system), Some(Drawing::MenuTop(step))
+        if mouse.menu_top.part_index(step / 8).and_then(|index| mouse.menu_top.row_chapter(index)).is_some());
     let own = text_clip || matches!(drawing(system), Some(Drawing::MenuClip(_)))
         || matches!(drawing(system), Some(Drawing::MenuTop(step)) if step % 8 == 0);
     let at = system.cpu.regs[2];
@@ -1264,7 +1451,7 @@ pub(super) fn scissor(system: &mut System) {
     system.memory.read_bytes(at, &mut old);
     // An isolated hub model can animate outside its nominal hit box.
     // Only grouped lists/boards need their native scrolling clips.
-    let isolated = if text_clip { !mouse.menu_top.drawing_text && mouse.menu_top.text_parent.as_ref().is_some_and(|saved| !matches!(saved.drawing, Drawing::MenuClip(_))) } else if mouse.menu_top.drawing_text { false } else { match drawing(system) {
+    let isolated = if text_clip { !mouse.menu_top.drawing_text && mouse.menu_top.text_parent.as_ref().is_some_and(|saved| !matches!(saved.drawing, Drawing::MenuClip(_))) } else if mouse.menu_top.drawing_text { false } else if row { true } else { match drawing(system) {
         Some(Drawing::MenuTop(step)) => (!mouse.menu_top.file_select()
             || mouse.menu_top.part(step / 8).is_some_and(|part| part.file_book().is_some()))
             && !mouse.menu_top.active.is_some_and(|(index, ..)| board_cut(index))
@@ -1272,6 +1459,22 @@ pub(super) fn scissor(system: &mut System) {
         _ => false,
     } };
     let mut rect = if isolated { [0.0, 0.0, 400.0 * widen, 240.0] } else { place.to };
+    if let Some(Drawing::MenuTop(step)) = drawing(system) {
+        if let Some(part) = mouse.menu_top.part(step / 8).filter(|part| part.file_book().is_some()) {
+            // The model also contains its open, upper-screen representation
+            // far outside the native Board. Allow a whole book of animation
+            // beyond each Board edge, but do not replay that other view.
+            let [width, height] = [part.place.from[2], part.place.from[3]];
+            let start = part.place.map_point([-width, -height]);
+            let end = part.place.map_point([320.0 + width, 240.0 + height]);
+            let right = (rect[0] + rect[2]).min(end[0]);
+            let bottom = (rect[1] + rect[3]).min(end[1]);
+            rect[0] = rect[0].max(start[0]);
+            rect[1] = rect[1].max(start[1]);
+            rect[2] = (right - rect[0]).max(0.0);
+            rect[3] = (bottom - rect[1]).max(0.0);
+        }
+    }
     if !isolated && !own && system.cpu.regs[1] != 0 {
         let raw: Vec<f32> = old.as_chunks::<4>().0.iter().map(|word| i32::from_le_bytes(*word) as f32).collect();
         let width = if top { 400.0 } else { 320.0 };
@@ -1358,14 +1561,19 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
         }
     }
     let native = matches!(drawing(system), None | Some(Drawing::Viewport(TOP_TEXT)));
-    if let Some(mouse) = system.aim_mouse.as_mut() {
-        mouse.menu_top.cauldron_font = place == TOP_TEXT && native && system.cpu.regs[1] == 0xB
-            && mouse.menus_on_top && mouse.cauldron_on_top_shown(system.frames);
+    // coming back into the text after its viewport is set (r1 is not the
+    // layer then), the flag stands
+    if drawing(system).is_none() || place != TOP_TEXT {
+        if let Some(mouse) = system.aim_mouse.as_mut() {
+            mouse.menu_top.cauldron_font = place == TOP_TEXT && native && system.cpu.regs[1] == 0xB
+                && mouse.cauldron_on_top_shown(system.frames);
+        }
     }
     false
 }
 
 pub(super) fn font(system: &mut System) {
+    if super::cauldron_text(system) { return; }
     if let Some(Drawing::MenuTop(step)) = drawing(system) {
         let part = system.aim_mouse.as_ref().filter(|mouse| mouse.menu_top.file_select())
             .and_then(|mouse| mouse.menu_top.part(step / 8)).filter(|part| !part.top).cloned();
@@ -1373,6 +1581,14 @@ pub(super) fn font(system: &mut System) {
             let at = system.cpu.regs[0] + 0x24;
             let x = f32::from_bits(read_word(system, at + 8));
             let y = f32::from_bits(read_word(system, at + 12));
+            // Font anchors already include the placed projection. Undo it
+            // only for ownership selection; drawing keeps the projected text.
+            let (x, y) = if part.file_book().is_some() {
+                let p = part.place;
+                let width = 400.0 * system.aim_mouse.as_ref().unwrap().widen;
+                (p.from[0] + (x * width / 320.0 - p.to[0]) * p.from[2] / p.to[2],
+                    p.from[1] + (y - p.to[1]) * p.from[3] / p.to[3])
+            } else { (x, y) };
             // A name's native anchor stays in its book's column while the
             // mesh turns outside the nominal Control box. Select the whole
             // string, including its native shadow, without clipping the book.
@@ -1420,10 +1636,10 @@ pub(super) fn font(system: &mut System) {
             return;
         }
     }
-    if !heart && !system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menu_top.cauldron_font) { return; }
+    if !heart { return; }
     // The native number effect draws an offset copy before its main text.
     // At the compact scale it looks like a second count; keep only the main pass.
-    if heart && system.cpu.regs[15] == 0x00A36F74 {
+    if system.cpu.regs[15] == 0x00A36F74 {
         system.cpu.regs[15] = 0x00A36F78;
         return;
     }
@@ -1432,10 +1648,7 @@ pub(super) fn font(system: &mut System) {
     system.memory.read_bytes(at, &mut old);
     let values: Vec<f32> = old.as_chunks::<4>().0.iter().map(|word| f32::from_le_bytes(*word)).collect();
     if values.iter().any(|value| !value.is_finite()) { return; }
-    let values = if heart { [values[0] * 0.5, values[1] * 0.5, values[2], values[3]] } else {
-        if !(0.0..30.0).contains(&values[3]) { return; }
-        [values[0] * 0.7, values[1] * 0.7, 200.0 + (values[2] - 200.0) * 0.7, values[3] * 0.7]
-    };
+    let values = [values[0] * 0.5, values[1] * 0.5, values[2], values[3]];
     let bytes: Vec<u8> = values.into_iter().flat_map(f32::to_le_bytes).collect();
     system.memory.write_bytes(at, &bytes);
     system.aim_mouse.as_mut().unwrap().menu_top.font_back = Some((at, old));
@@ -1477,9 +1690,12 @@ pub(super) fn bottom_text(system: &mut System) {
         return;
     }
     if let Some(Drawing::MenuTop(step)) = drawing(system) {
-        if system.aim_mouse.as_ref().unwrap().menu_top.part(step / 8).is_some_and(|part| !part.top && (part.model.is_some() || part.idol.is_some_and(|group| !matches!(group, IdolGroup::Counters | IdolGroup::Dialog)))) {
-            // Hub labels are textures in their button meshes. Unrelated
-            // text in the other groups must not be replayed with them.
+        let menu_top = &system.aim_mouse.as_ref().unwrap().menu_top;
+        let row = menu_top.part_index(step / 8).and_then(|index| menu_top.row_chapter(index)).is_some();
+        if row || menu_top.part(step / 8).is_some_and(|part| !part.top && (part.model.is_some() || part.idol.is_some_and(|group| !matches!(group, IdolGroup::Counters | IdolGroup::Dialog)))) {
+            // Hub labels and chapter labels are textures in their meshes.
+            // Unrelated text in the other groups must not be replayed with
+            // them, and an uncut Row would show the hint enlarged.
             system.cpu.regs[15] = BOTTOM_TEXT + 4;
         }
     }
@@ -1559,6 +1775,14 @@ pub(super) fn draw(system: &mut System) -> bool {
         system.memory.read_bytes(at, &mut bytes);
         moved.push((at, bytes));
     }
+    let row = {
+        let menu_top = &system.aim_mouse.as_ref().unwrap().menu_top;
+        menu_top.part_index(next).and_then(|index| menu_top.row_chapter(index)).map(|chapter| RowDraw {
+            chapter,
+            center: [part.place.from[0] + part.place.from[2] * 0.5, part.place.from[1] + part.place.from[3] * 0.5],
+            outlined: menu_top.chapter_outlined == Some(chapter),
+        })
+    };
     if part.top && part.model.is_some() {
         // A centered guard band extends the camera's clip planes without
         // changing its screen transform or the font renderer's alignment.
@@ -1567,7 +1791,7 @@ pub(super) fn draw(system: &mut System) -> bool {
         let from = [-200.0, -120.0, 800.0, 480.0];
         let to = [p.to[0] + (from[0] - p.from[0]) * scale[0], p.to[1] + (from[1] - p.from[1]) * scale[1], from[2] * scale[0], from[3] * scale[1]];
         place_scene(system, top, drawing, Placement { from, to }, true, true, &mut moved);
-    } else if part.model.is_some() && !board_cut(index)
+    } else if part.file_book().is_some() || row.is_some() || part.model.is_some() && !board_cut(index)
         && !system.aim_mouse.as_ref().unwrap().menu_top.file_select() {
         let widen = system.aim_mouse.as_ref().unwrap().widen;
         let canvas = [400.0 * widen, 240.0];
@@ -1583,7 +1807,7 @@ pub(super) fn draw(system: &mut System) -> bool {
     if system.aim_mouse.as_ref().unwrap().menu_top.file_select() {
         file_models(system, drawing, Some(&part), &mut moved);
     } else if part.chapter {
-        chapter_models(system, drawing, part.top, true, &mut moved);
+        chapter_models(system, drawing, part.top, true, row, &mut moved);
     } else if part.top {
         // Keep the layers present so their text renderers still run, but
         // hide unrelated meshes instead of replaying scenery in each item.
@@ -1632,6 +1856,27 @@ pub(super) fn draw(system: &mut System) -> bool {
 mod tests {
     use super::*;
 
+    /// an edit made at one width keeps its edges and stays on screen at
+    /// another: the Vault's Back stays left, AR flush right, and a box
+    /// placed at any width is the same box when that width returns.
+    #[test]
+    fn editor_overrides_follow_the_window_width() {
+        let back = [0.0, 216.68, 26.5, 23.32];
+        let ar = [368.2, 215.62, 31.8, 24.38];
+        for width in [240.0, 320.0, 400.0, 240.0 * 16.0 / 9.0, 560.0, 800.0] {
+            let [x, _, w, _] = seat_override(back, width);
+            assert_eq!(x, 0.0);
+            let [x, y, w2, h] = seat_override(ar, width);
+            assert!((x + w2 - width).abs() < 0.01 && (y + h - 240.0).abs() < 0.01, "AR flush at {width}");
+            assert!(w <= 26.5 && w2 <= 31.8);
+            for to in [[25.3, 150.7, 90.1, 58.3], [-6.3, 122.4, 145.6, 55.8], [-1.1, -9.8, 400.5, 248.6]] {
+                let placed = seat_override(to, width);
+                let back = seat_override(unseat_override(placed, width), width);
+                assert!(placed.iter().zip(back).all(|(a, b)| (a - b).abs() < 0.01), "{to:?} at {width}");
+            }
+        }
+    }
+
     #[test]
     fn layouts_preserve_shapes_and_fit_all_window_sizes() {
         for index in 0..ScreenTransform::scripted_len() + 9 {
@@ -1672,7 +1917,8 @@ mod tests {
             mouse.menu_top.drawn.as_mut().unwrap().3 = mouse.widen;
             mouse.menu_top.parts = parts;
             assert_eq!(mouse.menus_top_touch(11, width * 0.5 / mouse.widen, 40.0, false), None);
-            for point in [(80.0, 40.0), (230.0, 150.0), (35.0, 215.0), (160.0, 225.0)] {
+            // Back and the Hint strip; the thumbnails are Rows, built per frame
+            for point in [(35.0, 215.0), (240.0, 200.0)] {
                 let top = mouse.menus_top_point(11, point.0, point.1, None).unwrap();
                 assert_eq!(mouse.menus_top_touch(11, top.0, top.1, false), Some(point));
             }
@@ -1688,6 +1934,35 @@ mod tests {
         mouse.menu_looked = Some(((80.0, 40.0), 10));
         refresh_hover(&mut mouse, 11);
         assert_eq!(mouse.menu_looked, Some(((80.0, 40.0), 10)));
+    }
+
+    #[test]
+    fn chapter_rows_fill_one_row_above_back_and_the_wheel_stops_at_both_ends() {
+        let mut fits = Vec::new();
+        for width in [240.0, 400.0, 240.0 * 16.0 / 9.0, 560.0] {
+            let (slots, fit) = chapter_slots(width, 26, 0);
+            assert_eq!(slots.len(), fit);
+            for (_, to) in &slots {
+                assert!(to[0] >= 0.0 && to[0] + to[2] <= width && to[1] + to[3] <= CHAPTER_ROW_BOTTOM);
+                assert_eq!(to[1], slots[0].1[1], "one row");
+            }
+            fits.push(fit);
+            // a short List starts at the left whatever the scroll
+            assert_eq!(chapter_slots(width, 1, 9).0, vec![(0, slots[0].1)]);
+            // the last chapter ends the row
+            assert_eq!(chapter_slots(width, 26, 99).0.last().unwrap().0, 25);
+        }
+        assert!(fits.windows(2).all(|pair| pair[0] <= pair[1]) && fits[0] < fits[3], "wider windows show more chapters");
+
+        let mut mouse = shown(1);
+        mouse.menu_top.chapter_span = (26, 5);
+        mouse.scroll_chapters(-3.0);
+        assert_eq!(mouse.menu_top.chapter_scroll, 0);
+        mouse.scroll_chapters(2.5);
+        mouse.scroll_chapters(0.5);
+        assert_eq!(mouse.menu_top.chapter_scroll, 3, "fractions add up");
+        mouse.scroll_chapters(40.0);
+        assert_eq!(mouse.menu_top.chapter_scroll, 21);
     }
 
     #[test]
@@ -1931,6 +2206,30 @@ mod tests {
     }
 
     #[test]
+    fn projected_books_keep_only_their_own_name_and_shadow() {
+        let mut system = System::new(crate::Config::default());
+        system.memory.map(0x14000000, 0x20000000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        system.cpu.regs[0] = 0x14000000;
+        for book in 0..3 {
+            let mut mouse = shown(0);
+            let p = mouse.menu_top.parts[book].place;
+            mouse.saved = Some(Saved { regs: [0; 16], cpsr: system.cpu.cpsr, vfp: [0; 32], drawing: Drawing::MenuTop(book * 8 + 2), moved: Vec::new() });
+            system.aim_mouse = Some(mouse);
+            for (owner, x, y) in [(0, 50.0_f32, 120.0_f32), (1, 160.0, 120.0), (2, 270.0, 120.0), (3, 102.0, 207.0)] {
+                for shadow in [0.0, 1.0] {
+                    let anchor = [(p.to[0] + (x + shadow - p.from[0]) * p.to[2] / p.from[2]) * 320.0 / 400.0,
+                        p.to[1] + (y + shadow - p.from[1]) * p.to[3] / p.from[3]];
+                    system.memory.write_bytes(0x1400002C, &anchor[0].to_le_bytes());
+                    system.memory.write_bytes(0x14000030, &anchor[1].to_le_bytes());
+                    system.cpu.regs[15] = 0x00A36FA4;
+                    font(&mut system);
+                    assert_eq!(system.cpu.regs[15], if owner == book { 0x00A36FA4 } else { 0x00A36FA8 });
+                }
+            }
+        }
+    }
+
+    #[test]
     fn hiding_a_moved_control_removes_input_until_it_is_shown_again() {
         let mut mouse = shown(0);
         mouse.set_editor_layer(0, [0.0, 0.0, 125.0, 190.0]);
@@ -2060,29 +2359,6 @@ mod tests {
         assert_eq!(mouse.menu_touch(11, true), None);
         assert_eq!(mouse.menu_touch(12, false), None);
         assert_eq!(mouse.menu_touch(13, true), Some((100.0, 100.0)));
-    }
-
-    #[test]
-    fn cauldron_hint_font_scales_and_restores_without_shrinking_counter() {
-        let mut system = System::new(crate::Config::default());
-        system.memory.map(0x14000000, 0x20000000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
-        let mut mouse = AimMouse::default();
-        mouse.menu_top.cauldron_font = true;
-        system.aim_mouse = Some(mouse);
-        system.cpu.regs[0] = 0x14000000;
-        let at = 0x14000024;
-        let values = [1.0_f32, 1.0, 100.0, 10.0];
-        let original: Vec<u8> = values.into_iter().flat_map(f32::to_le_bytes).collect();
-        system.memory.write_bytes(at, &original);
-        font(&mut system);
-        assert_eq!(f32::from_bits(read_word(&mut system, at)), 0.7);
-        assert_eq!(f32::from_bits(read_word(&mut system, at + 8)), 130.0);
-        font_done(&mut system);
-        assert_eq!(f32::from_bits(read_word(&mut system, at)), 1.0);
-        system.memory.write_bytes(at + 12, &60.0_f32.to_le_bytes());
-        font(&mut system);
-        assert_eq!(f32::from_bits(read_word(&mut system, at)), 1.0);
-        assert!(system.aim_mouse.as_ref().unwrap().menu_top.font_back.is_none());
     }
 
     #[test]

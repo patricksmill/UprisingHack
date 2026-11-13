@@ -34,6 +34,14 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 recomp3ds = { git = "https://github.com/fearkov/3dsrecomp" }
 sha2 = "0.10"
 gilrs = { version = "0.11.2", features = ["serde-serialize"] }
+# a controller's gyroscope, which gilrs does not read; built into the
+# executable so the Windows release stays one file
+sdl3 = { version = "0.22.1", features = ["build-from-source-static", "build-from-source-unix-console", "hidapi"] }
+# only its controllers and their sensors: no window, sound or drawing of its own
+sdl3-sys = { version = "0.7.3", features = [
+    "no-sdl-video", "no-sdl-audio", "no-sdl-gpu", "no-sdl-render", "no-sdl-camera",
+    "no-sdl-dialog", "no-sdl-tray", "no-sdl-power", "no-sdl-haptic",
+] }
 
 [dev-dependencies]
 zakuro-fs = { workspace = true, features = ["testing"] }

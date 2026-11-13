@@ -478,6 +478,14 @@ impl Placement {
         let [x, y] = self.map_point([part[0], part[1]]);
         [x, y, part[2] * self.to[2] / self.from[2], part[3] * self.to[3] / self.from[3]]
     }
+
+    /// the same mapping over the whole top screen, 400 by 240: drawn with
+    /// it, a part is moved and scaled as placed, and nothing of it is cut
+    /// at its box's edges.
+    pub fn whole(&self) -> Placement {
+        let [x, y] = self.unmap_point([0.0, 0.0]);
+        Placement { from: [x, y, 400.0 * self.from[2] / self.to[2], 240.0 * self.from[3] / self.to[3]], to: [0.0, 0.0, 400.0, 240.0] }
+    }
 }
 
 /// the kinds of quad the pause screen flushes, each with its own placement.
@@ -496,8 +504,8 @@ impl From<QuadRole> for usize {
     }
 }
 
-/// the most roles one Screen's layout seats: the Cauldron's eight.
-const ROLES: usize = 8;
+/// the most roles one Screen's layout seats: the Cauldron's nine.
+const ROLES: usize = 9;
 
 /// one Screen's placements for a completed title frame, indexed by its
 /// role enum (`QuadRole`, `CauldronRole`). A rule that was hidden has no
@@ -707,6 +715,7 @@ impl PauseRules {
                 None,
                 None,
                 None,
+                None,
             ],
         }
     }
@@ -756,8 +765,9 @@ impl DialogRules {
 
 /// the Fiend's Cauldron's parts, each in a place of its own: the top's
 /// picture, its intensity panel, the bottom's bar, the bar's dial, Back,
-/// Move Out, the rest (the pot, the pan and the hearts bet), and the
-/// bottom screen's ring background, drawn behind everything else.
+/// Move Out, the rest (the pot, the pan and the hearts bet), the bottom
+/// screen's ring background, drawn behind everything else, and the top's
+/// hint line. New roles go last, so saved lists keep their order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CauldronRole {
     Top,
@@ -768,10 +778,11 @@ pub enum CauldronRole {
     MoveOut,
     Rest,
     Ring,
+    Hint,
 }
 
 impl CauldronRole {
-    pub const ALL: [CauldronRole; 8] = [
+    pub const ALL: [CauldronRole; ROLES] = [
         CauldronRole::Top,
         CauldronRole::Panel,
         CauldronRole::Bar,
@@ -780,10 +791,11 @@ impl CauldronRole {
         CauldronRole::MoveOut,
         CauldronRole::Rest,
         CauldronRole::Ring,
+        CauldronRole::Hint,
     ];
 
     pub fn name(self) -> &'static str {
-        ["top", "panel", "bar", "dial", "back", "moveout", "rest", "ring"][self as usize]
+        ["top", "panel", "bar", "dial", "back", "moveout", "rest", "ring", "hint"][self as usize]
     }
 
     pub fn from_name(name: &str) -> Option<CauldronRole> {
@@ -847,7 +859,7 @@ pub(super) const CAULDRON_CONTROLS: [CauldronControl; 5] = [
 /// role was added gets that role's default.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(from = "Vec<PlacementRule>")]
-pub struct CauldronRules([PlacementRule; 8]);
+pub struct CauldronRules([PlacementRule; ROLES]);
 
 impl From<Vec<PlacementRule>> for CauldronRules {
     fn from(saved: Vec<PlacementRule>) -> CauldronRules {
@@ -862,16 +874,18 @@ impl From<Vec<PlacementRule>> for CauldronRules {
 impl Default for CauldronRules {
     /// the top's picture and under it the panel, the bar, its dial and Back
     /// on the left, the pot over Move Out on the right with the ring
-    /// behind it, made for 16:9 and smaller on a narrower screen.
+    /// behind it, the hint across the top, made for 16:9 and smaller on a
+    /// narrower screen.
     fn default() -> CauldronRules {
-        let fit = |to, from, right: bool, down: bool| PlacementRule {
+        let rule = |to, from, anchor, anchor_y| PlacementRule {
             from,
             to,
-            anchor: if right { 1.0 } else { 0.0 },
-            anchor_y: if down { 1.0 } else { 0.0 },
+            anchor,
+            anchor_y,
             scale: RuleScale::Fit { design_width: CAULDRON_WIDTH },
             visible: true,
         };
+        let fit = |to, from, right: bool, down: bool| rule(to, from, if right { 1.0 } else { 0.0 }, if down { 1.0 } else { 0.0 });
         let (bar_to, bar_from) = ([40.0, 197.0, 220.0, 23.0], [14.0, 0.0, 312.0, 32.0]);
         let (along, down) = (bar_to[2] / bar_from[2], bar_to[3] / bar_from[3]);
         // at 0, the dial's arrow tip on the bar's lower edge, the panel's
@@ -881,7 +895,7 @@ impl Default for CauldronRules {
         let panel_width = 91.0;
         CauldronRules([
             fit([16.0, 24.0, 258.0, 172.0], [36.0, 22.0, 328.0, 218.0], false, false),
-            fit([dial_middle - panel_width * 0.5, 148.0, panel_width, 49.0], [PANEL_ZERO - 70.0, 176.0, 140.0, 76.0], false, true),
+            fit([dial_middle - panel_width * 0.5, 150.0, panel_width, 47.0], [PANEL_ZERO - 70.0, 170.0, 140.0, 72.0], false, true),
             fit(bar_to, bar_from, false, true),
             fit(
                 [dial_middle - dial[0] * 0.5, bar_to[1] + (DIAL_TOP - bar_from[1]) * down, dial[0], dial[1]],
@@ -893,6 +907,9 @@ impl Default for CauldronRules {
             fit([244.9, 192.9, 171.1, 47.5], [16.0, 160.0, 288.0, 80.0], true, true),
             fit([188.0, 47.0, 237.4, 178.1], [0.0, 0.0, 320.0, 240.0], true, true),
             fit([188.0, 47.0, 237.4, 178.1], [0.0, 0.0, 320.0, 240.0], true, true),
+            // the hint's line as the game draws it, centred across the top;
+            // its box is the line's, so it does not cover the other parts
+            rule([CAULDRON_WIDTH * 0.5 - 164.0, 2.0, 328.0, 22.0], [36.0, 2.0, 328.0, 22.0], 0.5, 0.0),
         ])
     }
 }
@@ -906,32 +923,23 @@ impl CauldronRules {
         &mut self.0[role as usize]
     }
 
-    /// how far the bar's placement goes across the top screen for each
-    /// pixel of the bottom screen's.
-    fn along(&self, widen: f32) -> f32 {
-        let bar = self.rule(CauldronRole::Bar).placement(widen);
-        bar.to[2] / bar.from[2]
-    }
-
     /// every role's placement at the pot's value, hidden ones too: the
-    /// panel and the dial slid along the bar with it.
+    /// panel's and the dial's source slide with it, and both sit centred
+    /// on the bar where it shows the value, wherever the bar is.
     pub fn boxes(&self, widen: f32, value: f32) -> [Placement; ROLES] {
         let mut boxes = CauldronRole::ALL.map(|role| self.rule(role).placement(widen));
-        let along = self.along(widen);
+        let point = boxes[CauldronRole::Bar as usize].map_x(DIAL_ZERO + value * DIAL_STEP);
         for (role, from_step) in [(CauldronRole::Panel, PANEL_STEP), (CauldronRole::Dial, DIAL_STEP)] {
             let place = &mut boxes[role as usize];
             place.from[0] += value * from_step;
-            place.to[0] += value * DIAL_STEP * along;
+            place.to[0] = point - place.to[2] * 0.5;
         }
         boxes
     }
 
-    /// moves a role so that, at the pot's value, it is placed at `to` in the
-    /// top screen's 400 by 240.
-    pub fn set_box(&mut self, role: CauldronRole, widen: f32, value: f32, mut to: [f32; 4]) {
-        if matches!(role, CauldronRole::Panel | CauldronRole::Dial) {
-            to[0] -= value * DIAL_STEP * self.along(widen);
-        }
+    /// moves a role so that it is placed at `to` in the top screen's 400 by
+    /// 240; the panel and the dial keep their place across, on the bar.
+    pub fn set_box(&mut self, role: CauldronRole, widen: f32, to: [f32; 4]) {
         let rule = self.rule_mut(role);
         rule.to = rule.target_for(widen, to);
     }
@@ -1331,6 +1339,39 @@ mod tests {
         let layout = CauldronRules::default().layout(10, 1.0, None);
         assert!(layout.place(CauldronRole::Dial).is_none() && layout.place(CauldronRole::Panel).is_none());
         assert!(layout.place(CauldronRole::Bar).is_some());
+    }
+
+    /// a moved or resized bar, or a dial and panel moved across, keeps both
+    /// centred on the bar's point for the value as it slides.
+    #[test]
+    fn the_dial_and_panel_stay_on_an_edited_bar() {
+        let mut rules = CauldronRules::default();
+        rules.rule_mut(CauldronRole::Bar).to = [60.0, 190.0, 250.0, 26.0];
+        rules.rule_mut(CauldronRole::Dial).to[0] += 7.0;
+        rules.rule_mut(CauldronRole::Panel).to[0] -= 5.0;
+        for widen in [1.0, 533.0 / 400.0] {
+            for value in [0.0, 2.1, 8.4, 9.0] {
+                let layout = rules.layout(10, widen, Some(value));
+                let point = layout.place(CauldronRole::Bar).unwrap().map_x(DIAL_ZERO + value * DIAL_STEP);
+                for role in [CauldronRole::Dial, CauldronRole::Panel] {
+                    let place = layout.place(role).unwrap();
+                    assert!((place.to[0] + place.to[2] * 0.5 - point).abs() < 0.001, "{role:?} at {value}, widen {widen}");
+                }
+            }
+        }
+    }
+
+    /// a placement drawn over the whole screen maps every point as the
+    /// placement does, so a part is moved and scaled but never cut.
+    #[test]
+    fn a_whole_screen_placement_keeps_the_mapping() {
+        let dial = CauldronRules::default().layout(10, 427.0 / 400.0, Some(8.4)).place(CauldronRole::Dial).unwrap();
+        let whole = dial.whole();
+        assert_eq!(whole.to, [0.0, 0.0, 400.0, 240.0]);
+        for point in [[0.0, 0.0], [dial.from[0], dial.from[1]], [250.0, 60.0], [-40.0, 300.0]] {
+            let [a, b] = [whole.map_point(point), dial.map_point(point)];
+            assert!((a[0] - b[0]).abs() < 0.001 && (a[1] - b[1]).abs() < 0.001, "{point:?}");
+        }
     }
 
     #[test]

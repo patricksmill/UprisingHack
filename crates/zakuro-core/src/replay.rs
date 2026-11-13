@@ -1,7 +1,8 @@
 //! a run's inputs written down frame by frame, with the clock it started
 //! at, so the run can be played back exactly. a line per change of input,
-//! the frame it starts at, the buttons, the circle pad, the touch, the tilt
-//! and the C-stick, which recordings from before them leave out.
+//! the frame it starts at, the buttons, the circle pad, the touch, the tilt,
+//! the C-stick and a controller's gyroscope, which recordings from before
+//! them leave out.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -29,8 +30,9 @@ impl Recorder {
         if self.last != Some(input) {
             let (x, y) = input.touch.map_or((-1, -1), |(x, y)| (x as i32, y as i32));
             let [tilt_x, tilt_y] = input.tilt;
+            let [gyro_x, gyro_y, gyro_z] = input.gyro;
             let line = format!(
-                "{} {:x} {:?} {:?} {x} {y} {tilt_x:?} {tilt_y:?} {:?} {:?}",
+                "{} {:x} {:?} {:?} {x} {y} {tilt_x:?} {tilt_y:?} {:?} {:?} {gyro_x:?} {gyro_y:?} {gyro_z:?}",
                 self.frame,
                 input.buttons.bits(),
                 input.circle_x,
@@ -70,10 +72,13 @@ impl Replay {
             let parse = || -> Option<(u64, InputState)> {
                 let (tx, ty): (i32, i32) = (tx.parse().ok()?, ty.parse().ok()?);
                 let pair = |x: &str, y: &str| -> Option<[f32; 2]> { Some([x.parse().ok()?, y.parse().ok()?]) };
-                let (tilt, c_stick) = match rest {
-                    [] => ([0.0; 2], [0.0; 2]),
-                    [x, y] => (pair(x, y)?, [0.0; 2]),
-                    [x, y, cx, cy] => (pair(x, y)?, pair(cx, cy)?),
+                let (tilt, c_stick, gyro) = match rest {
+                    [] => ([0.0; 2], [0.0; 2], [0.0; 3]),
+                    [x, y] => (pair(x, y)?, [0.0; 2], [0.0; 3]),
+                    [x, y, cx, cy] => (pair(x, y)?, pair(cx, cy)?, [0.0; 3]),
+                    [x, y, cx, cy, gx, gy, gz] => {
+                        (pair(x, y)?, pair(cx, cy)?, [gx.parse().ok()?, gy.parse().ok()?, gz.parse().ok()?])
+                    }
                     _ => return None,
                 };
                 Some((
@@ -86,6 +91,7 @@ impl Replay {
                         tilt,
                         c_stick_x: c_stick[0],
                         c_stick_y: c_stick[1],
+                        gyro,
                     },
                 ))
             };
@@ -128,6 +134,7 @@ mod tests {
             tilt: [0.25, -0.5],
             c_stick_x: -0.75,
             c_stick_y: 1.0,
+            gyro: [12.5, -3.0, 0.5],
         };
         let mut recorder = Recorder::create(&path, 1234).unwrap();
         for frame in 0..10 {

@@ -343,6 +343,8 @@ pub struct Keys {
     pub c_right: KeyCode,
     /// uses the current power in a battle, as touching its box does.
     pub power: KeyCode,
+    pub vehicle_ability: KeyCode,
+    pub vehicle_exit: KeyCode,
 }
 
 impl Default for Keys {
@@ -371,6 +373,8 @@ impl Default for Keys {
             c_left: KeyCode::KeyF,
             c_right: KeyCode::KeyH,
             power: KeyCode::Digit1,
+            vehicle_ability: KeyCode::Digit4,
+            vehicle_exit: KeyCode::Digit5,
         }
     }
 }
@@ -382,7 +386,7 @@ impl Keys {
     }
 
     /// every binding with the name it goes by, to show and change them.
-    pub fn all_mut(&mut self) -> [(&'static str, &mut KeyCode); 23] {
+    pub fn all_mut(&mut self) -> [(&'static str, &mut KeyCode); 25] {
         [
             ("A", &mut self.a),
             ("B", &mut self.b),
@@ -407,6 +411,8 @@ impl Keys {
             ("C-stick left", &mut self.c_left),
             ("C-stick right", &mut self.c_right),
             ("Use power", &mut self.power),
+            ("Vehicle ability", &mut self.vehicle_ability),
+            ("Exit vehicle", &mut self.vehicle_exit),
         ]
     }
 }
@@ -431,6 +437,8 @@ pub struct PadButtons {
     pub right: Button,
     pub zl: Button,
     pub zr: Button,
+    pub vehicle_ability: Button,
+    pub vehicle_exit: Button,
 }
 
 impl Default for PadButtons {
@@ -450,13 +458,15 @@ impl Default for PadButtons {
             right: Button::DPadRight,
             zl: Button::LeftTrigger2,
             zr: Button::RightTrigger2,
+            vehicle_ability: Button::LeftThumb,
+            vehicle_exit: Button::RightThumb,
         }
     }
 }
 
 impl PadButtons {
     /// every binding with the name it goes by, to show and change them.
-    pub fn all_mut(&mut self) -> [(&'static str, &mut Button); 14] {
+    pub fn all_mut(&mut self) -> [(&'static str, &mut Button); 16] {
         [
             ("A", &mut self.a),
             ("B", &mut self.b),
@@ -472,6 +482,8 @@ impl PadButtons {
             ("D-pad right", &mut self.right),
             ("ZL", &mut self.zl),
             ("ZR", &mut self.zr),
+            ("Vehicle ability", &mut self.vehicle_ability),
+            ("Exit vehicle", &mut self.vehicle_exit),
         ]
     }
 
@@ -571,6 +583,8 @@ pub struct Settings {
     pub room_address: String,
     pub room_name: String,
     pub room_port: u16,
+    /// Kid Icarus: Uprising's PC Preferences, shown in its own Options.
+    pub pc: crate::preferences::PcPreferences,
 }
 
 impl Default for Settings {
@@ -608,6 +622,7 @@ impl Default for Settings {
             room_address: String::new(),
             room_name: String::new(),
             room_port: zakuro_core::room::DEFAULT_PORT,
+            pc: crate::preferences::PcPreferences::default(),
         }
     }
 }
@@ -644,7 +659,7 @@ impl Settings {
     pub fn load() -> Settings {
         let Some(path) = path() else { return Settings::default() };
         match std::fs::read_to_string(&path) {
-            Ok(text) => toml::from_str(&text).unwrap_or_else(|error| {
+            Ok(text) => Settings::parse(&text).unwrap_or_else(|error| {
                 // kept aside, the next save would write over it
                 let aside = path.with_extension("toml.bad");
                 let _ = std::fs::copy(&path, &aside);
@@ -655,14 +670,32 @@ impl Settings {
         }
     }
 
-    pub fn save(&self) {
-        let Some(path) = path() else { return };
-        let written = toml::to_string_pretty(self)
-            .map_err(|error| error.to_string())
-            .and_then(|text| write(&path, &text).map_err(|error| error.to_string()));
-        if let Err(error) = written {
-            log::warn!("could not save the settings to {}, {error}", path.display());
+    /// settings from a file's text. a file from before the PC Preferences
+    /// gets its changed console keys as Action Bindings where they have one
+    /// meaning, and the rest listed for the player to review.
+    pub fn parse(text: &str) -> Result<Settings, toml::de::Error> {
+        let mut settings: Settings = toml::from_str(text)?;
+        let older = text.parse::<toml::Table>().is_ok_and(|table| !table.contains_key("pc"));
+        if older {
+            settings.pc.bindings = crate::bindings::migrate(&settings.keys, &settings.pad);
+            settings.pc.review = crate::bindings::unmigrated(&settings.keys, &settings.pad).into_iter().map(str::to_owned).collect();
         }
+        Ok(settings)
+    }
+
+    /// writes the settings, through a file beside them renamed over them,
+    /// so a failed write leaves the last ones whole.
+    pub fn save(&self) -> Result<(), String> {
+        let path = path().ok_or("there is no place for settings on this system")?;
+        self.save_to(&path).map_err(|error| {
+            log::warn!("could not save the settings to {}, {error}", path.display());
+            error
+        })
+    }
+
+    pub fn save_to(&self, path: &Path) -> Result<(), String> {
+        let text = toml::to_string_pretty(self).map_err(|error| error.to_string())?;
+        write(path, &text).map_err(|error| format!("{} ({error})", path.display()))
     }
 }
 
@@ -670,7 +703,11 @@ fn write(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, text)
+    let fresh = path.with_extension("toml.new");
+    std::fs::write(&fresh, text)?;
+    std::fs::rename(&fresh, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&fresh);
+    })
 }
 
 /// the system's place for a program's settings.
@@ -787,5 +824,24 @@ mod tests {
         let unknown: Settings = toml::from_str("high_refresh_cap = \"30\"\nshow_fps = true\n").unwrap();
         assert_eq!(unknown.high_refresh_cap, HighRefreshCap::Off);
         assert!(unknown.show_fps, "the other settings are kept");
+    }
+
+    /// a save that cannot be written says so and leaves the last settings
+    /// as they were.
+    #[test]
+    fn a_failed_save_keeps_the_last_settings() {
+        let dir = std::env::temp_dir().join(format!("zakuro-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.toml");
+        let saved = Settings { volume: 0.25, ..Settings::default() };
+        saved.save_to(&path).unwrap();
+        // the file beside it a directory, so the new one can't be written
+        std::fs::create_dir_all(path.with_extension("toml.new")).unwrap();
+        let error = Settings { volume: 0.75, ..Settings::default() }.save_to(&path);
+        assert!(error.is_err());
+        let back: Settings = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back.volume, 0.25);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -76,6 +76,11 @@ pub struct InputState {
     /// right of the screen and toward its bottom, the way dragging the mouse
     /// tilts it. the sensors report it, and how fast it changes.
     pub tilt: [f32; 2],
+    /// how fast a controller with a gyroscope turns, in degrees a second
+    /// about the console's x, y and z axes, on top of the tilt's turning.
+    /// a frame's input only, so saved states keep the layout they had.
+    #[serde(skip)]
+    pub gyro: [f32; 3],
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -319,7 +324,10 @@ pub fn update(system: &mut System, input: InputState) {
 
     // the sensors report the tilt, and how fast it changes, kept track of
     // whether or not they are on. titles that turn one on wait for its event
-    let (gravity, rate) = motion(&mut system.services.hid, input.tilt);
+    let (gravity, mut rate) = motion(&mut system.services.hid, input.tilt);
+    for (rate, turned) in rate.iter_mut().zip(input.gyro) {
+        *rate += turned;
+    }
     let accelerometer = gravity.map(|g| (g * ONE_G).round().clamp(-32768.0, 32767.0) as i16);
     let gyroscope = rate.map(|r| (r * GYROSCOPE_PER_DPS).round().clamp(-32768.0, 32767.0) as i16);
     let hid = &system.services.hid;

@@ -139,6 +139,18 @@ pub struct Menus {
     /// the controller binding waiting for a button, by its place in
     /// PadButtons::all_mut.
     pub rebinding_pad: Option<usize>,
+    /// Kid Icarus's Action Binding waiting for an input: the action, the
+    /// device and the slot, 0 primary or 1 secondary.
+    pub rebinding_action: Option<(crate::bindings::Action, crate::bindings::Device, usize)>,
+    /// an input another action already uses, waiting for Swap, Replace or
+    /// Cancel.
+    pub binding_conflict: Option<(crate::bindings::Action, usize, crate::bindings::Source, Vec<crate::bindings::Action>)>,
+    /// asks for the controller's gyroscope to be calibrated.
+    pub calibrate_gyro: bool,
+    /// what the controller's gyroscope can do, to show.
+    pub gyro_status: String,
+    /// a Kid Icarus category waiting for Restore Defaults to be confirmed.
+    pending_reset: Option<crate::preferences::Category>,
     /// something to tell the user, until they close it.
     pub message: Option<String>,
     /// something to tell the user for a moment, over the game, and since
@@ -657,7 +669,11 @@ impl Menus {
                     // where the button went down, not where the pointer is now:
                     // a corner drag leaves the layer before egui calls it a drag
                     let point = ctx.input(|input| input.pointer.press_origin());
-                    let hit = point.and_then(under);
+                    // a selected layer under the press is dragged even when
+                    // another covers it, so one picked in the list can be moved
+                    let picked = |point: egui::Pos2| selected.into_iter().chain(group.iter().copied())
+                        .find(|&index| shown(index) && rect_of(layers[index].1).contains(point));
+                    let hit = point.and_then(|point| picked(point).or_else(|| under(point)));
                     // dragging a member moves the whole group
                     match hit {
                         Some(index) if group.contains(&index) => {}
@@ -681,6 +697,19 @@ impl Menus {
                 if response.drag_stopped() {
                     resizing = false;
                     drag.clear();
+                }
+                // the arrow keys nudge the selection, Shift by ten, unless a
+                // text field has the keyboard or a drag is going on
+                if selected.is_some() && drag.is_empty() && !ctx.text_edit_focused() {
+                    let (by, step) = ctx.input(|input| {
+                        let pressed = |key| input.key_pressed(key) as i32 as f32;
+                        let by = [pressed(egui::Key::ArrowRight) - pressed(egui::Key::ArrowLeft), pressed(egui::Key::ArrowDown) - pressed(egui::Key::ArrowUp)];
+                        (by, if input.modifiers.shift { 10.0 } else { 1.0 })
+                    });
+                    if by != [0.0, 0.0] {
+                        let start: Vec<_> = group.iter().filter(|&&index| shown(index)).map(|&index| (index, layers[index].1)).collect();
+                        moved = dragged(&start, [by[0] * step, by[1] * step], false);
+                    }
                 }
             });
             self.editor_layer = selected;
@@ -1227,17 +1256,152 @@ impl Menus {
                     settings.pad = PadButtons::default();
                     self.rebinding_pad = None;
                 }
+
+                ui.separator();
+                self.kid_icarus(ui, settings);
             });
         self.settings_open = open;
         if !open {
             self.rebinding = None;
             self.rebinding_pad = None;
+            self.rebinding_action = None;
+            self.binding_conflict = None;
         }
         if *settings != before {
             actions.push(Action::Settings);
         }
         actions
     }
+
+    /// Kid Icarus's PC Preferences, here for recovery: its own Options
+    /// Screens are where players change them.
+    fn kid_icarus(&mut self, ui: &mut egui::Ui, settings: &mut Settings) {
+        use crate::bindings::{Action as Act, Device, Resolve};
+        use crate::preferences::{Category, GyroMode, Presentation};
+        ui.heading("Kid Icarus: Uprising");
+        ui.label(RichText::new("Recovery for the PC Preferences its own Options show. Escape cancels a binding.").weak());
+        if !settings.pc.review.is_empty() {
+            ui.label(
+                RichText::new(format!(
+                    "Your old {} bindings have no single action now; check the actions below.",
+                    settings.pc.review.join(", ")
+                ))
+                .color(Color32::YELLOW),
+            );
+            if ui.button("Got it").clicked() {
+                settings.pc.review.clear();
+            }
+        }
+        if let Some((action, slot, source, others)) = self.binding_conflict.clone() {
+            let names: Vec<&str> = others.iter().map(|other| other.name()).collect();
+            ui.label(RichText::new(format!("{} is already {}.", source.name(), names.join(", "))).color(Color32::YELLOW));
+            ui.horizontal(|ui| {
+                let mut resolve = None;
+                if ui.button("Swap").clicked() {
+                    resolve = Some(Resolve::Swap);
+                }
+                if ui.button("Replace").clicked() {
+                    resolve = Some(Resolve::Replace);
+                }
+                if ui.button("Cancel").clicked() {
+                    self.binding_conflict = None;
+                }
+                if let Some(resolve) = resolve {
+                    self.binding_conflict = None;
+                    if let Err(error) = settings.pc.bindings.assign(action, slot, source, resolve) {
+                        self.message = Some(binding_refused(error));
+                    }
+                }
+            });
+        }
+        for (device, title, grid) in [(Device::KeyboardMouse, "Keyboard and mouse", "kiu_keys"), (Device::Controller, "Controller", "kiu_pad")] {
+            ui.label(RichText::new(title).strong());
+            egui::Grid::new(grid).num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
+                for action in Act::ALL {
+                    ui.label(action.name());
+                    for slot in 0..2 {
+                        let bound = settings.pc.bindings.sources(device, action).get(slot).copied();
+                        let text = match (self.rebinding_action == Some((action, device, slot)), bound) {
+                            (true, _) => "press…".to_owned(),
+                            (false, Some(source)) => source.name(),
+                            (false, None) => "—".to_owned(),
+                        };
+                        let button = ui.add_sized([120.0, 20.0], egui::Button::new(text));
+                        if button.clicked() {
+                            self.rebinding_action = Some((action, device, slot));
+                            self.binding_conflict = None;
+                        }
+                        if button.secondary_clicked() && bound.is_some() {
+                            if let Err(error) = settings.pc.bindings.clear(device, action, slot) {
+                                self.message = Some(binding_refused(error));
+                            }
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+            let category = if device == Device::KeyboardMouse { Category::KeyboardMouse } else { Category::Controller };
+            self.reset_button(ui, settings, category, &format!("Default {}", title.to_lowercase()));
+        }
+        ui.label(RichText::new("Right-click a binding to clear it.").weak());
+
+        let aim = &mut settings.pc.aim;
+        ui.add(egui::Slider::new(&mut aim.mouse_sensitivity, 0.1..=3.0).text("Mouse sensitivity"));
+        ui.add(egui::Slider::new(&mut aim.stick_sensitivity, 0.25..=3.0).text("Right stick sensitivity"));
+        ui.add(egui::Slider::new(&mut aim.dead_zone, 0.0..=0.5).text("Stick dead zone"));
+        ui.horizontal(|ui| {
+            ui.label("Gyro aim");
+            for (mode, name) in [(GyroMode::Off, "Off"), (GyroMode::Always, "Always on"), (GyroMode::Hold, "Hold to aim")] {
+                ui.radio_value(&mut aim.gyro, mode, name);
+            }
+        });
+        ui.add_enabled(aim.gyro != GyroMode::Off, egui::Slider::new(&mut aim.gyro_sensitivity, 0.25..=4.0).text("Gyro sensitivity"));
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut aim.gyro_invert_x, "Invert gyro horizontally");
+            ui.checkbox(&mut aim.gyro_invert_y, "Invert gyro vertically");
+            if ui.button("Calibrate").on_hover_text("Lay the controller still for a second").clicked() {
+                self.calibrate_gyro = true;
+            }
+        });
+        ui.label(RichText::new(&self.gyro_status).weak());
+        self.reset_button(ui, settings, Category::ReticleCamera, "Default aiming and gyro");
+        let shown = &mut settings.pc.presentation;
+        ui.add(egui::Slider::new(&mut shown.hud_scale, Presentation::HUD.0..=Presentation::HUD.1).text("HUD and reticle size"));
+        ui.add(egui::Slider::new(&mut shown.portrait_scale, Presentation::PORTRAIT.0..=Presentation::PORTRAIT.1).text("Portrait size"));
+        self.reset_button(ui, settings, Category::Presentation, "Default presentation");
+    }
+
+    /// a Restore Defaults button for one category, asking before it does.
+    fn reset_button(&mut self, ui: &mut egui::Ui, settings: &mut Settings, category: crate::preferences::Category, text: &str) {
+        if self.pending_reset != Some(category) {
+            if ui.button(text).clicked() {
+                self.pending_reset = Some(category);
+            }
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.label(format!("{text}?"));
+            if ui.button("Restore").clicked() {
+                category.restore_defaults(settings);
+                self.rebinding_action = None;
+                self.pending_reset = None;
+            }
+            if ui.button("Cancel").clicked() {
+                self.pending_reset = None;
+            }
+        });
+    }
+}
+
+/// why an Action Binding was not changed.
+fn binding_refused(error: crate::bindings::BindError) -> String {
+    match error {
+        crate::bindings::BindError::Required(action) => format!("{} must keep an input on each device.", action.name()),
+        crate::bindings::BindError::NoSuchSlot => "There are two inputs an action.".to_owned(),
+    }
+}
+
+impl Menus {
 
     /// a message box, when there is something to tell.
     /// the keyboard a game opened to have text typed in, it waits until a
@@ -1636,13 +1800,14 @@ mod tests {
         let actions = editor.frame(vec![egui::Event::PointerMoved(away)]);
         println!("after letting go and moving to {away:?}: {actions:?}");
         assert_eq!(editor_move(&actions), None, "the drag outlived the release: {actions:?}");
-        // the bottom right corner resizes the layer instead of moving it
+        // the bottom right corner resizes the layer instead of moving it,
+        // evenly: the 50% taller drag wins over the 20% wider one
         let handle = editor.point(75.0, 25.0);
         editor.press(handle);
         let corner = editor.point(85.0, 35.0);
         let actions = editor.frame(vec![egui::Event::PointerMoved(corner)]);
         println!("resizing from {handle:?} to {corner:?} gave {actions:?}");
-        assert_eq!(editor_move(&actions), Some((0, [30.0, 10.0, 60.0, 30.0])), "{actions:?}");
+        assert_eq!(editor_move(&actions), Some((0, [30.0, 10.0, 75.0, 30.0])), "{actions:?}");
     }
 
     /// Ctrl adds a layer to the selection; dragging any member moves them
@@ -1670,13 +1835,14 @@ mod tests {
         let actions = editor.frame(vec![egui::Event::PointerMoved(editor.point(40.0, 20.0))]);
         assert_eq!(moves(&actions), vec![(0, [30.0, 10.0, 50.0, 20.0]), (1, [120.0, 10.0, 50.0, 20.0])], "{actions:?}");
         editor.frame(vec![pointer_button(editor.point(40.0, 20.0), false)]);
-        // the group spans 30..170 by 10..30; its right member's corner grows it
+        // the group spans 30..170 by 10..30; its right member's corner grows
+        // it evenly, by the doubled height over the 10% wider width
         let handle = editor.point(168.0, 28.0);
         editor.press(handle);
         let actions = editor.frame(vec![egui::Event::PointerMoved(editor.point(182.0, 48.0))]);
         let scaled = moves(&actions);
         assert_eq!(scaled.len(), 2, "{actions:?}");
-        for ((index, got), want) in scaled.iter().zip([[30.0, 10.0, 55.0, 40.0], [129.0, 10.0, 55.0, 40.0]]) {
+        for ((index, got), want) in scaled.iter().zip([[30.0, 10.0, 100.0, 40.0], [210.0, 10.0, 100.0, 40.0]]) {
             assert!(got.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.01), "layer {index}: {got:?}, expected {want:?}");
         }
         // a plain click starts over with one layer
@@ -1699,6 +1865,30 @@ mod tests {
         let actions = editor.frame(vec![egui::Event::PointerMoved(target)]);
         println!("a 12 point drag from {start:?} to {target:?} gave {actions:?}");
         assert_eq!(editor_move(&actions).map(|(_, to)| to[0]), Some(22.0), "{actions:?}");
+    }
+
+    /// a layer selected in the list is dragged even where another covers
+    /// it, and the arrow keys nudge the selection, Shift by ten.
+    #[test]
+    fn a_covered_selection_drags_and_the_arrow_keys_nudge_it() {
+        let mut editor = Editor::new(
+            vec![layer("below #0", [10.0, 10.0, 80.0, 40.0]), layer("above #1", [10.0, 10.0, 80.0, 40.0])],
+            [500.0, 0.0, 400.0, 240.0],
+        );
+        // picked in the list, as its row would
+        editor.menus.editor_layer = Some(0);
+        editor.menus.editor_group = vec![0];
+        let start = editor.point(30.0, 20.0);
+        editor.press(start);
+        let actions = editor.frame(vec![egui::Event::PointerMoved(editor.point(50.0, 20.0))]);
+        assert_eq!(editor_move(&actions), Some((0, [30.0, 10.0, 80.0, 40.0])), "{actions:?}");
+        editor.frame(vec![pointer_button(editor.point(50.0, 20.0), false)]);
+        let key = |key, modifiers| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        let actions = editor.frame(vec![key(egui::Key::ArrowRight, egui::Modifiers::default())]);
+        assert_eq!(editor_move(&actions), Some((0, [31.0, 10.0, 80.0, 40.0])), "{actions:?}");
+        editor.modifiers = egui::Modifiers::SHIFT;
+        let actions = editor.frame(vec![key(egui::Key::ArrowUp, egui::Modifiers::SHIFT)]);
+        assert_eq!(editor_move(&actions), Some((0, [31.0, 0.0, 80.0, 40.0])), "{actions:?}");
     }
 
     /// a layer index means nothing once another screen fills the list.
@@ -2018,26 +2208,29 @@ fn layer_list(
 }
 
 /// the boxes a drag asks for, by `by` layer units from where each began:
-/// moved together, or scaled about the group's top left corner, so a
-/// group keeps its arrangement as it grows or shrinks.
+/// moved together, or scaled evenly about the group's top left corner, so
+/// each layer keeps its aspect ratio and a group its arrangement.
 fn dragged(start: &[(usize, [f32; 4])], by: [f32; 2], resizing: bool) -> Vec<(usize, [f32; 4])> {
     if !resizing {
         return start.iter().map(|&(index, to)| (index, [to[0] + by[0], to[1] + by[1], to[2], to[3]])).collect();
     }
     let Some(&(_, first)) = start.first() else { return Vec::new() };
-    if let [(index, to)] = start {
-        return vec![(*index, [to[0], to[1], (to[2] + by[0]).max(1.0), (to[3] + by[1]).max(1.0)])];
-    }
     let bounds = start.iter().fold(first, |b, &(_, to)| {
         let (x, y) = (b[0].min(to[0]), b[1].min(to[1]));
         [x, y, (b[0] + b[2]).max(to[0] + to[2]) - x, (b[1] + b[3]).max(to[1] + to[3]) - y]
     });
-    let scale = [(bounds[2] + by[0]).max(1.0) / bounds[2].max(1.0), (bounds[3] + by[1]).max(1.0) / bounds[3].max(1.0)];
+    let (width, height) = (bounds[2].max(1.0), bounds[3].max(1.0));
+    // the axis the pointer moved further along, for its size, sets the scale
+    let (across, down) = ((width + by[0]) / width, (height + by[1]) / height);
+    let scale = if (across - 1.0).abs() >= (down - 1.0).abs() { across } else { down };
+    // no layer shrinks below one unit on either side
+    let least = start.iter().fold(0.0f32, |least, &(_, to)| least.max(1.0 / to[2].max(1.0)).max(1.0 / to[3].max(1.0)));
+    let scale = scale.max(least);
     start.iter().map(|&(index, to)| (index, [
-        bounds[0] + (to[0] - bounds[0]) * scale[0],
-        bounds[1] + (to[1] - bounds[1]) * scale[1],
-        (to[2] * scale[0]).max(1.0),
-        (to[3] * scale[1]).max(1.0),
+        bounds[0] + (to[0] - bounds[0]) * scale,
+        bounds[1] + (to[1] - bounds[1]) * scale,
+        to[2] * scale,
+        to[3] * scale,
     ])).collect()
 }
 

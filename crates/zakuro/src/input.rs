@@ -1,9 +1,11 @@
-//! keyboard to 3DS button mapping.
+//! keyboard to 3DS button mapping: the console's buttons for most titles,
+//! Action Bindings for Kid Icarus: Uprising.
 
 use winit::keyboard::{KeyCode, PhysicalKey};
 use zakuro_core::services::hid::{InputState, PadState};
 use zakuro_core::services::prompts::{Input, Label, MouseButton, Prompts};
 
+use crate::bindings::{Action, ActionBindings, Context, Inputs, Source};
 use crate::settings::Keys;
 
 /// accumulates key state between frames.
@@ -20,6 +22,11 @@ pub struct Keyboard {
     mouse_buttons: PadState,
     /// how the mouse tilts the console, see InputState::tilt.
     tilt: [f32; 2],
+    /// Kid Icarus's Action Bindings, which then take every key, mouse
+    /// button and controller button in place of the console's.
+    bindings: Option<ActionBindings>,
+    actions: Inputs,
+    context: Context,
 }
 
 impl Keyboard {
@@ -32,6 +39,24 @@ impl Keyboard {
         self.release();
     }
 
+    /// takes input through Action Bindings, or the console's buttons with none.
+    pub fn set_bindings(&mut self, bindings: Option<ActionBindings>) {
+        if bindings != self.bindings {
+            self.bindings = bindings;
+            self.release();
+        }
+    }
+
+    pub fn acting(&self) -> bool {
+        self.bindings.is_some()
+    }
+
+    /// where the game is, a battle or a Screen, for the actions of the
+    /// inputs pressed from now on.
+    pub fn set_context(&mut self, context: Context) {
+        self.context = context;
+    }
+
     /// lets go of everything, when the game stops seeing the keyboard.
     pub fn release(&mut self) {
         self.buttons = PadState::default();
@@ -40,11 +65,28 @@ impl Keyboard {
         self.touch = None;
         self.mouse_buttons = PadState::default();
         self.tilt = [0.0; 2];
+        self.actions.release_all();
     }
 
     /// holds or lets go of a button for a mouse button.
     pub fn mouse_button(&mut self, button: PadState, pressed: bool) {
         self.mouse_buttons.set(button, pressed);
+    }
+
+    /// presses or lets go of a key, mouse button or controller button
+    /// through the Action Bindings, giving the actions a press starts.
+    pub fn source(&mut self, source: Source, pressed: bool) -> Vec<Action> {
+        let Some(bindings) = &self.bindings else { return Vec::new() };
+        if !pressed {
+            self.actions.release(source);
+            return Vec::new();
+        }
+        self.actions.press(bindings, source, self.context)
+    }
+
+    /// lets go of the Action Bindings' inputs of one kind.
+    pub fn release_where(&mut self, gone: impl Fn(Source) -> bool) {
+        self.actions.release_where(gone);
     }
 
     fn button_for(&self, key: KeyCode) -> Option<PadState> {
@@ -70,10 +112,13 @@ impl Keyboard {
         .map(|(_, button)| button)
     }
 
-    pub fn key(&mut self, key: PhysicalKey, pressed: bool) {
+    pub fn key(&mut self, key: PhysicalKey, pressed: bool) -> Vec<Action> {
         let PhysicalKey::Code(code) = key else {
-            return;
+            return Vec::new();
         };
+        if self.acting() {
+            return self.source(Source::Key(code), pressed);
+        }
         if let Some(button) = self.button_for(code) {
             self.buttons.set(button, pressed);
         }
@@ -84,6 +129,7 @@ impl Keyboard {
                 *held = pressed;
             }
         }
+        Vec::new()
     }
 
     /// records a click on the bottom screen, in screen pixels, or its release.
@@ -102,7 +148,7 @@ impl Keyboard {
         let axis = |plus: bool, minus: bool| plus as i8 as f32 - minus as i8 as f32;
         let [up, down, left, right] = self.circle;
         let [c_up, c_down, c_left, c_right] = self.c_stick;
-        InputState {
+        let mut state = InputState {
             buttons: self.buttons | self.mouse_buttons,
             circle_x: axis(right, left),
             circle_y: axis(up, down),
@@ -110,13 +156,25 @@ impl Keyboard {
             c_stick_y: axis(c_up, c_down),
             touch: self.touch,
             tilt: self.tilt,
+            gyro: [0.0; 3],
+        };
+        if let Some(bindings) = &self.bindings {
+            let held = self.actions.held(bindings, self.context);
+            state.buttons = held.buttons;
+            [state.circle_x, state.circle_y] = held.circle;
+            [state.c_stick_x, state.c_stick_y] = held.c_stick;
         }
+        state
+    }
+
+    /// whether the Gyro Aim action is held.
+    pub fn gyro_held(&self) -> bool {
+        self.bindings.as_ref().is_some_and(|bindings| self.actions.held(bindings, self.context).gyro_aim)
     }
 }
 
-/// the console's button symbols as the keys they are on, and with the
-/// mouse aiming, L, which the left button fires, as that button.
-pub fn prompts(keys: &Keys, aiming: bool) -> Prompts {
+/// the console's button symbols as the keys they are on.
+pub fn prompts(keys: &Keys) -> Prompts {
     let mut prompts = Prompts::default();
     for (input, key) in [
         (Input::A, keys.a),
@@ -139,10 +197,18 @@ pub fn prompts(keys: &Keys, aiming: bool) -> Prompts {
     prompts.set(Input::UpDown, together(&[keys.up, keys.down]));
     prompts.set(Input::LeftRight, together(&[keys.left, keys.right]));
     prompts.set(Input::CirclePad, together(&[keys.circle_up, keys.circle_left, keys.circle_down, keys.circle_right]));
-    if aiming {
-        prompts.set(Input::L, Label::Mouse(MouseButton::Left));
-    }
     prompts
+}
+
+/// how a Kid Icarus Action Binding's key or mouse button looks in a prompt.
+pub fn label(source: Source) -> Label {
+    match source {
+        Source::Key(key) => Label::Key(cap(key)),
+        Source::Mouse(winit::event::MouseButton::Left) => Label::Mouse(MouseButton::Left),
+        Source::Mouse(winit::event::MouseButton::Right) => Label::Mouse(MouseButton::Right),
+        Source::Mouse(winit::event::MouseButton::Middle) => Label::Mouse(MouseButton::Middle),
+        other => Label::Key(other.name()),
+    }
 }
 
 /// a key's name short enough for a keycap.
@@ -182,13 +248,12 @@ mod tests {
     #[test]
     fn prompts_follow_the_keys() {
         let mut keys = Keys::default();
-        let prompts = super::prompts(&keys, false);
+        let prompts = super::prompts(&keys);
         assert_eq!(prompts.get(Input::A), &Label::Key("X".into()));
         assert_eq!(prompts.get(Input::DPad), &Label::Key("↑←↓→".into()));
         assert_eq!(prompts.get(Input::CirclePad), &Label::Key("IJKL".into()));
         keys.a = KeyCode::Space;
-        assert_eq!(super::prompts(&keys, false).get(Input::A), &Label::Key("Space".into()));
-        assert_eq!(super::prompts(&keys, true).get(Input::L), &Label::Mouse(MouseButton::Left), "the left button fires");
+        assert_eq!(super::prompts(&keys).get(Input::A), &Label::Key("Space".into()));
     }
 
     #[test]
