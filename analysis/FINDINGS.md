@@ -1419,3 +1419,21 @@ screen's bottom left (`trace/s8.state`, tap then 30 frames). The other
 battle-control text in the heap is the scheme pages' "Moving Pit: ABXY" and
 "Reticle control: ABXY". Battle pickups take effect at once, and the "item box" in
 the table above is the power panel, so there is no held-item input.
+
+Entering Other from Options by keys (`trace/s15.state`, Down, Down, A,
+then 90 frames) makes no font call but the hint's: `0x00A36FA4` draws only
+Options' hint (`r1` `0x1573E0F4`) and then Other's (`0x1573F112`). Other's
+Row labels ("PROFILE", "SUBTITLES" in small-capital serif, "SpotPass") are
+artwork in the Row models' textures, not text drawn by the font.
+
+Other's models (`trace/s16.state`, with the top-screen menus on): Rows
+`MenOptionOtherBt0001` (Profile; nodes NN_B0001, NN_B0002, NN_B0003_1,
+NN_B0003, NN_B0004), `Bt0002` (Subtitles; NN_B0001..NN_B0005), `Bt0004`
+(SpotPass; with its On/Off nodes), Back `Bt9999`, `Bt0000`, the window
+`MenCmnWindowBt0000`, and a fourth Row `MenOptionOtherBt0003`
+(NN_B0001..NN_B0005, the same shape as Subtitles) loaded in layer 15 but
+given no place on the page. Writing 0 to a Subtitles node's shown flag
+(model `0x14047040`, node table `+0x17C` → `0x140475E8`, flag at `+4`)
+before a frame changes nothing drawn: the flags are set again before the
+draw, so a Row without its label must choose nodes during the replay, as
+`show_nodes` does.
