@@ -454,10 +454,18 @@ s11 and s12). Found by the functions that run only with a touch held, from
   `MenSelfileBt0003` is Back, `MenSelfileBt0004` is How to Play.
   Their hashes are `A70D5C65/A70D5C64/A70D5C67/928BEAA4/8D79D12E`.
   `MenDemoBt0000` is the bottom background; HOME text is a separate font
-  draw, not an activatable Control. The complete information Board is
-  `MenSelFileUp0001` in layer B.
+  draw, not an activatable Control. `MenSelFileUp0001` in layer B contains
+  both the information Board and the entire upper backdrop. Its `Bg0007`,
+  `FileNum*`, `MiiDynamic0000` and `ClrMarkN` nodes belong to the Board.
+  `NN_U0000/1/2` are paper/lines/shading; `NN_U0004/0010` are coloured
+  ribbons. `NN_U0005`, `NN_U0003`, `NN_U0006`, `NN_U0007_1` are top-left,
+  bottom-left, bottom-right and right-edge decorations respectively;
+  `NN_U0007` is the feather and `NN_U0009` the coloured crest.
 - The File Select editor indices are 0..2 books, 3 Back, 4 How to Play,
-  5 HOME hint, 6 information Board, 7 background. Native book-name font
+  5 HOME hint, 6 information Board, 7 bottom background; 8..15 expose the
+  upper backdrop's mesh groups independently. Its explicit replay order
+  must include those appended layers before the Board and Controls.
+  Native book-name font
   anchors remain in their respective thirds of the 320px bottom screen,
   above y190; HOME anchors are around (102,207) and (68,226). Select a
   book's name by that native column, preserving all native shadow draws,
