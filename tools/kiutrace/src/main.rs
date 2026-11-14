@@ -66,6 +66,10 @@
 //!   hud <scale>                   draw the top screen's HUD and reticle at scale, with Zakuro's hook
 //!   calls <addr> <frames> [max]   print r0..r3, lr, sp, s0..s3 and r0's first words each time addr runs, up to max (8) a frame;
 //!                                 addr can be several, a,b,c, printed in the order they run
+//!   capture <list> <n> <frames> <dir>  as each function in list (hex, odd for Thumb) is entered, up to n
+//!                                 times each: registers and every non-I/O page into dir, for
+//!                                 scripts/difftest.c's replay; pages shared between captures are
+//!                                 written once
 //!   ran <frames> <file>           write each function that ran in every one of the frames to out/<file>, and in any
 //!                                 of them to out/<file>.any, by analysis/functions.txt
 //!   entered <value> <frames>      print each function entered with value in r0, once each (run from the project, for analysis/functions.txt)
@@ -419,7 +423,7 @@ fn main() {
             "shown" => {
                 let aim_mouse = system.aim_mouse.get_or_insert_with(Default::default);
                 let frames = system.frames;
-                println!("battle {} pause {} cauldron {} menus {} part {:08X?}", aim_mouse.in_battle(frames), aim_mouse.pause_menu_shown(frames), aim_mouse.cauldron_shown(frames), aim_mouse.menus_on_top_shown(frames), aim_mouse.hovered_menu_part());
+                println!("battle {} pause {} cauldron {} menus {} part {:08X?} pc settings opened {}", aim_mouse.in_battle(frames), aim_mouse.pause_menu_shown(frames), aim_mouse.cauldron_shown(frames), aim_mouse.menus_on_top_shown(frames), aim_mouse.hovered_menu_part(), aim_mouse.take_open_settings());
             }
             "parts" => {
                 let owner = read32(&mut system, num(1) + 0x30);
@@ -530,6 +534,26 @@ fn main() {
                         return;
                     }
                 }
+            }
+            "capture" => {
+                // capture <address list> <per function> <frames> <dir>: the machine as each listed
+                // function is entered, for scripts/difftest.c to replay
+                let list = std::fs::read_to_string(words[1]).expect("read the address list");
+                let targets: std::collections::HashMap<u32, u32> =
+                    list.lines().filter_map(|line| u32::from_str_radix(line.trim(), 16).ok()).map(|address| (address, 0)).collect();
+                let mut capture = Capture { targets, per_function: num(2), dir: PathBuf::from(words[4]), taken: 0, pages: std::collections::HashSet::new() };
+                std::fs::create_dir_all(capture.dir.join("pages")).expect("create the capture directory");
+                if let Some(library) = system.recompiled.as_mut() {
+                    for &address in capture.targets.keys() {
+                        library.interpret_at(address & !1);
+                    }
+                }
+                for _ in 0..num(3) {
+                    if !capture_frame(&mut system, input, &mut capture, &mut frame) {
+                        return;
+                    }
+                }
+                println!("  {} captures, {} distinct pages", capture.taken, capture.pages.len());
             }
             "ran" => {
                 let list = std::fs::read_to_string("analysis/functions.txt").expect("read analysis/functions.txt");
@@ -680,6 +704,74 @@ fn calls_frame(system: &mut System, input: InputState, addresses: &[u32], max: u
                 "  [{frame}] {address:08X} r0 {:08X} r1 {:08X} r2 {:08X} r3 {:08X} lr {:08X} sp {:08X} s0..3 {} [r0] {}",
                 r[0], r[1], r[2], r[3], r[14], r[13], s.join(" "), words.join(" ")
             );
+        }
+        match system.step(Some(deadline)) {
+            StepOutcome::Ran => {}
+            other => {
+                println!("stopped: {other:?}");
+                return false;
+            }
+        }
+    }
+    *frame += 1;
+    true
+}
+
+/// what capture writes: the functions it waits for and how often each was
+/// caught, and the pages already written, by name.
+struct Capture {
+    targets: HashMap<u32, u32>,
+    per_function: u32,
+    dir: PathBuf,
+    taken: u32,
+    pages: std::collections::HashSet<String>,
+}
+
+/// a page's name in the capture: two 64-bit hashes of its bytes.
+fn page_name(bytes: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let fnv = bytes.iter().fold(0xCBF2_9CE4_8422_2325u64, |hash, &byte| (hash ^ byte as u64).wrapping_mul(0x0100_0000_01B3));
+    let mut sip = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut sip);
+    format!("{fnv:016x}{:016x}", sip.finish())
+}
+
+/// runs a frame one instruction at a time and, as a listed function is
+/// entered, writes the registers and every mapped page but the I/O ones.
+fn capture_frame(system: &mut System, input: InputState, capture: &mut Capture, frame: &mut u64) -> bool {
+    system.set_input(input);
+    zakuro_core::services::hid::update(system, input);
+    let deadline = system.cpu.cycles + zakuro_core::CYCLES_PER_FRAME;
+    while system.cpu.cycles < deadline {
+        let entry = system.cpu.regs[15] | system.cpu.cpsr.thumb as u32;
+        if let Some(count) = capture.targets.get_mut(&entry).filter(|count| **count < capture.per_function) {
+            *count += 1;
+            let cpu = &system.cpu;
+            let p = &cpu.cpsr;
+            let mut text = format!("entry {entry:08X}\nframe {frame}\nr");
+            for r in cpu.regs {
+                text += &format!(" {r:08X}");
+            }
+            text += &format!("\nflags {} {} {} {} {} {} {}\nvfp", p.n as u8, p.z as u8, p.c as u8, p.v as u8, p.q as u8, p.ge, p.thumb as u8);
+            for s in cpu.vfp.regs {
+                text += &format!(" {s:08X}");
+            }
+            text += &format!("\nfpscr {:08X}\ntls {:08X}\n", cpu.vfp.fpscr, cpu.cp15.thread_id_ro);
+            let mappings: Vec<_> = system.memory.mappings().filter(|m| m.state != zakuro_core::memory::MemoryState::Io).copied().collect();
+            let mut page = vec![0u8; 0x1000];
+            for mapping in mappings {
+                for offset in (0..mapping.size).step_by(0x1000) {
+                    let address = mapping.base + offset;
+                    system.memory.read_bytes(address, &mut page);
+                    let name = page_name(&page);
+                    if capture.pages.insert(name.clone()) {
+                        std::fs::write(capture.dir.join("pages").join(&name), &page).expect("write a page");
+                    }
+                    text += &format!("page {address:08X} {name}\n");
+                }
+            }
+            std::fs::write(capture.dir.join(format!("{:05}.txt", capture.taken)), text).expect("write a capture");
+            capture.taken += 1;
         }
         match system.step(Some(deadline)) {
             StepOutcome::Ran => {}
