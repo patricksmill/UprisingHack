@@ -93,10 +93,11 @@ grouped lists and compact hints.
 - The arrow keys and d-pad reach the game's own power list in battle (Down
   shows it); moving through it and using items from the keyboard still
   need checking.
-- KIU's own Options Screens don't show the PC Preferences yet. Until they
-  do, F12 opens the Frontend Menu, whose Settings window has a Kid Icarus
-  section for the bindings, sensitivities, gyro and HUD/portrait sizes.
-  The CPU overclock is still `ZAKURO_OVERCLOCK`.
+- Options → Other has a PC Settings Row below SpotPass. Mouse click or
+  keyboard/controller Confirm opens PC Preferences; Up/Down navigates the Row.
+  Its label is assembled from the player's own Options artwork. The preferences
+  themselves remain host-rendered, not native KIU Controls. F12 → Settings keeps
+  the recovery path. The CPU overclock is still `ZAKURO_OVERCLOCK`.
 - Dialog text can occasionally stack in some scenes; the cause is known and
   the fix is planned.
 

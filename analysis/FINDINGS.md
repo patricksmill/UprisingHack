@@ -1445,3 +1445,40 @@ given no place on the page. Writing 0 to a Subtitles node's shown flag
 before a frame changes nothing drawn: the flags are set again before the
 draw, so a Row without its label must choose nodes during the replay, as
 `show_nodes` does.
+
+## PC Settings Row on Scripted Options → Other
+
+- `PcSettingsRow` reuses Subtitles' panel/border nodes `NN_B0001` and
+  `NN_B0004`, placed below SpotPass; Back moves below it. The same Placement
+  is used for pointer selection and drawing. Outline nodes `NN_B0002`,
+  `NN_B0003` and `NN_B0003_1` are drawn only on the selected Row.
+- The top text batch is reset at `0x00A358B0`; hook `0x00A358B4` queues
+  the label through `0x005CB24C` during its own text-only pass. Context
+  `+0x3C` selects the font; anchor `+0x24`, alignment `+0x5C` and colours
+  are restored with the saved CPU state after the call. Hint substitution
+  runs at `0x00A36FA4`.
+- The label font is built from the player's RomFS, not bundled artwork:
+  LZ11 `/us/menu/220.zrc` and `/us/menu/190.zrc` contain nested darc/CGFX
+  textures `MenOptionOthersBt_Lang0001` and `MenOptionSousaBt_Lang00000`.
+  L4 texture pixels use Morton-swizzled 8×8 tiles, high nibble first.
+  Sliced large P/C/S and small e/g/i/n/s/t become a private A4 CFNU sheet,
+  with native SDK font object and sheet descriptor. The descriptor's `+4`
+  must point back to the font object; the renderer calls through it.
+  Its 8 KiB mapping uses the Base memory pool and corresponding linear
+  address, following APT's shared-font allocation. A marker identifies the
+  restored mapping after save-state loads. This is a label-specific font,
+  not a full alphabet.
+- Other's outline hook is `0x002D5430`; Down/Up return addresses
+  `0x0023C414`/`0x0023C358`. Its name record is hash at `+0`, name pointer
+  at `+4`, capacity at `+8`, name bytes at `+0xC`. SpotPass Down and Back Up
+  select the PC Row while the guest outlines Subtitles; subsequent Up/Down
+  go to SpotPass/Back. `0x002D50FC` intercepts Confirm only on the PC Row.
+- Headless smoke on `trace/s16.state`: Down×3, Down, Up, Up, Down and A
+  reported `pc settings opened true`; mouse click also reported true.
+  Left/Right retained the PC selection. A on Subtitles did not request
+  PC Preferences. Screenshots covered 16:9, 4:3, hover and a save/load
+  round trip. Physical controller and Windows UI interaction remain unverified.
+- An offline potrace/TrueType experiment extracted 44 large/small letter
+  variants; J/K/Q/Z were absent from the inventoried labels. Tight tracking
+  and low-resolution masks produce rough contours, so traced outlines are
+  not used in the distributed label.
