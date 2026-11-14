@@ -487,7 +487,7 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
     }
     let mut parts = Vec::new();
     if matches!(kind, Some(LayoutKind::FileSelect)) {
-        parts.reserve(8);
+        parts.reserve(16);
         let mut board = fitted([0.0, 0.0, 320.0, 240.0], controls);
         for axis in 0..2 {
             board.to[axis] += board.to[axis + 2] * (1.0 - CONTROL_SCALE) * 0.5;
@@ -501,6 +501,9 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
         }
         parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: None, place: native });
         parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: None, place: board });
+        for model in ["NN_U0000", "NN_U0004", "NN_U0005", "NN_U0003", "NN_U0006", "NN_U0007_1", "NN_U0007", "NN_U0009"] {
+            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some(model), place: native });
+        }
         return (native, parts);
     }
     if kind.is_some_and(LayoutKind::heart) {
@@ -941,7 +944,10 @@ impl AimMouse {
             let name = if self.menu_top.file_select() {
                 match index {
                     0 => "Book I", 1 => "Book II", 2 => "Book III", 3 => "Back",
-                    4 => "How to Play", 5 => "HOME hint", 6 => "Player information Board", _ => "Background",
+                    4 => "How to Play", 5 => "HOME hint", 6 => "Player information Board", 7 => "Bottom-screen background",
+                    8 => "Paper background", 9 => "Coloured ribbons", 10 => "Top-left decoration",
+                    11 => "Bottom-left decoration", 12 => "Bottom-right decoration", 13 => "Right-edge decoration",
+                    14 => "Feather decoration", _ => "Coloured crest",
                 }.to_owned()
             } else if part.backdrop {
                 let screen = self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen));
@@ -1247,7 +1253,7 @@ pub(super) fn begin(system: &mut System) -> bool {
     mouse.menu_top.parts = parts;
     let order = if mouse.menu_top.file_select() {
         // Background and information first; interactive Controls above them.
-        [7, 6, 0, 1, 2, 3, 4, 5].into_iter().filter(|&index|
+        [7, 8, 9, 10, 11, 12, 13, 14, 15, 6, 0, 1, 2, 3, 4, 5].into_iter().filter(|&index|
             mouse.menu_top.enabled(&mouse.menu_top.parts[index])).collect()
     } else {
         let parts = mouse.menu_top.parts.clone();
@@ -1319,9 +1325,15 @@ fn file_models(system: &mut System, drawing: u32, part: Option<&Part>, moved: &m
             let selected = part.is_some_and(|part| if part.top {
                 name == "MenSelFileUp0001"
             } else { name == part.model.unwrap_or("MenDemoBt0000") });
-            // RotObj meshes are the native cross-screen selection connectors,
-            // not the book covers. Their geometry cannot follow edited Boards.
-            show_nodes(system, moved, model, |node| selected && !node.starts_with("RotObj"));
+            // The upper model also contains the backdrop and corner artwork.
+            show_nodes(system, moved, model, |node| selected && part.is_some_and(|part| if part.top {
+                match part.model {
+                    None => !node.starts_with("NN_U") && node != "fade" && !node.starts_with("RotObj"),
+                    Some("NN_U0000") => matches!(node, "NN_U0000" | "NN_U0001" | "NN_U0002" | "fade"),
+                    Some("NN_U0004") => matches!(node, "NN_U0004" | "NN_U0010"),
+                    Some(model) => node == model,
+                }
+            } else { !node.starts_with("RotObj") }));
         }
     }
 }
@@ -1575,6 +1587,12 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
 pub(super) fn font(system: &mut System) {
     if super::cauldron_text(system) { return; }
     if let Some(Drawing::MenuTop(step)) = drawing(system) {
+        if system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menu_top.file_select()
+            && mouse.menu_top.part(step / 8).is_some_and(|part| part.top && part.model.is_some())) {
+            // The top text pass also draws backdrop meshes; omit only glyphs.
+            system.cpu.regs[15] += 4;
+            return;
+        }
         let part = system.aim_mouse.as_ref().filter(|mouse| mouse.menu_top.file_select())
             .and_then(|mouse| mouse.menu_top.part(step / 8)).filter(|part| !part.top).cloned();
         if let Some(part) = part {
@@ -1783,7 +1801,7 @@ pub(super) fn draw(system: &mut System) -> bool {
             outlined: menu_top.chapter_outlined == Some(chapter),
         })
     };
-    if part.top && part.model.is_some() {
+    if part.top && part.model.is_some() && !system.aim_mouse.as_ref().unwrap().menu_top.file_select() {
         // A centered guard band extends the camera's clip planes without
         // changing its screen transform or the font renderer's alignment.
         let p = part.place;
