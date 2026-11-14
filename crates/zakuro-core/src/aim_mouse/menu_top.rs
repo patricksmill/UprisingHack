@@ -16,6 +16,7 @@ pub(super) const FONT_DONE: [u32; 7] = [0x00A36E68, 0x00A36ECC, 0x00A36EE8, 0x00
 /// the PC Settings Row on Other: Subtitles' Row model drawn a second time.
 pub(super) const PC_SETTINGS_ROW: &str = "PcSettingsRow";
 const PC_SETTINGS_LABEL: &str = "PC Settings";
+const PC_SETTINGS_HINT: &str = "Change controls, aiming, gyro and display settings.";
 /// in the top text loop, just after it empties the text batch (0x005C79CC
 /// at 0x00A358B0) and before it packs and draws it: glyphs queued here show.
 pub(super) const TEXT_BATCH_EMPTIED: u32 = 0x00A358B4;
@@ -58,6 +59,8 @@ pub(super) struct MenuTop {
     /// the CPU and memory to put back when the PC Settings label's text
     /// call returns to TEXT_BATCH_EMPTIED.
     label_back: Option<([u32; 16], zakuro_cpu::psr::Psr, [u32; 32], Vec<(u32, Vec<u8>)>)>,
+    /// the hint call's stack pointer, lowered below the PC Settings hint.
+    hint_sp: Option<u32>,
     /// Chapter Select's Rows: the chapter number of each part from
     /// `CHAPTER_FIRST_ROW` on, the first one shown, the wheel's leftover,
     /// how many are open and fit, and the chapter last outlined.
@@ -319,6 +322,9 @@ fn button_hash(model: &str) -> Option<u32> {
         "MenOptionTopBt9999" => 0x928BEAA4,
         "MenOptionOtherBt0001" => 0x49C14849,
         "MenOptionOtherBt0002" => 0xF28BAA60,
+        // Drawn from Subtitles' Row, so the game's hit test finds Subtitles
+        // there; which of the two the pointer is on is the candidate's part.
+        PC_SETTINGS_ROW => 0xF28BAA60,
         "MenOptionOtherBt0004" => 0x9E610C53,
         "MenOptionControlBt0001" => 0xDE4F96DF,
         "MenOptionControlBt0002" => 0x56866028,
@@ -957,6 +963,12 @@ impl AimMouse {
     pub(super) fn hovered_chapter_row(&self) -> Option<u32> {
         let &(index, _) = self.menu_top.candidates.get(self.menu_top.candidate)?;
         self.menu_top.row_chapter(index)
+    }
+
+    /// Whether the pointer is on the PC Settings Row rather than Subtitles.
+    pub(super) fn pc_settings_hovered(&self) -> bool {
+        self.pointer.is_some() && self.menu_top.candidates.get(self.menu_top.candidate)
+            .is_some_and(|&(index, _)| self.menu_top.parts.get(index).is_some_and(|part| part.model == Some(PC_SETTINGS_ROW)))
     }
 
     /// Scrolls Chapter Select's row by wheel steps, positive right. Only
@@ -1620,6 +1632,19 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
 }
 
 pub(super) fn font(system: &mut System) {
+    // On the PC Settings Row the game shows Subtitles' hint: draw its own,
+    // from the stack below the caller's, which font_done puts back.
+    if system.cpu.regs[15] == 0x00A36FA4 && system.aim_mouse.as_ref().is_some_and(|mouse| mouse.pc_settings_hovered()) {
+        let sp = system.cpu.regs[13];
+        let utf16: Vec<u8> = PC_SETTINGS_HINT.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let text = (sp - utf16.len() as u32 - 0x10) & !7;
+        system.memory.write_bytes(text, &utf16);
+        system.aim_mouse.as_mut().unwrap().menu_top.hint_sp = Some(sp);
+        system.cpu.regs[1] = text;
+        system.cpu.regs[2] = PC_SETTINGS_HINT.encode_utf16().count() as u32;
+        system.cpu.regs[13] = text - 8;
+        return;
+    }
     if super::cauldron_text(system) { return; }
     if let Some(Drawing::MenuTop(step)) = drawing(system) {
         if system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menu_top.file_select()
@@ -1754,6 +1779,9 @@ pub(super) fn pc_settings_label(system: &mut System) {
 pub(super) fn font_done(system: &mut System) {
     if let Some((at, old)) = system.aim_mouse.as_mut().and_then(|mouse| mouse.menu_top.font_back.take()) {
         system.memory.write_bytes(at, &old);
+    }
+    if let Some(sp) = system.aim_mouse.as_mut().and_then(|mouse| mouse.menu_top.hint_sp.take()) {
+        system.cpu.regs[13] = sp;
     }
 }
 
@@ -1939,13 +1967,17 @@ pub(super) fn draw(system: &mut System) -> bool {
         }
     } else {
         let slider = matches!(part.model, Some("MenOptionSoundBt0002" | "MenOptionSoundBt0003" | "MenOptionSoundBt0004"));
+        // On Other the game outlines Subtitles for the PC Settings Row too:
+        // the pointer there maps onto Subtitles. The Outline is Subtitles'
+        // NN_B0002/NN_B0003 nodes, lit by MenOptionOtherBt0000; it shows on
+        // whichever of the two Rows is hovered.
+        let pc_hovered = system.aim_mouse.as_ref().unwrap().pc_settings_hovered();
+        let pc_row = part.model == Some(PC_SETTINGS_ROW);
         filter_models(system, drawing, part.top, !part.top, &mut moved, |name|
             part.model.is_none_or(|model| name == model || board_companions(model).contains(&name)
-                || (model == PC_SETTINGS_ROW && name == "MenOptionOtherBt0002"))
+                || (pc_row && matches!(name, "MenOptionOtherBt0002" | "MenOptionOtherBt0000")))
                 || (slider && matches!(name, "MenOptionSoundBt0001" | "MenOptionSoundBt0006")));
-        if part.model == Some(PC_SETTINGS_ROW) {
-            // NN_B0001 is the panel and NN_B0004 its border; NN_B0005 holds
-            // Subtitles' icon and label, which this Row replaces with text.
+        if pc_row || (pc_hovered && part.model == Some("MenOptionOtherBt0002")) {
             let layers = read_word(system, scene + SCENE_LAYERS);
             for layer in BOTTOM_LAYERS {
                 let list = read_word(system, layers + layer * LAYER_SIZE + 4);
@@ -1954,9 +1986,13 @@ pub(super) fn draw(system: &mut System) -> bool {
                 if end < start || end - start > 0x1000 { continue; }
                 for at in (start..end).step_by(4) {
                     let model = read_word(system, at);
-                    if model_name(system, model) == "MenOptionOtherBt0002" {
-                        show_nodes(system, &mut moved, model, |node| matches!(node, "NN_B0001" | "NN_B0004"));
-                    }
+                    if model_name(system, model) != "MenOptionOtherBt0002" { continue; }
+                    // NN_B0001 is the panel, NN_B0004 its border, NN_B0005
+                    // Subtitles' icon and label (the PC Row draws text).
+                    show_nodes(system, &mut moved, model, |node| {
+                        let outline = matches!(node, "NN_B0002" | "NN_B0003" | "NN_B0003_1");
+                        if pc_row { matches!(node, "NN_B0001" | "NN_B0004") || (outline && pc_hovered) } else { !outline }
+                    });
                 }
             }
         }
