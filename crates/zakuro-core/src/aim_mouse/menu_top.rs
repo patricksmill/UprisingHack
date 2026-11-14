@@ -15,6 +15,15 @@ pub(super) const FONT_DONE: [u32; 7] = [0x00A36E68, 0x00A36ECC, 0x00A36EE8, 0x00
 
 /// the PC Settings Row on Other: Subtitles' Row model drawn a second time.
 pub(super) const PC_SETTINGS_ROW: &str = "PcSettingsRow";
+const PC_SETTINGS_LABEL: &str = "PC Settings";
+/// in the top text loop, just after it empties the text batch (0x005C79CC
+/// at 0x00A358B0) and before it packs and draws it: glyphs queued here show.
+pub(super) const TEXT_BATCH_EMPTIED: u32 = 0x00A358B4;
+/// the game's text: queues a string's glyphs into its context's batch.
+/// r0 the 2D text context, r1 a UTF-16 string, r2 its length.
+const FONT_DRAW: u32 = 0x005CB24C;
+/// R, G, B, A of the native Row labels' ink.
+const LABEL_COLOUR: [u8; 4] = [0x3A, 0x1F, 0x6E, 0xFF];
 #[derive(Default)]
 pub(super) struct MenuTop {
     drawn: Option<(u64, usize, u32, f32)>,
@@ -46,6 +55,9 @@ pub(super) struct MenuTop {
     pub(super) font_back: Option<(u32, [u8; 16])>,
     text_parent: Option<Box<Saved>>,
     drawing_text: bool,
+    /// the CPU and memory to put back when the PC Settings label's text
+    /// call returns to TEXT_BATCH_EMPTIED.
+    label_back: Option<([u32; 16], zakuro_cpu::psr::Psr, [u32; 32], Vec<(u32, Vec<u8>)>)>,
     /// Chapter Select's Rows: the chapter number of each part from
     /// `CHAPTER_FIRST_ROW` on, the first one shown, the wheel's leftover,
     /// how many are open and fit, and the chapter last outlined.
@@ -512,7 +524,7 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
         parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some("MenCmnUpHeart0000"), place: fitted([300.0, 138.0, 100.0, 78.0], [0.0, 0.0, 70.0 * CONTROL_SCALE, 55.0 * CONTROL_SCALE]) });
     }
     if !groups.is_empty() && !armory_board(index) { controls = [0.0, 0.0, width, 240.0]; }
-    let mut pc_settings = None;
+    let mut pc_settings = Vec::new();
     if matches!(kind, Some(LayoutKind::Idol)) {
         let counter_scale = 0.7_f32.min((width - 16.0) / 160.0);
         let launcher_scale = 0.68_f32.min(width * 0.6 / 280.0);
@@ -553,11 +565,15 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
             // Back moves down to make room for it.
             let from = [0.0, 60.0, 320.0, 60.0];
             let [x, y] = board.map_point([0.0, 180.0]);
-            let height = from[3] * board.to[3] / 240.0;
-            pc_settings = Some(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(PC_SETTINGS_ROW),
-                place: Placement { from, to: [x, y, from[2] * board.to[2] / 320.0, height] } });
+            let to = [x, y, from[2] * board.to[2] / 320.0, from[3] * board.to[3] / 240.0];
+            pc_settings.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(PC_SETTINGS_ROW),
+                place: Placement { from, to } });
+            // Its label: a top-screen text pass over the Row, drawn after it.
+            let text = [to[0] * 400.0 / width, to[1], to[2] * 400.0 / width, to[3]];
+            pc_settings.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: None,
+                place: Placement { from: text, to } });
             if let Some(back) = parts.iter_mut().find(|part| part.model == Some("MenOptionOtherBt9999")) {
-                back.place.to[1] = y + height + 2.0;
+                back.place.to[1] = to[1] + to[3] + 2.0;
             }
         }
     } else if kind.is_some_and(LayoutKind::heart) {
@@ -1688,6 +1704,50 @@ pub(super) fn font(system: &mut System) {
     let bytes: Vec<u8> = values.into_iter().flat_map(f32::to_le_bytes).collect();
     system.memory.write_bytes(at, &bytes);
     system.aim_mouse.as_mut().unwrap().menu_top.font_back = Some((at, old));
+}
+
+/// queues the PC Settings Row's label into the top text batch the loop just
+/// emptied, centred on the Row, in the game's own font; and, when that call
+/// comes back here, puts back what it changed so the loop goes on as before.
+pub(super) fn pc_settings_label(system: &mut System) {
+    let step = match drawing(system) { Some(Drawing::MenuTop(step)) => Some(step), _ => None };
+    let Some(mouse) = system.aim_mouse.as_mut() else { return };
+    if let Some((regs, cpsr, vfp, moved)) = mouse.menu_top.label_back.take() {
+        system.cpu.regs = regs;
+        system.cpu.cpsr = cpsr;
+        system.cpu.vfp.regs = vfp;
+        put_back(system, &moved);
+        return;
+    }
+    // Only in the label's own text pass, drawn over the Row after it.
+    let Some(row) = mouse.menu_top.parts.iter().find(|part| part.model == Some(PC_SETTINGS_ROW)).map(|part| part.place.to) else { return };
+    let Some(label) = step.and_then(|step| mouse.menu_top.part(step / 8))
+        .filter(|part| part.top && part.model.is_none() && !part.backdrop && part.place.to == row).map(|part| part.place.from) else { return };
+    let sp = system.cpu.regs[13];
+    let ctx = read_word(system, sp + 0x1C);
+    let mut moved = Vec::new();
+    // The string sits above the call's stack, which starts below it.
+    let utf16: Vec<u8> = PC_SETTINGS_LABEL.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let text = (sp - utf16.len() as u32 - 0x10) & !7;
+    change(system, &mut moved, text, &utf16);
+    // The pass maps its 400x240 source rectangle onto the Row; x is the
+    // line's centre (alignment 1), y the top of the line box.
+    let anchor = [1.0_f32, 1.0, label[0] + label[2] * 0.5, label[1] + label[3] * 0.5 + 3.0];
+    let bytes: Vec<u8> = anchor.into_iter().flat_map(f32::to_le_bytes).collect();
+    change(system, &mut moved, ctx + 0x24, &bytes);
+    // The Rows' own labels are a dark purple, the hint white.
+    change(system, &mut moved, ctx + 4, &LABEL_COLOUR.repeat(7));
+    let align = (read_word(system, ctx + 0x5C) & !3) | 1;
+    change(system, &mut moved, ctx + 0x5C, &align.to_le_bytes());
+    let cpu = &mut system.cpu;
+    system.aim_mouse.as_mut().unwrap().menu_top.label_back = Some((cpu.regs, cpu.cpsr, cpu.vfp.regs, moved));
+    cpu.regs[0] = ctx;
+    cpu.regs[1] = text;
+    cpu.regs[2] = PC_SETTINGS_LABEL.encode_utf16().count() as u32;
+    cpu.regs[13] = text - 8;
+    cpu.regs[14] = TEXT_BATCH_EMPTIED;
+    cpu.regs[15] = FONT_DRAW;
+    cpu.cpsr.thumb = false;
 }
 
 pub(super) fn font_done(system: &mut System) {
