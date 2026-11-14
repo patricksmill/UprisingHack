@@ -133,6 +133,7 @@ const OTHER: &[(&str, [f32; 4])] = &[
     ("MenOptionOtherBt0001", [0.0, 0.0, 320.0, 60.0]),
     ("MenOptionOtherBt0002", [0.0, 60.0, 320.0, 60.0]),
     ("MenOptionOtherBt0004", [0.0, 120.0, 320.0, 60.0]),
+    ("MenOptionOtherBt0003", [0.0, 168.0, 320.0, 48.0]),
     ("MenOptionOtherBt9999", [0.0, 196.0, 52.0, 44.0]),
 ];
 const CONTROLS: &[(&str, [f32; 4])] = &[
@@ -157,9 +158,9 @@ const SUBTITLES: &[(&str, [f32; 4])] = &[
     ("MenOptionOtherCaptionBt0003", [188.0, 104.0, 132.0, 64.0]),
 ];
 const VOLUME: &[(&str, [f32; 4])] = &[
-    ("MenOptionSoundBt0002", [0.0, 32.0, 288.0, 44.0]),
-    ("MenOptionSoundBt0003", [0.0, 76.0, 288.0, 40.0]),
-    ("MenOptionSoundBt0004", [0.0, 116.0, 288.0, 44.0]),
+    ("MenOptionSoundBt0002", [0.0, 32.0, 320.0, 44.0]),
+    ("MenOptionSoundBt0003", [0.0, 76.0, 320.0, 40.0]),
+    ("MenOptionSoundBt0004", [0.0, 116.0, 320.0, 44.0]),
     ("MenOptionSoundBt0005", [120.0, 196.0, 200.0, 44.0]),
     ("MenOptionSoundBt9999", [0.0, 196.0, 52.0, 44.0]),
 ];

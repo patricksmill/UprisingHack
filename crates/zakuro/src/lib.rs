@@ -2142,11 +2142,7 @@ impl App {
         if !high_refresh || game.system.pictures() != pictures {
             game.count_frame();
         }
-        let sound = game.system.take_audio();
-        // fast forward plays no sound, there is too much of it too soon
-        if let (Some(audio), false) = (&self.audio, self.fast_forwarding) {
-            audio.push(&sound);
-        }
+        let open_settings = game.system.aim_mouse.as_mut().is_some_and(|mouse| mouse.take_open_settings());
         match outcome {
             FrameOutcome::Completed => {}
             FrameOutcome::Exited => {
@@ -2164,6 +2160,11 @@ impl App {
                 self.menus.message = Some(message);
                 self.back_to_library();
             }
+        }
+        if open_settings {
+            self.menus.settings_open = true;
+            self.set_aim_captured(false);
+            self.keyboard.release();
         }
     }
 

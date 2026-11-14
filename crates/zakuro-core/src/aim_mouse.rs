@@ -9,7 +9,7 @@ use crate::System;
 
 mod menu_top;
 mod screen_transform;
-use menu_top::MenuTop;
+use menu_top::{MenuTop, PC_SETTINGS_HASH};
 pub use screen_transform::{CauldronRole, CauldronRules, DialogRules, PauseRules, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
 use screen_transform::{Activate, QuadRole, ScreenLayout, ScreenTransform, CAULDRON_CONTROLS};
 
@@ -631,9 +631,13 @@ fn activate_armory(system: &mut System, object: u32) {
 /// and keeps the touches for itself (the touch object's +0x654), so none
 /// finds Profile after. A is 0x002D50FC(object).
 const OUTLINE_OTHER_PART: u32 = 0x002D5430;
-
 fn outline_other(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
     let outlined = read_word(system, object + BUTTONS_OUTLINED) == found.hash;
+    if found.hash == PC_SETTINGS_HASH {
+        system.memory.write_bytes(object + BUTTONS_OUTLINED, &found.hash.to_le_bytes());
+        let owner = read_word(system, object + BUTTONS_SOUND_OWNER);
+        return Some(if outlined { Vec::new() } else { vec![(BUTTONS_SOUND, [owner, 7, 0])] });
+    }
     Some(if outlined { Vec::new() } else { vec![(OUTLINE_OTHER_PART, [object, found.name, 0])] })
 }
 
@@ -1403,7 +1407,8 @@ pub struct AimMouse {
     /// the menu's calls still to make to outline it.
     menu_calls: Vec<MenuCall>,
     /// whether a click is to use the part under the mouse once it is
-    /// outlined.
+    /// whether a click on the PC Settings Row asked to open PC Preferences.
+    pub open_settings_requested: bool,
     menu_click: bool,
     menu_button_down: bool,
     menu_press: Option<MenuPress>,
@@ -1478,6 +1483,7 @@ impl Default for AimMouse {
             menu_looked: None,
             menu_part: None,
             menu_calls: Vec::new(),
+            open_settings_requested: false,
             menu_click: false,
             menu_button_down: false,
             menu_press: None,
@@ -1513,6 +1519,10 @@ impl AimMouse {
     pub fn set_editor_navigation(&mut self, links: Vec<NavigationLink>) {
         self.navigation_links = links;
     }
+    pub fn take_open_settings(&mut self) -> bool {
+        std::mem::take(&mut self.open_settings_requested)
+    }
+
 
     /// the mouse moved to the bottom screen's pixel, or off it: menus light
     /// what is under it from now on, until a key is pressed in one.
@@ -2903,6 +2913,14 @@ fn outline_menu(system: &mut System, pc: u32) {
         next_menu_call(system, index, object, at);
         return;
     }
+    if index == 4 && aim_mouse.hovered_pc_settings() {
+        let found = Found { hash: PC_SETTINGS_HASH, name: 0, element: 0, part: 0 };
+        aim_mouse.menu_part = Some(found);
+        let calls = outline_other(system, object, found).unwrap_or_default();
+        system.aim_mouse.as_mut().unwrap().menu_calls = calls;
+        next_menu_call(system, index, object, at);
+        return;
+    }
     aim_mouse.menu_part = None;
     let mut record = [0u8; 0x18];
     record[0x10..0x14].copy_from_slice(&x.to_le_bytes());
@@ -2930,6 +2948,12 @@ fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
     let call = match aim_mouse.menu_calls.is_empty() {
         true => {
             if !std::mem::take(&mut aim_mouse.menu_click) { return; }
+            if let Some(found) = aim_mouse.menu_part {
+                if found.hash == PC_SETTINGS_HASH {
+                    aim_mouse.open_settings_requested = true;
+                    return;
+                }
+            }
             let Activate::Call(function) = activate else { return };
             Some((function, [object, 0, 0]))
         }
