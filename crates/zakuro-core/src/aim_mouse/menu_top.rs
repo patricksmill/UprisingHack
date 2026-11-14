@@ -34,6 +34,9 @@ pub(super) const TEXT_BATCH_EMPTIED: u32 = 0x00A358B4;
 const FONT_DRAW: u32 = 0x005CB24C;
 /// R, G, B, A of the native Row labels' ink.
 const LABEL_COLOUR: [u8; 4] = [0x3A, 0x1F, 0x6E, 0xFF];
+
+type LabelBack = ([u32; 16], zakuro_cpu::psr::Psr, [u32; 32], Vec<(u32, Vec<u8>)>);
+
 #[derive(Default)]
 pub(super) struct MenuTop {
     drawn: Option<(u64, usize, u32, f32)>,
@@ -67,7 +70,8 @@ pub(super) struct MenuTop {
     drawing_text: bool,
     /// the CPU and memory to put back when the PC Settings label's text
     /// call returns to TEXT_BATCH_EMPTIED.
-    label_back: Option<([u32; 16], zakuro_cpu::psr::Psr, [u32; 32], Vec<(u32, Vec<u8>)>)>,
+    label_back: Option<LabelBack>,
+    label_font: Option<u32>,
     /// the hint call's stack pointer, lowered below the PC Settings hint.
     hint_sp: Option<u32>,
     /// the keys moved onto the PC Settings Row: the game has Subtitles
@@ -1785,7 +1789,7 @@ fn navigate_pc_settings(system: &mut System) {
     let mut text = [0u8; 0x20];
     text[..name.len()].copy_from_slice(name.as_bytes());
     system.memory.write_bytes(record, &hash.to_le_bytes());
-    system.memory.write_bytes(record + 8, &text);
+    system.memory.write_bytes(record + 0xC, &text);
 }
 
 /// queues the PC Settings Row's label into the top text batch the loop just
@@ -1805,16 +1809,20 @@ pub(super) fn pc_settings_label(system: &mut System) {
     let Some(row) = mouse.menu_top.parts.iter().find(|part| part.model == Some(PC_SETTINGS_ROW)).map(|part| part.place.to) else { return };
     let Some(label) = step.and_then(|step| mouse.menu_top.part(step / 8))
         .filter(|part| part.top && part.model.is_none() && !part.backdrop && part.place.to == row).map(|part| part.place.from) else { return };
+    let cached_font = mouse.menu_top.label_font;
+    let Some(font) = cached_font.or_else(|| super::label_font::install(system)) else { return };
+    system.aim_mouse.as_mut().unwrap().menu_top.label_font = Some(font);
     let sp = system.cpu.regs[13];
     let ctx = read_word(system, sp + 0x1C);
     let mut moved = Vec::new();
+    change(system, &mut moved, ctx + 0x3C, &font.to_le_bytes());
     // The string sits above the call's stack, which starts below it.
     let utf16: Vec<u8> = PC_SETTINGS_LABEL.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let text = (sp - utf16.len() as u32 - 0x10) & !7;
     change(system, &mut moved, text, &utf16);
     // The pass maps its 400x240 source rectangle onto the Row; x is the
     // line's centre (alignment 1), y the top of the line box.
-    let anchor = [1.0_f32, 1.0, label[0] + label[2] * 0.5, label[1] + label[3] * 0.5 + 3.0];
+    let anchor = [0.65_f32, 0.65, label[0] + label[2] * 0.5, label[1] + label[3] * 0.5 + 3.0];
     let bytes: Vec<u8> = anchor.into_iter().flat_map(f32::to_le_bytes).collect();
     change(system, &mut moved, ctx + 0x24, &bytes);
     // The Rows' own labels are a dark purple, the hint white.
