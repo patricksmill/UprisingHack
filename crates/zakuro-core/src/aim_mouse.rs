@@ -28,7 +28,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 135] = [
+pub const PLACES: [u32; 137] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -77,6 +77,8 @@ pub const PLACES: [u32; 135] = [
     menu_top::START,
     menu_top::FINISHED,
     menu_top::TEXT_BATCH_EMPTIED,
+    OUTLINE_OTHER_PART,
+    menu_top::OTHER_A,
     MENU_NO_TOUCH,
     screen_transform::SCRIPTED_UPDATES[0],
     screen_transform::SCRIPTED_UPDATES[1],
@@ -1530,6 +1532,7 @@ impl AimMouse {
     pub fn hover(&mut self, pointer: Option<(f32, f32)>) {
         self.pointer = pointer;
         self.mouse_mode = true;
+        if pointer.is_some() { self.menu_top.pc_key = false; }
     }
 
     /// a click of the mouse where it is, which the menu shown takes when it
