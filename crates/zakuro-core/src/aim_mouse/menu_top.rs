@@ -277,7 +277,6 @@ fn touch_point(point: (f32, f32)) -> (f32, f32) {
     };
     (pixel(point.0, 319.0), pixel(point.1, 239.0))
 }
-pub const PC_SETTINGS_HASH: u32 = 0x5043_5345;
 
 fn button_hash(model: &str) -> Option<u32> {
     Some(match model {
@@ -306,7 +305,6 @@ fn button_hash(model: &str) -> Option<u32> {
         "MenOptionTopBt9999" => 0x928BEAA4,
         "MenOptionOtherBt0001" => 0x49C14849,
         "MenOptionOtherBt0002" => 0xF28BAA60,
-        "MenOptionOtherBt0003" => PC_SETTINGS_HASH,
         "MenOptionOtherBt0004" => 0x9E610C53,
         "MenOptionControlBt0001" => 0xDE4F96DF,
         "MenOptionControlBt0002" => 0x56866028,
@@ -368,14 +366,6 @@ const HINT_SCALE: f32 = 0.7 * CONTROL_SCALE;
 /// Controls cut from one shared Board rather than separated meshes.
 fn board_cut(index: usize) -> bool {
     (4..=11).contains(&index) || armory_board(index)
-}
-
-// Most Options Controls have their own meshes: their source rectangles
-// select text and input, not decorative borders or animated Outlines.
-// Sliders share artwork, and dialogs/Armory still need Board isolation.
-fn mesh_cut(index: usize, model: Option<&str>) -> bool {
-    board_cut(index) && (!(4..=10).contains(&index)
-        || matches!(model, Some("MenOptionSoundBt0002" | "MenOptionSoundBt0003" | "MenOptionSoundBt0004")))
 }
 
 /// Armory Controls keep the details card beside them.
@@ -931,12 +921,6 @@ impl AimMouse {
         self.menu_top.row_chapter(index)
     }
 
-    /// Whether the PC Settings Row on the Other screen is under the pointer.
-    pub(super) fn hovered_pc_settings(&self) -> bool {
-        let Some(&(index, _)) = self.menu_top.candidates.get(self.menu_top.candidate) else { return false };
-        self.menu_top.parts.get(index).and_then(|p| p.model) == Some("MenOptionOtherBt0003")
-    }
-
     /// Scrolls Chapter Select's row by wheel steps, positive right. Only
     /// the view moves: the Outline stays on its chapter.
     pub(super) fn scroll_chapters(&mut self, steps: f32) {
@@ -1097,7 +1081,8 @@ pub(super) fn accept_hit(system: &mut System, found: Option<u32>) -> bool {
     let point = if mouse.menu_top.parts[index].model.and_then(button_hash).is_some() { point } else { touch_point(point) };
     if mouse.pointer != Some(point) || mouse.menu_top.grab.is_some() { return true; }
     let Some(expected) = mouse.menu_top.parts[index].model.and_then(button_hash) else { return true };
-    if expected == PC_SETTINGS_HASH || found == Some(expected) { return true; }
+    log::debug!("menu hit {:?} at {point:?}: expected {expected:08X}, found {found:08X?}", mouse.menu_top.parts[index].model);
+    if found == Some(expected) { return true; }
     mouse.menu_top.candidate += 1;
     mouse.menu_top.retrying_hit = true;
     mouse.pointer = mouse.menu_top.candidates.get(mouse.menu_top.candidate).map(|&(index, point)|
@@ -1469,7 +1454,7 @@ pub(super) fn scissor(system: &mut System) {
     let isolated = if text_clip { !mouse.menu_top.drawing_text && mouse.menu_top.text_parent.as_ref().is_some_and(|saved| !matches!(saved.drawing, Drawing::MenuClip(_))) } else if mouse.menu_top.drawing_text { false } else if row { true } else { match drawing(system) {
         Some(Drawing::MenuTop(step)) => (!mouse.menu_top.file_select()
             || mouse.menu_top.part(step / 8).is_some_and(|part| part.file_book().is_some()))
-            && !mouse.menu_top.active.is_some_and(|(index, ..)| mesh_cut(index, mouse.menu_top.part(step / 8).and_then(|part| part.model)))
+            && !mouse.menu_top.active.is_some_and(|(index, ..)| board_cut(index))
             && mouse.menu_top.part(step / 8).is_some_and(|part| part.model.is_some()),
         _ => false,
     } };
@@ -1590,21 +1575,7 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
 pub(super) fn font(system: &mut System) {
     if super::cauldron_text(system) { return; }
     if let Some(Drawing::MenuTop(step)) = drawing(system) {
-        let mouse = system.aim_mouse.as_ref();
-        let other = mouse.is_some_and(|m| m.menu_screen.is_some_and(|(index, _, _)| index == 4));
-        let part = mouse.and_then(|m| m.menu_top.part(step / 8)).filter(|part| !part.top).cloned();
-        if other && part.is_some_and(|p| p.model == Some("MenOptionOtherBt0003")) {
-            // Draw "PC Settings" using the game's font pass
-            let at = system.cpu.regs[0] + 0x24;
-            let mut old = [0; 16];
-            system.memory.read_bytes(at, &mut old);
-            let values = [320.0_f32, 48.0, 40.0, 180.0]; // position and size on the row
-            let bytes: Vec<u8> = values.into_iter().flat_map(f32::to_le_bytes).collect();
-            system.memory.write_bytes(at, &bytes);
-            system.aim_mouse.as_mut().unwrap().menu_top.font_back = Some((at, old));
-            return;
-        }
-        let part = mouse.filter(|mouse| mouse.menu_top.file_select())
+        let part = system.aim_mouse.as_ref().filter(|mouse| mouse.menu_top.file_select())
             .and_then(|mouse| mouse.menu_top.part(step / 8)).filter(|part| !part.top).cloned();
         if let Some(part) = part {
             let at = system.cpu.regs[0] + 0x24;
@@ -1820,7 +1791,7 @@ pub(super) fn draw(system: &mut System) -> bool {
         let from = [-200.0, -120.0, 800.0, 480.0];
         let to = [p.to[0] + (from[0] - p.from[0]) * scale[0], p.to[1] + (from[1] - p.from[1]) * scale[1], from[2] * scale[0], from[3] * scale[1]];
         place_scene(system, top, drawing, Placement { from, to }, true, true, &mut moved);
-    } else if part.file_book().is_some() || row.is_some() || part.model.is_some() && !mesh_cut(index, part.model)
+    } else if part.file_book().is_some() || row.is_some() || part.model.is_some() && !board_cut(index)
         && !system.aim_mouse.as_ref().unwrap().menu_top.file_select() {
         let widen = system.aim_mouse.as_ref().unwrap().widen;
         let canvas = [400.0 * widen, 240.0];
@@ -1874,21 +1845,6 @@ pub(super) fn draw(system: &mut System) -> bool {
         filter_models(system, drawing, part.top, !part.top, &mut moved, |name|
             part.model.is_none_or(|model| name == model || board_companions(model).contains(&name))
                 || (slider && matches!(name, "MenOptionSoundBt0001" | "MenOptionSoundBt0006")));
-        if part.model == Some("MenOptionOtherBt0003") {
-            for layer in BOTTOM_LAYERS {
-                let layers = read_word(system, scene + SCENE_LAYERS);
-                let list = read_word(system, layers + layer * LAYER_SIZE + 4);
-                if list == 0 { continue; }
-                let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
-                if end < start || end - start > 0x1000 { continue; }
-                for at in (start..end).step_by(4) {
-                    let model = read_word(system, at);
-                    if model_name(system, model) == "MenOptionOtherBt0003" {
-                        show_nodes(system, &mut moved, model, |node| node == "NN_B0001");
-                    }
-                }
-            }
-        }
     }
     if !part.top { change(system, &mut moved, bottom + 0x60, &[0; 4]); }
     system.aim_mouse.as_mut().unwrap().menu_top.clip = Some((part.place, part.top));
@@ -2145,25 +2101,20 @@ mod tests {
     fn isolated_models_clip_at_the_screen_instead_of_their_hit_box() {
         let mut system = System::new(crate::Config::default());
         system.memory.map(0x14000000, 0x20000000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
-        for (screen, control) in [(12, 0), (4, 0), (5, 0), (5, 5), (6, 0), (7, 0), (8, 3), (9, 0), (10, 0)] {
-            let mut mouse = shown(screen);
-            mouse.widen = 1.4;
-            mouse.menu_top.controls_more = screen == 5 && control == 5;
-            mouse.menu_top.active = Some((screen, 0x14050000, 0, false));
-            mouse.menu_top.draw_order = vec![control];
-            let part = mouse.menu_top.parts[control].clone();
-            mouse.menu_top.clip = Some((part.place, part.top));
-            mouse.saved = Some(Saved { regs: [0; 16], cpsr: system.cpu.cpsr, vfp: [0; 32], drawing: Drawing::MenuTop(0), moved: Vec::new() });
-            system.aim_mouse = Some(mouse);
-            let at = 0x14000000;
-            system.cpu.regs[2] = at;
-            // Both the injected clip and a model's native clip must allow its animation.
-            for enabled in [0, 1] {
-                system.cpu.regs[1] = enabled;
-                scissor(&mut system);
-                assert_eq!((0..4).map(|i| read_word(&mut system, at + i * 4)).collect::<Vec<_>>(), vec![0, 0, 240, 400]);
-                scissor_done(&mut system);
-            }
+        let mut mouse = shown(12);
+        mouse.widen = 1.4;
+        let part = mouse.menu_top.parts[0].clone();
+        mouse.menu_top.clip = Some((part.place, part.top));
+        mouse.saved = Some(Saved { regs: [0; 16], cpsr: system.cpu.cpsr, vfp: [0; 32], drawing: Drawing::MenuTop(0), moved: Vec::new() });
+        system.aim_mouse = Some(mouse);
+        let at = 0x14000000;
+        system.cpu.regs[2] = at;
+        // Both the injected clip and a model's native clip must allow its animation.
+        for enabled in [0, 1] {
+            system.cpu.regs[1] = enabled;
+            scissor(&mut system);
+            assert_eq!((0..4).map(|i| read_word(&mut system, at + i * 4)).collect::<Vec<_>>(), vec![0, 0, 240, 400]);
+            scissor_done(&mut system);
         }
     }
 
