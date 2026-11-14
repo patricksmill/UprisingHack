@@ -13,6 +13,8 @@ pub(super) const FINISHED: u32 = 0x0072A0B4;
 pub(super) const FONT_CALL: [u32; 7] = [0x00A36E64, 0x00A36EC8, 0x00A36EE4, 0x00A36F00, 0x00A36F1C, 0x00A36F74, 0x00A36FA4];
 pub(super) const FONT_DONE: [u32; 7] = [0x00A36E68, 0x00A36ECC, 0x00A36EE8, 0x00A36F04, 0x00A36F20, 0x00A36F78, 0x00A36FA8];
 
+/// the PC Settings Row on Other: Subtitles' Row model drawn a second time.
+pub(super) const PC_SETTINGS_ROW: &str = "PcSettingsRow";
 #[derive(Default)]
 pub(super) struct MenuTop {
     drawn: Option<(u64, usize, u32, f32)>,
@@ -510,6 +512,7 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
         parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some("MenCmnUpHeart0000"), place: fitted([300.0, 138.0, 100.0, 78.0], [0.0, 0.0, 70.0 * CONTROL_SCALE, 55.0 * CONTROL_SCALE]) });
     }
     if !groups.is_empty() && !armory_board(index) { controls = [0.0, 0.0, width, 240.0]; }
+    let mut pc_settings = None;
     if matches!(kind, Some(LayoutKind::Idol)) {
         let counter_scale = 0.7_f32.min((width - 16.0) / 160.0);
         let launcher_scale = 0.68_f32.min(width * 0.6 / 280.0);
@@ -544,6 +547,19 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
             parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
         }
         if index == 11 { parts[0].model = None; }
+        if index == 4 {
+            // The PC Settings Row: Subtitles' Row drawn again under SpotPass,
+            // added after the backdrop so saved editor indices stay put.
+            // Back moves down to make room for it.
+            let from = [0.0, 60.0, 320.0, 60.0];
+            let [x, y] = board.map_point([0.0, 180.0]);
+            let height = from[3] * board.to[3] / 240.0;
+            pc_settings = Some(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(PC_SETTINGS_ROW),
+                place: Placement { from, to: [x, y, from[2] * board.to[2] / 320.0, height] } });
+            if let Some(back) = parts.iter_mut().find(|part| part.model == Some("MenOptionOtherBt9999")) {
+                back.place.to[1] = y + height + 2.0;
+            }
+        }
     } else if kind.is_some_and(LayoutKind::heart) {
         let original_height = 240.0 - hint.map_or(0.0, |hint| hint[3] * 0.7);
         let scale = (original_height / 240.0).min(controls[2] / 320.0).min(1.0) * CONTROL_SCALE;
@@ -594,6 +610,8 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
     }
     // Last, so adding it kept every other layer's saved index.
     parts.push(Part { visible: true, backdrop: true, chapter: false, idol: None, top: true, model: None, place: native });
+    // After the backdrop, so every saved index stays put.
+    parts.extend(pc_settings);
     (native, parts)
 }
 
@@ -1861,8 +1879,26 @@ pub(super) fn draw(system: &mut System) -> bool {
     } else {
         let slider = matches!(part.model, Some("MenOptionSoundBt0002" | "MenOptionSoundBt0003" | "MenOptionSoundBt0004"));
         filter_models(system, drawing, part.top, !part.top, &mut moved, |name|
-            part.model.is_none_or(|model| name == model || board_companions(model).contains(&name))
+            part.model.is_none_or(|model| name == model || board_companions(model).contains(&name)
+                || (model == PC_SETTINGS_ROW && name == "MenOptionOtherBt0002"))
                 || (slider && matches!(name, "MenOptionSoundBt0001" | "MenOptionSoundBt0006")));
+        if part.model == Some(PC_SETTINGS_ROW) {
+            // NN_B0001 is the panel and NN_B0004 its border; NN_B0005 holds
+            // Subtitles' icon and label, which this Row replaces with text.
+            let layers = read_word(system, scene + SCENE_LAYERS);
+            for layer in BOTTOM_LAYERS {
+                let list = read_word(system, layers + layer * LAYER_SIZE + 4);
+                if list == 0 { continue; }
+                let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
+                if end < start || end - start > 0x1000 { continue; }
+                for at in (start..end).step_by(4) {
+                    let model = read_word(system, at);
+                    if model_name(system, model) == "MenOptionOtherBt0002" {
+                        show_nodes(system, &mut moved, model, |node| matches!(node, "NN_B0001" | "NN_B0004"));
+                    }
+                }
+            }
+        }
     }
     if !part.top { change(system, &mut moved, bottom + 0x60, &[0; 4]); }
     system.aim_mouse.as_mut().unwrap().menu_top.clip = Some((part.place, part.top));
