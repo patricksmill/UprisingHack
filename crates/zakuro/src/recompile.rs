@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use recomp3ds::build::{self, Event};
 use recomp3ds::compile::Compiler;
+use recomp3ds::overrides::Pinned;
 
 /// the compiler a recompile uses: one there is, or Zig, downloaded first
 /// into this folder of tools.
@@ -151,7 +152,8 @@ fn recompile(
     let changes = Changes::read(rom, update, program_id, data_dir);
     let files = |path: &str| changes.as_ref()?.module(path);
     log::info!("recompiling {name} with {}", compiler.describe());
-    let mut options = build::Options { cancel: Some(cancel), compiler: Some(compiler), background: true, ..build::Options::default() };
+    let mut options =
+        build::Options { cancel: Some(cancel), compiler: Some(compiler), background: true, pinned: PINNED, ..build::Options::default() };
     if let Some(changes) = &changes {
         log::info!(
             "recompiling {name} with its update or mods, which change {}. the library replaces one made without them, and should they go, the functions they changed run in the interpreter",
@@ -161,6 +163,21 @@ fn recompile(
     }
     build::build(rom, &options, events)
 }
+
+/// the C Overrides recovered from Kid Icarus: Uprising (USA) and checked
+/// against its code, the files kept in the repository's overrides folder.
+/// 3dsrecomp puts them in a library only of the code with this hash, so an
+/// update or a mod that changes the code gets the generated functions.
+const PINNED: &[Pinned] = &[Pinned {
+    program_id: 0x0004_0000_0003_0100,
+    code_hash: 0xD6E0_28C6_175A_2B07,
+    files: &[
+        ("input_sample.c", include_str!("../../../../../overrides/input_sample.c")),
+        ("memory.c", include_str!("../../../../../overrides/memory.c")),
+        ("scalar.c", include_str!("../../../../../overrides/scalar.c")),
+        ("string.c", include_str!("../../../../../overrides/string.c")),
+    ],
+}];
 
 /// what a game's mods change in what gets recompiled.
 struct Changes {
@@ -263,6 +280,20 @@ fn is_module(path: &str) -> bool {
 mod tests {
     use super::*;
     use zakuro_fs::romfs_build::{self, BuildFile};
+
+    /// the twelve recovered functions, every one, for the one code.
+    #[test]
+    fn the_recovered_functions_are_pinned_to_their_code() {
+        let [set] = PINNED else { panic!("one set") };
+        let mut addresses: Vec<u32> = set.load().unwrap().iter().flat_map(|file| file.overrides.iter().map(|item| item.address)).collect();
+        addresses.sort_unstable();
+        let expected = [
+            0x003B_50EC, 0x0042_5DB4, 0x0042_5F00, 0x0042_5F74, 0x0044_8770, 0x0091_9E90, 0x0091_9ED0, 0x0091_9EF4, 0x0091_9F38,
+            0x0091_9F7C, 0x00B4_0F28, 0x00B4_9860,
+        ];
+        assert_eq!(addresses, expected);
+        assert_eq!((set.program_id, set.code_hash), (0x0004_0000_0003_0100, 0xD6E0_28C6_175A_2B07));
+    }
 
     #[test]
     fn the_build_moves_the_stage_along() {

@@ -56,6 +56,7 @@ codegen-units = 4
 panic = "unwind"
 debug = 1
 
-# the interpreter told to run single functions, for mouse aiming
+# the local recompiler's title-specific hints and the ABI's mouse hook support
 [patch."https://github.com/fearkov/3dsrecomp"]
 recomp-abi = { path = "../3dsrecomp/abi" }
+recomp3ds = { path = "../3dsrecomp" }
