@@ -9,8 +9,10 @@ use crate::System;
 
 mod label_font;
 mod menu_top;
+mod pc_labels;
 mod screen_transform;
 use menu_top::MenuTop;
+pub(crate) use menu_top::{pc_page_after_save, pc_page_before_save};
 pub use screen_transform::{CauldronRole, CauldronRules, DialogRules, PauseRules, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
 use screen_transform::{Activate, QuadRole, ScreenLayout, ScreenTransform, CAULDRON_CONTROLS};
 
@@ -29,7 +31,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 137] = [
+pub const PLACES: [u32; 138] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -78,8 +80,9 @@ pub const PLACES: [u32; 137] = [
     menu_top::START,
     menu_top::FINISHED,
     menu_top::TEXT_BATCH_EMPTIED,
-    OUTLINE_OTHER_PART,
-    menu_top::OTHER_A,
+    menu_top::CONTROLS_PAGE,
+    menu_top::CONTROLS_COMMIT,
+    menu_top::CONTROLS_A,
     MENU_NO_TOUCH,
     screen_transform::SCRIPTED_UPDATES[0],
     screen_transform::SCRIPTED_UPDATES[1],
@@ -1409,9 +1412,13 @@ pub struct AimMouse {
     /// whether a click is to use the part under the mouse once it is
     /// outlined.
     menu_click: bool,
-    /// the PC Settings Row was used, for the frontend to open the PC
+    /// the PC page's More was used, for the frontend to open the PC
     /// Preferences.
     open_settings_requested: bool,
+    /// the PC page's four On/Off Rows, from the top, as the host has them,
+    /// and whether the player changed one since the frontend last looked.
+    pc_toggles: [bool; 4],
+    pc_toggles_changed: bool,
     menu_button_down: bool,
     menu_press: Option<MenuPress>,
     /// Keep hover out of a native drag's release handling too.
@@ -1487,6 +1494,8 @@ impl Default for AimMouse {
             menu_calls: Vec::new(),
             menu_click: false,
             open_settings_requested: false,
+            pc_toggles: [false; 4],
+            pc_toggles_changed: false,
             menu_button_down: false,
             menu_press: None,
             menu_touched: None,
@@ -1522,10 +1531,22 @@ impl AimMouse {
         self.navigation_links = links;
     }
 
-    /// whether the PC Settings Row was used since the last look: the
+    /// whether the PC page's More was used since the last look: the
     /// frontend opens the PC Preferences.
     pub fn take_open_settings(&mut self) -> bool {
         std::mem::take(&mut self.open_settings_requested)
+    }
+
+    /// gives the PC page its four On/Off Rows' values, from the top. They
+    /// are shown the next time the page is entered.
+    pub fn set_pc_toggles(&mut self, values: [bool; 4]) {
+        if !self.pc_toggles_changed { self.pc_toggles = values; }
+    }
+
+    /// the PC page's values if the player changed one since the last look,
+    /// for the frontend to keep.
+    pub fn take_pc_toggles(&mut self) -> Option<[bool; 4]> {
+        std::mem::take(&mut self.pc_toggles_changed).then_some(self.pc_toggles)
     }
 
     /// the mouse moved to the bottom screen's pixel, or off it: menus light
@@ -2946,13 +2967,10 @@ fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
     let call = match aim_mouse.menu_calls.is_empty() {
         true => {
             if !std::mem::take(&mut aim_mouse.menu_click) { return; }
-            // The game took the PC Settings Row as Subtitles: open the PC
-            // Preferences instead of Subtitles.
-            if aim_mouse.pc_settings_hovered() {
-                aim_mouse.open_settings_requested = true;
-                return;
-            }
             let Activate::Call(function) = activate else { return };
+            // An injected call does not visit its entry hook: the PC
+            // page's More is taken here, as the hook takes the keys' A.
+            let function = if index == 5 && menu_top::use_pc_more(system, object) { menu_top::CONTROLS_PAGE } else { function };
             Some((function, [object, 0, 0]))
         }
         false => Some(aim_mouse.menu_calls.remove(0)),

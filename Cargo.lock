@@ -4793,6 +4793,7 @@ dependencies = [
  "env_logger",
  "log",
  "lz4_flex",
+ "png",
  "postcard",
  "rayon",
  "recomp-abi",

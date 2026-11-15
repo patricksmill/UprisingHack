@@ -85,6 +85,23 @@ pub struct PcPreferences {
     pub review: Vec<String>,
 }
 
+impl Settings {
+    /// the On/Off choices KIU's PC page shows on its four Rows, from the
+    /// top: the gyro turned the other way sideways, and up and down, High
+    /// Refresh Mode, and the frame rate shown.
+    pub fn pc_toggles(&self) -> [bool; 4] {
+        [self.pc.aim.gyro_invert_x, self.pc.aim.gyro_invert_y, self.high_refresh_mode, self.show_fps]
+    }
+
+    /// takes those Rows' values as the player left them.
+    pub fn set_pc_toggles(&mut self, [invert_x, invert_y, high_refresh, show_fps]: [bool; 4]) {
+        self.pc.aim.gyro_invert_x = invert_x;
+        self.pc.aim.gyro_invert_y = invert_y;
+        self.high_refresh_mode = high_refresh;
+        self.show_fps = show_fps;
+    }
+}
+
 /// the groups of choices Restore Defaults puts back one at a time, each
 /// the Screen that shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +149,17 @@ mod tests {
     use super::*;
     use crate::bindings::{Action, Device, Resolve, Source};
     use winit::keyboard::KeyCode;
+
+    #[test]
+    fn the_pc_page_rows_round_trip_through_their_settings() {
+        let mut settings = Settings::default();
+        for rows in [[true, false, true, false], [false, true, false, true]] {
+            settings.set_pc_toggles(rows);
+            assert_eq!(settings.pc_toggles(), rows);
+            assert_eq!(settings.pc.aim.gyro_invert_x, rows[0]);
+            assert_eq!(settings.show_fps, rows[3]);
+        }
+    }
 
     fn customised() -> Settings {
         let mut settings = Settings::default();
