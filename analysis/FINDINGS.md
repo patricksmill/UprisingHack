@@ -1365,12 +1365,15 @@ Screenshots of the saved states with `menutop 0` (13 Nov), bottom screen:
 
 So the game already owns vertical/horizontal inversion, aim assist, autofire
 and the movement scheme; PC Preferences must not duplicate them. The
-Options main page's category labels are artwork in their models, while
-Row labels on Other, Control Configuration, More Controls and the Air
-Battle page are drawn with the system font (`Step 1: …`, `Invert Vertical
-Movement`). Adding a category to Options therefore needs new label
-artwork or a font-drawn label over a cloned button model; adding a Row to
-a font-labelled page needs the page's string source.
+Options main page's category labels are artwork in their models, and so
+are the Row labels on Other, Controls and More Controls (texture atlases;
+see "Native text for new Controls" and "More Controls as a template
+Screen" below). Only Control Configuration and the Air Battle page draw
+their Row text with the system font (`Step 1: …`, `Invert Vertical
+Movement`). Adding a category or a Row to an artwork-labelled page
+therefore needs new label artwork or a font-drawn label over a cloned
+button model; adding a Row to a font-labelled page needs the page's
+string source.
 
 Open questions recorded before any new native Control is built:
 
@@ -1535,6 +1538,62 @@ the frontend executable alone does not rewrite them.
   variants; J/K/Q/Z were absent from the inventoried labels. Tight tracking
   and low-resolution masks produce rough contours, so traced outlines are
   not used in the distributed label.
+
+## More Controls as a template Screen (spike, 14 November)
+
+Headless in `kiutrace` (interpreter only) from `trace/s23.state` (More
+Controls) and `trace/s17.state` (Controls), with pokes and `code` patches
+standing in for hooks; nothing in Zakuro was changed. Scripts and
+screenshots are under ignored `build/spike-s23/`. Heap and VRAM addresses
+are those of these states, not constants.
+
+- Controls and More Controls are pages of one object (`0x1403E930`, vtable
+  `0x00CF84DC`). Other is a different class (vtable `0x00CF2368` at the
+  same address in `trace/s16.state`), and Control Configuration replaces
+  the object when entered.
+- Page switch: `0x003181C0(object, page, 0)`, page 1 More Controls, page 0
+  Controls. Native A on More Controls reaches it with `lr 0x00318A40`.
+  Called directly from Controls (`call 0x003181C0 0x1403E930 1 0`) it
+  opens More Controls with the native slide-in, and B returns to Controls.
+  Entry from Other was not tested.
+- The four On/Off values are bytes on the object, 1 for On: `+0x119`
+  Autofire, `+0x11A` Guide Arrow, `+0x11B` Aim Assist, `+0x11C` Shot
+  Homing.
+- Load: `0x00242654`–`0x00242690`, inside the setup function `0x0024235C`
+  (its only reference is a pointer at `0x001BFE7C`), copies them from the
+  save flag byte at `[0x00D636C4] + 0x16278 + 0x173` (`0x00EF97AB` here):
+  bit 2 → `+0x119`, bit 4 → `+0x11A`, bit 5 → `+0x11B`, bit 6 → `+0x11C`.
+  It runs when the object is created, before Controls is shown, not on
+  entry to the page.
+- Toggle: `0x00318C74(object, name record)` picks the byte by comparing
+  the Row's name hash with four table entries (`0x003270EC` result
+  `+0x14C`, `+0x178`, `+0x254`, `+0x280`), sets or clears it by
+  `object+0x108`, and redraws through `0x00318DD0`. The write is at
+  `0x00318D24`. The Row set is therefore inline code, not a data table.
+- Redraw: `0x00318DD0` shows each Row's On or Off highlight from those
+  bytes alone (`0x00318E90` onwards, through `0x0030296C`).
+- Commit: leaf `0x003491A0(object)` packs the four bytes back into the
+  flag byte. Callers are `0x002E1A60`, `0x00318828`, `0x00318860`,
+  `0x003188E0` and `0x003189F0`. Toggling writes nothing to the save; the
+  observed write (`pc 0x003491F8`, `lr 0x002E1A64`) came while backing
+  out towards the Main Menu, after the B that leaves More Controls.
+- Host values in and out: with `+0x119..+0x11C` poked on Controls and
+  `0x003491A0` patched to `bx lr`, native A opened More Controls showing
+  the poked values, Left on Guide Arrow flipped `+0x11A` with the native
+  animation, and after backing out to the Main Menu the flag byte was
+  unchanged (`0x52`).
+- Hint: the one font call a frame (`0x00A36FA4`, then `0x005CB24C`) draws
+  the hint from the heap message table (`0x1573E3B4`, "Display a green
+  arrow directing you where to go."). Overwriting that string in place
+  drew the replacement in the native font and position.
+- Labels: no font call draws them. The Row labels, ON/OFF and Try It! are
+  the 256×256 L4 atlas `MenOptionSousaBt_Lang00000` (`TXOB` at
+  `0x15BA14C8`, pixels in VRAM at `0x1F416200`, `0x8000` bytes).
+  Overwriting those pixels changed the drawn labels on the next frame, so
+  the atlas can be repainted live.
+- The top screen's preview (Pit, the `?` bubble, the arrows) follows the
+  Rows' values; a page reusing this Screen for other settings needs that
+  layer hidden or replaced.
 
 ## Lifted-code discrepancy probes (14 November)
 
