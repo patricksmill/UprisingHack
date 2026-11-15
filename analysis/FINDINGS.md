@@ -1500,7 +1500,17 @@ the frontend executable alone does not rewrite them.
   `+0x3C` selects the font; anchor `+0x24`, alignment `+0x5C` and colours
   are restored with the saved CPU state after the call. Hint substitution
   runs at `0x00A36FA4`.
-- The label font is built from the player's RomFS, not bundled artwork:
+- The label is the host PNG `assets/pc-settings-label.png` (160×24 RGBA,
+  alpha only), resolved beside the executable. It goes into a two-glyph A4
+  CFNU sheet (256×32, U+E000/U+E001, 80 px each), because a single glyph
+  would exceed the signed advance. The label string is those two code points.
+  The marker is `KIULBL02`; an older `KIULABEL` mapping is reused and its
+  pixels are rewritten. `reset_menu_after_load` drops the cached font, so
+  loading a state reinstalls it from the current PNG. A missing PNG is
+  exported once with `create_new` from the artwork below.
+  Headless check on `trace/s16.state`: a striped test PNG replaced the
+  lettering across both halves, and the original was restored afterwards.
+- The fallback/export artwork comes from the player's RomFS, not bundled artwork:
   LZ11 `/us/menu/220.zrc` and `/us/menu/190.zrc` contain nested darc/CGFX
   textures `MenOptionOthersBt_Lang0001` and `MenOptionSousaBt_Lang00000`.
   L4 texture pixels use Morton-swizzled 8×8 tiles, high nibble first.
@@ -1769,3 +1779,15 @@ changed files were recompiled. The ABI header is identical; the function
 header adds only the two override declarations. Build and verification
 artifacts are under `build/scalar-20261114/`. This Linux library is separate
 from the Windows frontend and has not been installed in its game cache.
+
+## Windows Recompile with pinned C Overrides (14 November continuation)
+
+Anchors: `tools/3dsrecomp/src/overrides.rs` (`Pinned`),
+`tools/3dsrecomp/src/build.rs` (`pinned_files`, duplicate checks),
+`tools/3dsrecomp/src/compile.rs` (`common_folder`), and
+`tools/zakuro/crates/zakuro/src/recompile.rs` (`PINNED`). The pinning key is
+the FNV-1a hash of the executable's text after mods and updates, the same
+key as the bundled hints; for this dump it is `D6E028C6175A2B07`.
+Override seeds change function partitioning across nearly every generated
+unit, so a same-tree no-override reference needs a full rebuild; it cannot be
+derived by recompiling a few files. Results are in `docs/decomp/LEDGER.md`.

@@ -676,12 +676,56 @@ and compared byte-for-byte with its build output. Its SHA-256 remains
 No new Windows game library has been installed. Interactive Windows
 gameplay with these overrides remains unverified.
 
+### Windows game library with the twelve overrides (14 November)
+
+Windows Recompile now includes the twelve maintained C Overrides. Zakuro
+embeds `overrides/*.c` as a pinned set for program `0004000000030100` and
+executable code hash `D6E028C6175A2B07`; 3dsrecomp adds a pinned set only
+when the code being recompiled has that hash, and otherwise leaves it out
+with a note. An update or mod that changes the code therefore gets the
+generated functions. Duplicate file names or addresses across sets are
+refused.
+
+The first Windows build compiled all 529 objects and then failed to link
+with os error 206: objects in `hand/` disabled the single-folder path
+shortening, so the link passed whole paths over the 32,767-character
+limit. Linking now runs from the common folder with relative paths
+(5,312 characters for this title). Frontend Recompile had the same defect.
+
+Both Windows libraries were built with Zig 0.17.0 `cc`, as frontend
+Recompile uses, from the same hints file. Their generated C reproduces
+byte-for-byte on Linux: the candidate's tree equals the pinned and the
+`--overrides` trees, and the reference differs from neither in any of its
+527 files. Windows hints add 105 functions not in the Linux library.
+
+| Library | Objects | SHA-256 |
+| --- | --- | --- |
+| Candidate, twelve overrides (installed) | 529 | `be76a2ee…8100` |
+| Reference, no overrides | 525 | `04f546d6…1aa0` |
+| Previous installed (28 October) | — | `f2c9a2dc…fa38` |
+
+The eight whole-game scripts (`s1`, `s5`, `s8`, `s9`, `s12`, `s14`, `s26`,
+`exo-tank`, 120 frames with input) ran through Windows kiutrace against
+each library. Heap, linear memory and both screenshots are identical in
+all eight. Image differences are confined to the dead stack
+(`0x00D39C00`–`2C`) and tick words (`0x00F35D10`, `0x00E0BA88`), as on Linux.
+The Windows candidate also matches the Linux twelve-override runs in heap,
+linear memory and screens; Windows-versus-Linux image differences include
+three further `s12` words (`0x00E0B9C8`, `0x00E0BA80`, `0x00F2F358`) that
+hold tick-like values 17 higher and do not differ between the two Windows
+libraries. That they are host timing is inferred, not established.
+
+The candidate is installed at `%APPDATA%\3dsrecomp\0004000000030100.dll`;
+the previous library is kept in `build/windows-lib-20261114/backup-before/`.
+The frontend was rebuilt with the link fix (`06db1181…086b`) and replaced
+in `dist/`. Receipts and logs are under `build/windows-lib-20261114/`.
+Interactive Windows gameplay with this library remains unverified.
+
 ## Next
 
-1. Make Windows Recompile explicitly include the verified C Overrides,
-   bound to the matching game image. Build a Windows game library and
-   perform Windows gameplay validation; rebuilding the frontend alone
-   does not put the twelve recovered routines into that library.
+1. Interactive Windows play with the installed twelve-override library,
+   especially input sampling (`overrides/input_sample.c`) and the scalar
+   routines in battle. Scripted Windows comparisons pass; see above.
 2. Closed functions the saved states run (3,239), ranked by how often they
    are called: `build/continue/callsites.txt` counts direct call sites.
    The next most called are the tree removal at `0x003D41E8` (2,952), the

@@ -15,9 +15,10 @@ Two deliverables, not interchangeable:
 Maintained recovery now covers twelve functions. The latest two are the
 hand-written packed-scalar and linked-factor routines in `overrides/scalar.c`,
 checked with both core and float results; they are separate from the generated
-bulk candidates below. The next delivery step is including verified overrides
-in Windows Recompile and validating the resulting Windows game library.
-The rebuilt frontend executable alone does not include that library.
+bulk candidates below. Windows Recompile includes them, pinned to the
+code hash they were checked against; a Windows library built with them
+matches a same-tree reference in eight whole-game scripts and is installed.
+Interactive Windows play with it is the remaining acceptance check.
 
 `ghidra/LiftOverrides.java` translates Ghidra high p-code into C Overrides.
 It emits variables and basic-block jumps, guest-memory accesses, and guest
@@ -35,7 +36,8 @@ float-return contract experiment are recorded in `LEDGER.md`.
 Verified mixed core/float results can now be supplied explicitly as the
 fourth positional argument to `scripts/lift.py`, using
 `ghidra/kiu-call-results.txt`. The file is bound to the executable hash;
-it is not automatically applied or included by Windows Recompile.
+it is not automatically applied; Windows Recompile includes only the
+maintained `overrides/` files.
 Use `REPLAY_VFP_RESULTS` and `DIFFTEST_VFP_RESULTS` for known float-result
 contracts in addition to the default replay/random comparisons. General signature-order independence
 remains unresolved; the rejected isolation experiment is recorded in the
@@ -44,7 +46,7 @@ ledger rather than enabled by default.
 `scripts/lift.py` runs Ghidra, partitions the output into 48 translation
 units, builds them in parallel using the existing system C compiler, and
 executes `scripts/difftest.c` against the reference library. No generated
-candidate is installed in `overrides/` or the distributed executable.
+candidate is installed in `overrides/` or the Windows game library.
 
 Run from the repository root:
 
