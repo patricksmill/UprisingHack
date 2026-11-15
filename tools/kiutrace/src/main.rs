@@ -61,6 +61,11 @@
 //!                                 each frame, or release it (a short press clicks, a hold or move touches)
 //!   wheel <rows> [columns]        scroll the hovered menu; positive down/right (columns is Shift+wheel)
 //!   shown                         print what Zakuro's hooks see shown: a battle, the pause menu, the Fiend's Cauldron
+//!   pctoggles <0|1> x4            give the PC page its four On/Off Rows' host values, from the top;
+//!                                 shown prints whether the page is up and what the player changed
+//!   expectpc <page> <opened> [r1 r2 r3 r4]  assert whether the PC page is up, whether its More asked for the
+//!                                 PC Preferences since the last look, and the Rows' values if the player changed one
+//!                                 (none given: no change)
 //!   interpolation [0|1]           inspect or toggle frame interpolation (requires KIUTRACE_DIRECT=1)
 //!   wide <aspect>                 widen the top screen to aspect (width / height), with Zakuro's hooks
 //!   hud <scale>                   draw the top screen's HUD and reticle at scale, with Zakuro's hook
@@ -423,7 +428,7 @@ fn main() {
             "shown" => {
                 let aim_mouse = system.aim_mouse.get_or_insert_with(Default::default);
                 let frames = system.frames;
-                println!("battle {} pause {} cauldron {} menus {} part {:08X?} pc settings opened {}", aim_mouse.in_battle(frames), aim_mouse.pause_menu_shown(frames), aim_mouse.cauldron_shown(frames), aim_mouse.menus_on_top_shown(frames), aim_mouse.hovered_menu_part(), aim_mouse.take_open_settings());
+                println!("battle {} pause {} cauldron {} menus {} part {:08X?} pc page {} changed {:?} pc settings opened {}", aim_mouse.in_battle(frames), aim_mouse.pause_menu_shown(frames), aim_mouse.cauldron_shown(frames), aim_mouse.menus_on_top_shown(frames), aim_mouse.hovered_menu_part(), aim_mouse.pc_page_shown(), aim_mouse.take_pc_toggles(), aim_mouse.take_open_settings());
             }
             "parts" => {
                 let owner = read32(&mut system, num(1) + 0x30);
@@ -509,6 +514,13 @@ fn main() {
                 let actual = read32(&mut system, num(1));
                 assert_eq!(actual, num(2), "native word at {:#010X}", num(1));
             }
+            "expectpc" => {
+                let mouse = system.aim_mouse.get_or_insert_with(Default::default);
+                assert_eq!(mouse.pc_page_shown(), num(1) != 0, "PC page shown");
+                assert_eq!(mouse.take_open_settings(), num(2) != 0, "PC Preferences asked for");
+                let changed = (words.len() > 6).then(|| [num(3) != 0, num(4) != 0, num(5) != 0, num(6) != 0]);
+                assert_eq!(mouse.take_pc_toggles(), changed, "PC page Rows changed");
+            }
             "expectmenu" => {
                 let expected = (words[1] != "none").then(|| num(1));
                 assert_eq!(system.aim_mouse.as_ref().and_then(|mouse| mouse.hovered_menu_part()), expected, "hovered menu part");
@@ -519,6 +531,7 @@ fn main() {
                 }
                 println!("  between: {}, matches: {:?}", system.shows_between(), system.interpolation_matches());
             }
+            "pctoggles" => system.aim_mouse.get_or_insert_with(Default::default).set_pc_toggles([num(1) != 0, num(2) != 0, num(3) != 0, num(4) != 0]),
             "wide" => system.aim_mouse.get_or_insert_with(Default::default).widen = float(1) / (5.0 / 3.0),
             "hud" => system.aim_mouse.get_or_insert_with(Default::default).hud_scale = float(1),
             "calls" => {

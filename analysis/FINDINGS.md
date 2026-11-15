@@ -1492,12 +1492,29 @@ local checkout as well as `recomp-abi`, so its Recompile button gets the
 same hint as the CLI. Existing game libraries must be recompiled; replacing
 the frontend executable alone does not rewrite them.
 
-## PC Settings Row on Scripted Options → Other
+## PC Settings Row on Scripted Options → Controls
 
-- `PcSettingsRow` reuses Subtitles' panel/border nodes `NN_B0001` and
-  `NN_B0004`, placed below SpotPass; Back moves below it. The same Placement
-  is used for pointer selection and drawing. Outline nodes `NN_B0002`,
-  `NN_B0003` and `NN_B0003_1` are drawn only on the selected Row.
+Moved from Other on 15 November; the label and font notes below are unchanged.
+
+- `PcSettingsRow` reuses More Controls' (`MenOptionControlBt0006`)
+  panel/border nodes `NN_B0001` and `NN_B0004`, placed below More Controls;
+  Back moves below it on the Controls page only. The same Placement is used
+  for pointer selection and drawing. Outline nodes `NN_B0002` and `NN_B0003`
+  are drawn only on the chosen Row; `NN_B0005` is the Row's icon and label.
+  `MenOptionControlBt0000` is not the Outline's light: drawn with the Row it
+  was the pale box behind it.
+- A Row's look, chosen or not, is its model's animation (the players at
+  `0x1403E4D8`–`0x1403E684` in `trace/s17.state` change frame, clip and
+  callback with the Row outlined), not node visibility and not its
+  materials: the
+  five materials' `MTOB`s (model `+0x164..+0x168`, each `+8` and `+0x14`)
+  are byte-identical for `0x800` bytes either way. Both draws of the donor
+  therefore share its look. Whichever of the two Rows is not chosen while
+  the game has More Controls outlined takes its panel and border from
+  Reticle/Camera's Row (`MenOptionControlBt0002`, same node names, source
+  box `[0, 74, 320, 62]`): the PC Row directly, More Controls through the
+  extra part `PcPlainRow` under its own `NN_B0005`. More Controls' label
+  keeps the chosen colour (black) then.
 - The top text batch is reset at `0x00A358B0`; hook `0x00A358B4` queues
   the label through `0x005CB24C` during its own text-only pass. Context
   `+0x3C` selects the font; anchor `+0x24`, alignment `+0x5C` and colours
@@ -1516,7 +1533,7 @@ the frontend executable alone does not rewrite them.
 - The fallback/export artwork comes from the player's RomFS, not bundled artwork:
   LZ11 `/us/menu/220.zrc` and `/us/menu/190.zrc` contain nested darc/CGFX
   textures `MenOptionOthersBt_Lang0001` and `MenOptionSousaBt_Lang00000`.
-  L4 texture pixels use Morton-swizzled 8×8 tiles, high nibble first.
+  L4 texture pixels use Morton-swizzled 8×8 tiles, low nibble first.
   Sliced large P/C/S and small e/g/i/n/s/t become a private A4 CFNU sheet,
   with native SDK font object and sheet descriptor. The descriptor's `+4`
   must point back to the font object; the renderer calls through it.
@@ -1524,16 +1541,72 @@ the frontend executable alone does not rewrite them.
   address, following APT's shared-font allocation. A marker identifies the
   restored mapping after save-state loads. This is a label-specific font,
   not a full alphabet.
-- Other's outline hook is `0x002D5430`; Down/Up return addresses
-  `0x0023C414`/`0x0023C358`. Its name record is hash at `+0`, name pointer
-  at `+4`, capacity at `+8`, name bytes at `+0xC`. SpotPass Down and Back Up
-  select the PC Row while the guest outlines Subtitles; subsequent Up/Down
-  go to SpotPass/Back. `0x002D50FC` intercepts Confirm only on the PC Row.
-- Headless smoke on `trace/s16.state`: Down×3, Down, Up, Up, Down and A
-  reported `pc settings opened true`; mouse click also reported true.
-  Left/Right retained the PC selection. A on Subtitles did not request
-  PC Preferences. Screenshots covered 16:9, 4:3, hover and a save/load
-  round trip. Physical controller and Windows UI interaction remain unverified.
+- Controls' Up and Down look the next Row up in its graph inline, at
+  `0x00293848` (slot `+0x90`) and `0x002938CC` (slot `+0xBC`), the current
+  node in `r0` and its name hash at `+0xC`. More Controls' Down and Back's
+  Up select the PC Row while the guest keeps More Controls (`0xFB565F88`)
+  outlined; from it Up stays on More Controls and Down goes to Back
+  (`0x928BEAA4`). The pointer on the PC Row hits More Controls natively.
+- Confirm on the PC Row is the game's own A on More Controls. The hook at
+  the page switch `0x003181C0` sees page 1 with the PC Row chosen, keeps
+  the game's four On/Off bytes and writes the host's; page 0 reads them
+  back and restores the game's. `0x003491A0` returns at once while the
+  page is the host's. A console state saved on the page holds the game's
+  bytes; loading one shows the real More Controls.
+- The hint at `0x00A36FA4` is the host's for the PC Row and, on the PC
+  page, for the outlined Row (`object+0x44`: `0x8D79D12E`, `0x4998C4E7`,
+  `0x4A0C9579`, `0x4A0F894B` from the top) and for Try It!
+  (`0x49B8FADA`). Back keeps the game's.
+- PC page labels: `pc_labels.rs` finds the atlas by its `TXOB`
+  (`'TXOB'` at `+4`, name at `+0xC` as a self-relative offset or a pointer,
+  format 10 at `+0x34`, height `+0x3C`, width `+0x40`, size `+0x44`, pixel
+  address `+0x54`), checks it is the measured USA atlas (FNV-1a
+  `0xA25AA2B4BA7D1924`), and repaints the four Rows' strips and Try It!'s
+  from glyphs cut out of the same atlas. Strips are 32 rows tall with the
+  baseline 29 down (Try It!'s 27): Control Configuration at y 0,
+  Reticle/Camera 32, More Controls 64, Autofire 96, Guide Arrow 128, Aim
+  Assist 160, Shot Homing 192, Try It! 224; icon and label in x 0..150, ON
+  152..202, OFF 205..255. Letters touch, so glyph columns are cut at the
+  least ink. There is no large F (the small one is enlarged) and no
+  B/J/K/P/Q/V/X/Z in this atlas. Writing the pixels in VRAM shows on the
+  next frame with the software and the hardware renderer.
+- L4 pixels are low nibble first within each byte (8×8 Morton tiles). The
+  PC Settings label exporter read them high nibble first, which swapped
+  every pair of columns; its glyph boxes were re-measured on the corrected
+  artwork (15 November). `MenOptionOthersBt_Lang0001` is 256×128 at
+  `0x1F421400` in `trace/s16.state`: Profile, Subtitles, Hidden Options.
+- Painted labels are put back 45 frames after the page is left (while its
+  Rows slide away), at once on entering the game's own More Controls, on
+  leaving Controls, and around a console state save; never when the atlas
+  no longer holds what was painted.
+- The PC page's top-screen models: `MenOptionControlUp0000` is the backdrop
+  and stays; the other `MenOptionControlUp*` models (`Up0004`, `Up0007` on
+  More Controls, `Up0001` on Controls) are the previews and are left out.
+- More: A on Try It! goes through `0x003186E8(object)`; on the PC page the
+  hook leaves the page (`0x003181C0(object, 0, 0)`) and asks the frontend
+  for the PC Preferences. A mouse click's injected call does not visit that
+  entry hook, so `next_menu_call` makes the same substitution.
+- Headless on `trace/s17.state` (`build/pc-page/*.txt`, 15 November):
+  Down×3 reached the PC Row, Down Back, Up the PC Row, Up More Controls;
+  A and a mouse click each opened the PC page (`shown`: `pc page true`)
+  with `pctoggles` values drawn; Right and Left changed Rows and reported
+  them; B returned to Controls on the PC Row with the game's bytes back;
+  A on More Controls opened the real page; the save flag byte stayed
+  `0x52` throughout, and a state saved on the page loaded as the real
+  More Controls. With labels (`labels.txt`, `more.txt`, `mousemore.txt`):
+  the page shows Side Mirror, Tilt Mirror, High Refresh, Frame Rate and
+  More; the game's page entered 20 frames after leaving shows its own
+  labels; keys and a click on More each reported `pc settings opened true`
+  and returned to Controls; clicks on ON and OFF reported changes; a state
+  saved on the page loaded with the game's labels and values. Screenshots
+  at 5:3 and 16:9.
+- Acceptance: `trace/pc-page.txt` asserts all of the above with
+  `expectword`, `expectmenu` and `expectpc` (page shown, PC Preferences
+  asked for, Rows changed). It passes in the interpreter and with
+  `KIUTRACE_LIB=build/decomp-scalar/0004000000030100.so`, where the three
+  new hook sites each report one function interpreted. Keys pressed during
+  a page's slide are dropped: wait 45 frames after B. Physical controller
+  and Windows UI interaction remain unverified.
 - An offline potrace/TrueType experiment extracted 44 large/small letter
   variants; J/K/Q/Z were absent from the inventoried labels. Tight tracking
   and low-resolution masks produce rough contours, so traced outlines are
