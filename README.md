@@ -117,6 +117,10 @@ at full speed. F12 (or a controller's Home button) opens the menu over the
 game, where the sound and graphics settings live; in Kid Icarus Escape is the
 game's own Pause and Back.
 
+After an executable update, use Recompile again for an existing game library
+to pick up new title-specific discovery hints. Cached game libraries are not
+rewritten automatically.
+
 The one-screen features can be turned off for comparison with the original
 layout: `ZAKURO_MENUS_TOP=0`, `ZAKURO_NARRATION_TOP=0`, `ZAKURO_MIRROR_BOTTOM=0`,
 `ZAKURO_PAUSE_TOP=0`, `ZAKURO_CAULDRON_TOP=0`, `ZAKURO_MENU_HOVER=0`.
