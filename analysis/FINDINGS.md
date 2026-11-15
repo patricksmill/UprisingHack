@@ -1446,6 +1446,49 @@ before a frame changes nothing drawn: the flags are set again before the
 draw, so a Row without its label must choose nodes during the replay, as
 `show_nodes` does.
 
+## Recompiled boot continuation discovery
+
+The unmodified USA executable (`code.bin` SHA-256
+`2718aa2077a29560208c4e499288e5fecc4446d7adec95efb91ebf1b19eda679`)
+executes ARM code at `0x00C511F8`. It continues the boot routine whose
+discovered entry is `0x00C50DF8`; the recompiler previously had no code pieces
+covering `0x00C511F8` through `0x00C51498` (exclusive). This is an entry into
+existing game instructions, not a replacement implementation or game patch.
+
+The first words are `03A06001 13A06000 EA00001A`: the continuation consumes
+the incoming ARM flags, so its instruction mode and live context matter.
+The observed interpreter history has even PCs in this range. A hint at
+`00C511F8`, under title `0004000000030100` and text hash
+`D6E028C6175A2B07`, lets discovery follow it. The hint is in the local
+3dsrecomp fork's `hints.txt`; unrelated game revisions do not consume it.
+
+Controlled acceptance, using a fixed console clock and fresh isolated
+save-data directories, with hook-owning functions marked for interpretation
+but hook bodies disabled in both runs:
+
+- Boot, 300 frames: interpreter steps in the gap went from 11,490 to 0.
+  Total outer interpreter steps went from 175,761 to 164,053.
+- Remaining interpreted instructions outside translated pieces fell from
+  11,864 to 374. Scheduler-budget fallback and intentional hooks remain;
+  they are not missing translations.
+- `s5` and `s8`, 60 frames each: interpreter counters were unchanged.
+- All three runs had identical snapshots of 39 MiB of guest memory, the
+  executable-text snapshot, and both screen images. Single-instruction
+  interpreter callbacks from generated code remained zero.
+
+The scripts, snapshots, interval-counter logs and equality hashes are under
+`trace/boot-gap-cutover/`; `receipt.json` records the comparison. This does
+not establish coverage of unvisited modes or remove the interpreter.
+
+The separate linked Linux executable was rebuilt with the verified archive
+and completed 300 headless frames. The loader reported 448,263 linked entry
+points rather than the baseline's 448,238.
+
+Zakuro's workspace now patches its existing `recomp3ds` dependency to the
+local checkout as well as `recomp-abi`, so its Recompile button gets the
+same hint as the CLI. Existing game libraries must be recompiled; replacing
+the frontend executable alone does not rewrite them.
+
 ## PC Settings Row on Scripted Options → Other
 
 - `PcSettingsRow` reuses Subtitles' panel/border nodes `NN_B0001` and
@@ -1482,3 +1525,247 @@ draw, so a Row without its label must choose nodes during the replay, as
   variants; J/K/Q/Z were absent from the inventoried labels. Tight tracking
   and low-resolution masks produce rough contours, so traced outlines are
   not used in the distributed label.
+
+## Lifted-code discrepancy probes (14 November)
+
+These are experiments under ignored `build/re-next/`, not production
+C Overrides or additions to the recovered-source count. The baseline is
+`build/continue/lift-frame/`; verification counts belong in
+`docs/decomp/LEDGER.md`.
+
+- `0x00B66020`: the original instruction at `0x00B6610C` reads
+  `[r0 + 0x88]` only after the preceding branch has found `r0 == 0`.
+  Captured reference calls avoid that path. Ghidra also includes synthetic
+  `COPY` operations from memory location `0x88` to itself at the function's
+  exits. `LiftOverrides.statement`/`assign` emits these as a real read and
+  write, causing an otherwise successful candidate to leave captured memory
+  at `0x88`. Removing identical-address, identical-size literal-memory
+  self-copies fixes those captured calls. It does not justify suppressing
+  the original conditional read or mapping the null page.
+- `0x00B421A4`: `bl 0x00B40F28` at `0x00B42204` produces `s0`, stored
+  by `vstr s0, [r4, #0x14]` at `0x00B42208`. Ghidra instead treats `s0`
+  as an incoming value surviving the call; the lift stores `lift_in_vfp[0]`.
+  Refreshing that one local from `ctx->vfp[0]` after the call fixes the
+  captured discrepancy. Call arguments and targets agreeing is insufficient
+  to establish a correct call contract: results also need checking.
+- `0x00A3F3F0`: `0x00A3F194` writes six words through the pointer to the
+  first local bounds at entry `sp - 0x38`. The lift initializes locals from
+  that memory before the call, then fails to refresh five of the words.
+  At the first loop header, Ghidra's `MULTIEQUAL` joins stack values and
+  register/unique values in the same `HighVariable`.
+  `LiftOverrides.phiCopies` skips equal-`HighVariable` copies even when
+  memory must supply the value. Refreshing those five locals after the
+  first call fixes the captured calls. Recursive and child-iteration paths
+  still need separate evidence before a general repair is accepted.
+- `0x00637F5C`: parameters at the object behind `+0x78`, fields `+0x24`,
+  `+0x28` and `+0x2C`, can contain quiet NaN `0x7FC00000` in actual calls.
+  Self-comparisons at `0x00638274`, `0x006382A0` and `0x006382CC` detect
+  unordered values and preserve fallback values. High p-code drops those
+  self-comparisons. Restoring the three checks in the candidate fixes its
+  captured discrepancies. Setting `DecompileOptions.NanIgnoreEnum.None`
+  does **not** fix this case: the independently lifted candidate still has
+  no `isnan` in this function and differs on the same three captures.
+  The installed Ghidra 12.2 source explains a separate loss in
+  `src/decompile/cpp/ruleaction.cc:2380`,
+  `RuleTrivialArith::applyOp`: identical operands make `FLOAT_EQUAL` and
+  `FLOAT_LESSEQUAL` constant true, and `FLOAT_NOTEQUAL`/`FLOAT_LESS`
+  constant false, without consulting the NaN options. The ARM
+  `data/languages/ARMneon.sinc:1619` comparison macro supplies Z from
+  `op1 f== op2`, while NaN detection separately supplies V. Branches testing
+  Z after a self-comparison can therefore lose the NaN case even with
+  `NanIgnoreEnum.None`. This is upstream of the lifter and independent of
+  C compiler optimization; the explicit-check probe is not a general fix.
+
+Evidence: `build/re-next/pcode.txt`, per-function `.ref.c`/`.lift.c`,
+`DecompileOptions.javap.txt`, `probes/`, `nan-preserved/`, replay logs and
+`receipt.json`.
+The focused capture directories retain copies of the original capture
+headers and link to their original page stores; original captures are
+unchanged. Probes establish causes on captured inputs, not general semantic
+equivalence or valid high-level types.
+
+## Lifter repairs and call-contract continuation (14 November)
+
+`ghidra/LiftOverrides.java` now suppresses `COPY` when both operands name
+the same memory address and size. Its phi transfers reload memory inputs
+even when the destination shares their `HighVariable`. On the existing
+capture sets this fixes `0x00B66020`, `0x00A3F3F0`, `0x0049B79C` and
+`0x003B5B94`; the latter two are additional observed improvements from the
+general repair, not hand-recovered functions.
+
+Five further saved-state scenarios (`exo-tank`, `s5`, `s6`, `s7`, `s9`),
+after 20 neutral frames then A and circle-pad input, supplied 21 new calls
+of `0x00B66020` and 10 of `0x00A3F3F0`. Reference-self replay and the repaired
+lift match all 31. Every captured bounds call still had zero parent and
+child links, so these captures alone do not exercise the hierarchy paths.
+
+Eight explicit hierarchy fixtures extend one captured machine state with
+a separate scratch page. They cover a leaf, one child, two child orders,
+an equal child, a parent, a parent with children and two parent links.
+For the native sphere kind, `0x00A3F194` uses position at `+0..+8`, radius
+at `+0xC` and kind bits at `+0x20`; a zero secondary length at `+0x5C`
+disables the additional swept volume. The hierarchy links used by
+`0x00A3F3F0` are parent at `+0x80`, first child at `+0x84`, and next sibling
+at `+0x8C`. An independent mathematical union of the sphere bounds agrees
+with the reference in all eight fixtures. The storage repair removes all
+five ordinary baseline discrepancies; seven fixtures still differ only in
+`r0`. These are constructed fixtures, not observed game-owned hierarchies,
+and the remaining machine-return differences are unresolved.
+
+NaN handling now sets `NanIgnoreEnum.None` **and** disables Ghidra's
+`trivialarith` rule through the native `togglerule` option. The configuration
+is reapplied in `SemanticDecompiler.initializeProcess`, including when the
+native process is restarted; initialization failure aborts the lift.
+Disabling the rule preserves the original float self-comparisons directly,
+rather than adding address-specific NaN guards after lifting. The six
+captured calls of `0x00637F5C` match with this configuration. The rule also
+simplifies integer expressions, so full-batch measurements accompany this
+change in the ledger.
+
+The float-result experiment in
+`build/repairs-20261114/return-scripts/LiftReturnProbe.java` gives two callees
+custom `s0` return storage: `0x00B40F28` and `0x00B49860`. Both write `s0`
+in the generated reference; `scripts/contracts.py` also identifies their
+callers reading `s0`. Parameter inference is committed before adding return
+storage, and an outer transaction rolls every signature edit back. The
+eight targets are these callees and six lifted callers. This removes the
+observed memory discrepancies in `0x00B421A4`, `0x00BAFB70`, `0x00BB04F0`,
+`0x00BB08C8` and `0x00BB1070`. Only `0x00B421A4` becomes fully matching;
+the other four now differ only in `r0`, and the two callees regress from
+fully matching to `r0`-only. `0x00BB0C9C` remains matching. A single typed
+float return does not preserve the independently observable core-register
+effects. The prototype edits are experimental and are not installed in the
+lifter or Ghidra database.
+
+Evidence is under `build/repairs-20261114/`: generated variants,
+`storage-summary.json`, replay receipts, `capture-topology.json`,
+`make_bounds_fixtures.py`, `bounds-fixtures/`, `return-scripts/` and
+`returns/`. New actual-entry captures are in
+`trace/re-storage-20261114-a/`; previous captures and the game dump are
+unchanged.
+
+## Simultaneous core and float call results (14 November continuation)
+
+The result contracts for `0x00B40F28` and `0x00B49860` now explicitly carry
+both `r0` and `s0`. `ghidra/kiu-call-results.txt` binds these contracts to
+the original executable SHA-256; the lifter rejects other images. Words
+are listed least significant first (`r0,s0`), reversed for Ghidra's
+high-to-low compound storage. The temporary unsigned 64-bit return is a
+data-flow container, not a recovered C type or a claim about the game's
+declared signature. Calls read the actual register storage, and returns
+split the result back into both register banks. Treating an eight-byte
+result as the ordinary `r0,r1` pair would still be incorrect.
+
+- `0x00B40F28` counts enabled bits 0 through 3 at object `+4`. Without bit
+  3 it leaves the count in `r0` and loads the default float into `s0`.
+  With bit 3, it leaves the selected packed-field address in `r0` and loads
+  that word into `s0`. Both outcomes are observable in the reference.
+- `0x00B49860` leaves the list-anchor address (object `+0x14`) in `r0`.
+  Starting from the default float, it multiplies the words at payload
+  `+0x10`, following the node pointers from object `+0x18`; `s0` carries
+  the product. This establishes the accesses and arithmetic, not ownership
+  or a game-level meaning for the factor.
+
+All eight functions in the previous float-return experiment now match all
+59 recorded entries. The five callers whose memory discrepancies are
+removed are `0x00B421A4`, `0x00BAFB70`, `0x00BB04F0`, `0x00BB08C8` and
+`0x00BB1070`; both callees retain the correct `r0` as well as `s0`.
+The negative-control caller `0x00BB0C9C` remains matching.
+
+Replay previously did not compare `s0` at function exit: it is ordinarily
+caller-saved, but is also a result register for these callees. The old
+"same" results for their own entries therefore did not prove their float
+outputs. `REPLAY_VFP_RESULTS=1`, together with `REPLAY_ONLY`, now checks
+those known result contracts. The original lift differs in `s0` on nine
+of the seventeen direct callee entries; the paired-result lift matches
+all seventeen. The default comparison of other functions is unchanged.
+
+Forty constructed result fixtures add coverage beyond the recorded calls:
+32 packed-mask cases (all low-nibble combinations, with and without upper
+bits) and eight list-product cases. They cover empty and multi-node lists,
+raw NaN payload loads, signed zero, infinity and signed underflow. A
+constant-result oracle independently specifies both register words and
+matches the reference. The paired-result lift matches all forty. A mutant
+that flips one bit of `s0` passes with float comparison disabled and fails
+all forty cases with it enabled. These are deliberate fixtures, not
+observations of game-owned object graphs.
+
+### Signature lifetime and generation failures
+
+Ghidra's `GhidraScript.executeNormal` starts a transaction through
+`FlatProgramAPI.start`. `DomainObject.endTransaction` documents that nested
+aborts only take effect when the final enclosing transaction ends. Thus
+earlier references to per-function rollback describe the intended scope,
+not the actual lifetime: inferred signatures can influence later lifts
+until the script exits. The maintained result contracts are provisional
+and roll back at script exit; general target-order independence is not
+claimed.
+
+The experiment in `build/multi-return-20261114/LiftOverrides.isolated.java.txt`
+ends Ghidra's automatic transaction and reapplies contracts in separate,
+truly reversible per-function transactions. The eight-function cohort is
+stable in reversed order, but the full batch loses useful inferred
+argument information in other functions. For example, `0x008DBBB8`'s
+second call to `0x0018C7BC` loses its third argument; the latter's own code
+reads `r0`, `r1` and `r2`. Other changed verdicts and witnesses are retained
+in `isolation-real-changes.json` and `isolation-random-changes.json`.
+This broader isolation change is **not** enabled in the maintained lifter.
+Making the dependency contracts explicit is required before adopting it.
+
+Headless Ghidra can also exit zero after a script exception. `scripts/lift.py`
+now generates into a fresh temporary directory, retains `ghidra.log`,
+checks that the complete ordered target report exists, and only then
+replaces the previous candidate/report. Wrong hashes, invalid registers,
+duplicate result registers and partial/failed generation cannot silently
+compile a stale candidate. Three unit tests and actual contract-rejection
+checks cover these paths.
+
+The final generated batch and all receipts are under
+`build/multi-return-20261114/`; `final-summary.json` compares the final
+maintained configuration with the previous candidate. The forty fixture
+headers and their separate pages are under `fixtures-v2/`. Experimental
+isolation artifacts are retained separately. No generated candidate has
+been installed in `overrides/` or the Windows game-library cache.
+
+## Maintained scalar storage routines (14 November continuation)
+
+`overrides/scalar.c` replaces `0x00B40F28` and `0x00B49860` with hand-written
+C. The names describe observed storage only: packed mask, list anchor,
+wrapper payload, next pointer and factor. No ownership or gameplay meaning
+has been assigned to these fields.
+
+The packed routine's mask is at object `+4`. Its low four bits select packed
+words; bit 3 selects the last word as the scalar. The observable result pair
+is a count/default without that bit, or the packed address/raw scalar bits
+with it. Loading a NaN payload must preserve the original bits. The original
+default literal is at `0x00B40F98`. Generated block charges are 9 on entry,
+four visits each to blocks of 5 and 11, then 3 more on the default path:
+73 instructions with the scalar, 76 without it.
+
+The product routine returns object `+0x14` in `r0`, reads the first wrapper
+from object `+0x18` and starts with the literal at `0x00B49890`. At each
+wrapper, payload `+0` is compared with the anchor's first word; equality
+terminates, independently of the next pointer. Otherwise factor bits are
+loaded from payload `+0x10`, wrapper `+4` supplies the next pointer, and the
+factor multiplies the accumulator. Each multiplication uses the runtime's
+FPSCR-aware output flushing. The generated charge is 9 plus 8 per factor.
+
+A deliberate list test with 20,000 valid graphs, lengths 0 through 32 and
+arbitrary factor bits exposed 52 NaN-result discrepancies in the first C
+version. Core outputs and charges already matched. GCC's generated reference
+selected the factor's NaN payload when both operands were NaNs; compiling
+the direct nested C expression selected the accumulator's payload instead.
+The maintained implementation explicitly quiets and preserves a NaN factor
+before ordinary multiplication. The same 20,000 cases then match, including
+raw `s0` and charges. This is reference-library fidelity, not independent
+proof of 3DS hardware NaN/default-NaN behavior. Directed regression checks
+pin two distinct NaN payloads, the packed results and both charge formulas
+under GCC `-O0` and `-O2`.
+
+The full library's entry table and direct calls to these routines point to
+the C Overrides. It was generated with all twelve maintained overrides;
+525 objects were reused only for byte-identical source files, and four
+changed files were recompiled. The ABI header is identical; the function
+header adds only the two override declarations. Build and verification
+artifacts are under `build/scalar-20261114/`. This Linux library is separate
+from the Windows frontend and has not been installed in its game cache.
