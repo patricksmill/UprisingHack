@@ -1923,3 +1923,103 @@ key as the bundled hints; for this dump it is `D6E028C6175A2B07`.
 Override seeds change function partitioning across nearly every generated
 unit, so a same-tree no-override reference needs a full rebuild; it cannot be
 derived by recompiling a few files. Results are in `docs/decomp/LEDGER.md`.
+
+## The game's menu identity (MENUID)
+
+Menus are named by an enum whose names are in `.rodata` from `0x009511A8`
+in enum order: `MENUID_START` 0, `STAGE_SELECT` 1, `SELFILE` 2, `HOME` 3,
+`TOP` 4, `BET_HEART` 5, … up to `MENUID_MAX`. `0x00950E7C(hash*, u8* out)`
+turns a name hash into that number (each name's hash cached in a static
+block at `[0x00950E7C's pool +0x318] + 0xB4…`); no direct ARM or Thumb
+call to it was found, so it is reached indirectly.
+
+Each live menu is a task-tree node carrying its name inline at `+0x20`
+(`MENUID_HOME`, `MENUID_STAGE_SELECT`); node `+4` is the node itself,
+`+8` its child, the Screen's controller (vtable `0x00CFC3D0` for the hub,
+`0x00CF243C` for Chapter Select), whose own `+8` points back at the named
+node. From `/mnt/c/.../states/0004000000030100/2.state` (Chapter Select,
+going back to the hub on load): the hub's named node and controller are
+built during the 19th frame (after `run 18`), and Chapter Select's are
+unlinked then. The name is not unique to one node: every object the menu
+owns (constructor `0x00417734`, vtable `0x00CA046C`, 13 for the hub, 33 for
+Chapter Select) carries the same `MENUID_…` name at `+0x1C4`.
+
+### Current MENUID: static path
+
+```
+u8 MENUID = [[[0x00E6F98C] + 0xC] + 0x72C]
+```
+
+- `0x00E6F928` is a static singleton (vtable `0x00CEEA5C`; its address is
+  cached at `0x00D63608`, filled lazily by `0x00BB79F4`). Its `+0x64`
+  (`0x00E6F98C`) points at the current menu's 0x10-byte holder, vtable
+  `0x00CFC5C0`. `+0x60` was 0 in both menus. `+0x68` bit 0 is "current menu
+  is ending".
+- Holder `+0xC` points at the menu body (0x848 bytes, vtable `0x00CFC314`).
+  Holder `+8` (u8) is 1 once the menu has ended and is waiting to be
+  replaced.
+- Body `+0x72C` (u8) is the MENUID. Body `+0x724` points at that menu's
+  static record, `0x00EFD814 + MENUID * 0x44` (`0x00EFD858` Chapter Select,
+  `0x00EFD8E0` hub), so it identifies the menu as well. Body `+0x728` is
+  `0x00EFD528`.
+- The bytes after `+0x72C` are not cleared (`+0x72D…` held stale text);
+  read one byte. Check for a null slot and the two vtables before trusting
+  the value: other game modes were not examined.
+
+Setters, all in one frame:
+
+1. `0x0071819C(0x00E6F928, 0, 0)` destroys the old holder and zeroes the
+   slot (`0x007181F0`), and clears `+0x68` bit 0.
+2. A per-menu factory calls `0x00A3B9AC(holder, MENUID, record,
+   0x00EFD528)` with its MENUID as a constant: `0x00814EE8` for the hub
+   (3), `0x008330AC` for Chapter Select (1); 57 call sites in all, reached
+   through pointers (`0x00CF9614` holds the hub's). `0x00A3B9AC` builds the
+   body (`0x00A377A4`) and calls `0x00A36260(body, MENUID)`, which stores
+   the byte at `0x00A36298` and then builds the menu's objects through
+   `0x002EC69C` → `0x003AF170` → `0x003F601C` → `0x00417734`.
+3. `0x0071819C(0x00E6F928, 0, holder)` stores the new holder in the slot.
+
+The slot is null only inside that frame; at every frame boundary it was
+valid. Holder and body were reallocated at the same heap addresses
+(`0x149A6930`, `0x14012688`) in both directions of this run; do not rely
+on that.
+
+Timing, both directions (Chapter Select → hub from the state; hub →
+Chapter Select with A held three frames on Move Out at frame 150):
+
+| | Chapter Select → hub | hub → Chapter Select |
+|---|---|---|
+| Holder `+8` = 1 and singleton `+0x68` bit 0 set (`0x00A3B984`, `0x00B6CAA4`) | frame 2 | frame 157 |
+| MENUID changes (steps 1–3) | frame 19 | frame 165 |
+| Both screens black | after frames 19–21 | after frames 165–167 |
+| New menu first drawn | frame 22 | frame 168 |
+
+So the MENUID changes in the first black frame, three frames before the
+new menu's first drawn frame, and the old menu's fade-out is still
+reported as the old MENUID. The "ending" byte leads the change by the
+length of the fade (8 frames after a press, 17 here from the state). No
+"next MENUID" value was found ahead of the change: the next menu exists
+only as the constant in the factory that gets called. `0x00E11E0C`
+(`[ptr, 0x100, ptr, 0x101, …]`) is a table of the menu's objects with
+their handles, not a menu field. Words going 1 → 3 early (`0x15B1D88C` at
+frame 8) sit in repeating 0x14-byte records and are not a menu field.
+
+Used first for the hub's heart count: `menu_top::current_menu` reads this
+path (checking both vtables), and `font` holds the native count back
+whenever it is `MENUID_HOME` with menus on top, so the count no longer
+waits on the hub's controller being recognised. Harness: 1 on Chapter
+Select (frame 1 of `2.state`), 3 on the hub (frame 30).
+
+MENUID for every scripted Screen (enum 0–58, read from `0x00950E7C`'s
+table): FileSelect 2, ChapterSelect 1, MainMenu 4, Options 17, Other 22,
+Controls 19, ReticleCamera 25, Subtitles 23, Volume 21, Profile 39,
+ProfileYesNo 45, SoloHub 3, ArmsAltar 11, ArmoryGear/Powers 14, Redeem 12,
+Convert 37, Fuse 26, ArmoryPowers 18, Weapons 43, Categories 42,
+PracticeRange 10, both Idol Tosses 44, TreasureHunt 13, Vault 16 (its AR
+and Records pages too). The SpotPass dialog shows under Other's 22, the
+idol coin dialog under 44. No scripted Screen: BET_HEART 5 (Cauldron),
+OPTION_CONTROL_BUTTON 20, Music Gallery 38, Vault Idols/Puzzle/Gift 46–48.
+`menu_top::scene` now keeps the input-confirmed Screen only while it
+agrees with the MENUID, then takes the MENUID's Screen, and guesses from
+model names only for MENUIDs with no single Screen. Harness `menuid`
+prints both.

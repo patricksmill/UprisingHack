@@ -521,6 +521,11 @@ fn main() {
                 let changed = (words.len() > 6).then(|| [num(3) != 0, num(4) != 0, num(5) != 0, num(6) != 0]);
                 assert_eq!(mouse.take_pc_toggles(), changed, "PC page Rows changed");
             }
+            "menuid" => {
+                let id = zakuro_core::aim_mouse::current_menu(&mut system);
+                let screen = system.aim_mouse.as_ref().and_then(|mouse| mouse.menu_screen_index());
+                println!("  menuid {id:?} screen {screen:?}");
+            }
             "expectmenu" => {
                 let expected = (words[1] != "none").then(|| num(1));
                 assert_eq!(system.aim_mouse.as_ref().and_then(|mouse| mouse.hovered_menu_part()), expected, "hovered menu part");
