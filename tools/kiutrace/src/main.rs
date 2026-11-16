@@ -416,6 +416,7 @@ fn main() {
                     let mouse = system.aim_mouse.get_or_insert_with(Default::default);
                     mouse.menu_hover = true;
                     input.touch = mouse.menu_touch(system.frames, pressed).map(|(x, y)| (x as u16, y as u16));
+                    if std::env::var_os("KIUTRACE_TOUCH").is_some() { println!("  touch {:?}", input.touch); }
                     if pressed && !run_frame(&mut system, input, &mut frame) {
                         return;
                     }
@@ -428,7 +429,7 @@ fn main() {
             "shown" => {
                 let aim_mouse = system.aim_mouse.get_or_insert_with(Default::default);
                 let frames = system.frames;
-                println!("battle {} pause {} cauldron {} menus {} part {:08X?} pc page {} changed {:?} pc settings opened {}", aim_mouse.in_battle(frames), aim_mouse.pause_menu_shown(frames), aim_mouse.cauldron_shown(frames), aim_mouse.menus_on_top_shown(frames), aim_mouse.hovered_menu_part(), aim_mouse.pc_page_shown(), aim_mouse.take_pc_toggles(), aim_mouse.take_open_settings());
+                println!("battle {} pause {} cauldron {} menus {} part {:08X?}", aim_mouse.in_battle(frames), aim_mouse.pause_menu_shown(frames), aim_mouse.cauldron_shown(frames), aim_mouse.menus_on_top_shown(frames), aim_mouse.hovered_menu_part());
             }
             "parts" => {
                 let owner = read32(&mut system, num(1) + 0x30);
@@ -514,13 +515,6 @@ fn main() {
                 let actual = read32(&mut system, num(1));
                 assert_eq!(actual, num(2), "native word at {:#010X}", num(1));
             }
-            "expectpc" => {
-                let mouse = system.aim_mouse.get_or_insert_with(Default::default);
-                assert_eq!(mouse.pc_page_shown(), num(1) != 0, "PC page shown");
-                assert_eq!(mouse.take_open_settings(), num(2) != 0, "PC Preferences asked for");
-                let changed = (words.len() > 6).then(|| [num(3) != 0, num(4) != 0, num(5) != 0, num(6) != 0]);
-                assert_eq!(mouse.take_pc_toggles(), changed, "PC page Rows changed");
-            }
             "menuid" => {
                 let id = zakuro_core::aim_mouse::current_menu(&mut system);
                 let screen = system.aim_mouse.as_ref().and_then(|mouse| mouse.menu_screen_index());
@@ -536,7 +530,6 @@ fn main() {
                 }
                 println!("  between: {}, matches: {:?}", system.shows_between(), system.interpolation_matches());
             }
-            "pctoggles" => system.aim_mouse.get_or_insert_with(Default::default).set_pc_toggles([num(1) != 0, num(2) != 0, num(3) != 0, num(4) != 0]),
             "wide" => system.aim_mouse.get_or_insert_with(Default::default).widen = float(1) / (5.0 / 3.0),
             "hud" => system.aim_mouse.get_or_insert_with(Default::default).hud_scale = float(1),
             "calls" => {

@@ -771,6 +771,55 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   Replaying the whole Board for each Control stops the top replay after a
   few frames (drawing buffer); each Control draws its own models, and only
   Controls that show text replay the text pass.
+- Armory text replays must filter glyphs by the Control's native source
+  rectangle in `menu_top::font`, before the game's glyph allocation. A
+  scissor alone still allocates all of the dense bottom text pass for each
+  text Control, exhausting the shared drawing buffer on Powers entry with
+  larger inventories. This froze the game mid-transition (oversized grid,
+  truncated words, Back unresponsive). Reproduced from the user's Chapter
+  Select slot 3 through Solo Hub and Gear; omitting either the grid replay
+  or the repeated text passes avoided it. Filtering text ownership allows
+  the complete entry and Back to Gear without hiding any Control.
+  Verified three entry/Back cycles on Windows at 6x using that save and
+  the user's current game DLL; all 238 core tests pass.
+- Idols node ownership (`trace/idols-viewer.state`, one idol's description;
+  its List is Back from there, MENUID 46 for both, Screen 26). Top:
+  `MenColViewerUp0000` backdrop, `maru_kage` shadow, the idol a `Dol*` model
+  of its own name (`DolSnipe04` here). Bottom layer F: `MenColViewerBt0000`
+  nodes `bg` background, `sousa`/`sousa_base` controls hint, `title`,
+  `L_button`, `R_button` title bar, `bar` zoom bar, `pbase` page pill (the
+  description page's), `base` the white panel and `NN_B0002` its words'
+  node; `MN_B0004` stays hidden. The List adds `MenColViewlistBt0000`
+  (frame, its own page pill), eight `MenColViewlistBt0003` Rows,
+  `MenColViewlistBt0004` the Cursor and `MenCmnScbar` the scroll bar. Layer
+  0x10 holds `MenColViewlistBt0005` (the Rows' mask), layer 0x11
+  `MenColViewerBt9999` (Back) and `MenColViewerBt0002` (AR: `base`,
+  `cursor`). The model log walked layers 0..16 only and missed 0x10..0x12,
+  which `BOTTOM_LAYERS` (0xF..0x13) covers. Bottom text anchors: Row names
+  x 89 and counts x 262 every 25 from y 15; the List's "1/9" (160, 220); the
+  title (150, 38), the description block (14, 64), its "1/9" (151, 211).
+  Back and AR are no glyphs. A saved List state reloads with a black top;
+  reach the List from the description state instead.
+- Gear top-screen node ownership: `MenEquipUp0000` nodes `NN_U0000` and
+  `NN_U0001` are Paper background, `NN_U0027` Silhouette, `NN_U0002` Crest,
+  and its remaining nodes Ornaments. `MenEquipUp0001` nodes `NN_U0000`
+  and `NN_U0001` are Page title, `NN_U0002` and `NN_U00022` Weapon.
+  Other nodes stay in the native Details card, including the Powers grid.
+  The layout row declares these groups; replays retain native node visibility
+  and restore it afterward. The doubled camera guard band enlarged this
+  artwork despite its Placement; these groups use the native viewport mapping.
+- Armory Weapons top-screen node ownership (found by moving one node at a
+  time; hide-diffs were misleading): `MenEquipUp0100` is the paper with its
+  crest, ornaments and ink frame in one mesh. `MenEquipUp0121`: `NN_U0005`
+  and `NN_U0007` Description board and its lines, `NN_U0000` Category emblem,
+  `NN_U0003` with `pPlane1` Stats card, `NN_U0002` Weapon shadow, `NN_U0001`
+  the spinning Weapon; `NN_1111` and `pPlane2` draw nothing in
+  `trace/armory-weaponlist.state`. `MenEquipUp0500` is the equip flash. Every
+  drawing node must be owned: one left to the Details card draws after the
+  layers and covers them. Split screens replay the Details card last for the
+  words; `MenuTop::part` had dropped it (Powers lost its description too),
+  and its native-viewport mapping halved the words' width, so it takes the
+  guard-band projection.
 - Harvested child Control identities from native hits:
   Other: `MenOptionOtherBt0001` name/49C14849, 0002 caption/F28BAA60,
   0004 itunomani/9E610C53, 9999 return/928BEAA4.
@@ -866,6 +915,7 @@ Canonical Screen names are in `GLOSSARY.md`; this table is the only place their 
 | Treasure Hunt | 0x00CEEDD8 | 0x0018AF44 | outline_treasure | none (click is a touch) |
 | Vault | 0x00CF8248 | 0x00224B80 | outline_vault | 0x00345FDC |
 | Idol Toss (Vault) | 0x00CF9400 | 0x001B4D4C | outline_idol | none (click is a touch) |
+| Idols (Vault) | 0x00CF93D8 | 0x001B4D70 | outline_none | none (click is a touch) |
 | Control Configuration | in-game Options page 5 | 0x00A0ACF0 | none | drags what it holds |
 | Pause | object at ctx+0x243C | 0x0060DC7C input | pause options page at +0x678 | touch: 0x00A0867C main page, 0x00A06188 Options |
 | Retreat Dialog | dialog object | 0x007226C4 input | picked button at +0x294 | touch began now |
@@ -1492,125 +1542,30 @@ local checkout as well as `recomp-abi`, so its Recompile button gets the
 same hint as the CLI. Existing game libraries must be recompiled; replacing
 the frontend executable alone does not rewrite them.
 
-## PC Settings Row on Scripted Options → Controls
+## Controls Row facts (from the removed PC Settings Row work)
 
-Moved from Other on 15 November; the label and font notes below are unchanged.
+The PC Settings Row and PC page built on these were removed from Zakuro;
+only the game facts are kept here.
 
-- `PcSettingsRow` reuses More Controls' (`MenOptionControlBt0006`)
-  panel/border nodes `NN_B0001` and `NN_B0004`, placed below More Controls;
-  Back moves below it on the Controls page only. The same Placement is used
-  for pointer selection and drawing. Outline nodes `NN_B0002` and `NN_B0003`
-  are drawn only on the chosen Row; `NN_B0005` is the Row's icon and label.
-  `MenOptionControlBt0000` is not the Outline's light: drawn with the Row it
-  was the pale box behind it.
 - A Row's look, chosen or not, is its model's animation (the players at
   `0x1403E4D8`–`0x1403E684` in `trace/s17.state` change frame, clip and
   callback with the Row outlined), not node visibility and not its
-  materials: the
-  five materials' `MTOB`s (model `+0x164..+0x168`, each `+8` and `+0x14`)
-  are byte-identical for `0x800` bytes either way. Both draws of the donor
-  therefore share its look. Whichever of the two Rows is not chosen while
-  the game has More Controls outlined takes its panel and border from
-  Reticle/Camera's Row (`MenOptionControlBt0002`, same node names, source
-  box `[0, 74, 320, 62]`): the PC Row directly, More Controls through the
-  extra part `PcPlainRow` under its own `NN_B0005`. More Controls' label
-  keeps the chosen colour (black) then.
-- The top text batch is reset at `0x00A358B0`; hook `0x00A358B4` queues
-  the label through `0x005CB24C` during its own text-only pass. Context
-  `+0x3C` selects the font; anchor `+0x24`, alignment `+0x5C` and colours
-  are restored with the saved CPU state after the call. Hint substitution
-  runs at `0x00A36FA4`.
-- The label is the host PNG `assets/pc-settings-label.png` (160×24 RGBA,
-  alpha only), resolved beside the executable. It goes into a two-glyph A4
-  CFNU sheet (256×32, U+E000/U+E001, 80 px each), because a single glyph
-  would exceed the signed advance. The label string is those two code points.
-  The marker is `KIULBL02`; an older `KIULABEL` mapping is reused and its
-  pixels are rewritten. `reset_menu_after_load` drops the cached font, so
-  loading a state reinstalls it from the current PNG. A missing PNG is
-  exported once with `create_new` from the artwork below.
-  Headless check on `trace/s16.state`: a striped test PNG replaced the
-  lettering across both halves, and the original was restored afterwards.
-- The fallback/export artwork comes from the player's RomFS, not bundled artwork:
-  LZ11 `/us/menu/220.zrc` and `/us/menu/190.zrc` contain nested darc/CGFX
-  textures `MenOptionOthersBt_Lang0001` and `MenOptionSousaBt_Lang00000`.
-  L4 texture pixels use Morton-swizzled 8×8 tiles, low nibble first.
-  Sliced large P/C/S and small e/g/i/n/s/t become a private A4 CFNU sheet,
-  with native SDK font object and sheet descriptor. The descriptor's `+4`
-  must point back to the font object; the renderer calls through it.
-  Its 8 KiB mapping uses the Base memory pool and corresponding linear
-  address, following APT's shared-font allocation. A marker identifies the
-  restored mapping after save-state loads. This is a label-specific font,
-  not a full alphabet.
-- Controls' Up and Down look the next Row up in its graph inline, at
-  `0x00293848` (slot `+0x90`) and `0x002938CC` (slot `+0xBC`), the current
-  node in `r0` and its name hash at `+0xC`. More Controls' Down and Back's
-  Up select the PC Row while the guest keeps More Controls (`0xFB565F88`)
-  outlined; from it Up stays on More Controls and Down goes to Back
-  (`0x928BEAA4`). The pointer on the PC Row hits More Controls natively.
-- Confirm on the PC Row is the game's own A on More Controls. The hook at
-  the page switch `0x003181C0` sees page 1 with the PC Row chosen, keeps
-  the game's four On/Off bytes and writes the host's; page 0 reads them
-  back and restores the game's. `0x003491A0` returns at once while the
-  page is the host's. A console state saved on the page holds the game's
-  bytes; loading one shows the real More Controls.
-- The hint at `0x00A36FA4` is the host's for the PC Row and, on the PC
-  page, for the outlined Row (`object+0x44`: `0x8D79D12E`, `0x4998C4E7`,
-  `0x4A0C9579`, `0x4A0F894B` from the top) and for Try It!
-  (`0x49B8FADA`). Back keeps the game's.
-- PC page labels: `pc_labels.rs` finds the atlas by its `TXOB`
-  (`'TXOB'` at `+4`, name at `+0xC` as a self-relative offset or a pointer,
-  format 10 at `+0x34`, height `+0x3C`, width `+0x40`, size `+0x44`, pixel
-  address `+0x54`), checks it is the measured USA atlas (FNV-1a
-  `0xA25AA2B4BA7D1924`), and repaints the four Rows' strips and Try It!'s
-  from glyphs cut out of the same atlas. Strips are 32 rows tall with the
-  baseline 29 down (Try It!'s 27): Control Configuration at y 0,
-  Reticle/Camera 32, More Controls 64, Autofire 96, Guide Arrow 128, Aim
-  Assist 160, Shot Homing 192, Try It! 224; icon and label in x 0..150, ON
-  152..202, OFF 205..255. Letters touch, so glyph columns are cut at the
-  least ink. There is no large F (the small one is enlarged) and no
-  B/J/K/P/Q/V/X/Z in this atlas. Writing the pixels in VRAM shows on the
-  next frame with the software and the hardware renderer.
-- L4 pixels are low nibble first within each byte (8×8 Morton tiles). The
-  PC Settings label exporter read them high nibble first, which swapped
-  every pair of columns; its glyph boxes were re-measured on the corrected
-  artwork (15 November). `MenOptionOthersBt_Lang0001` is 256×128 at
-  `0x1F421400` in `trace/s16.state`: Profile, Subtitles, Hidden Options.
-- Painted labels are put back 45 frames after the page is left (while its
-  Rows slide away), at once on entering the game's own More Controls, on
-  leaving Controls, and around a console state save; never when the atlas
-  no longer holds what was painted.
-- The PC page's top-screen models: `MenOptionControlUp0000` is the backdrop
-  and stays; the other `MenOptionControlUp*` models (`Up0004`, `Up0007` on
-  More Controls, `Up0001` on Controls) are the previews and are left out.
-- More: A on Try It! goes through `0x003186E8(object)`; on the PC page the
-  hook leaves the page (`0x003181C0(object, 0, 0)`) and asks the frontend
-  for the PC Preferences. A mouse click's injected call does not visit that
-  entry hook, so `next_menu_call` makes the same substitution.
-- Headless on `trace/s17.state` (`build/pc-page/*.txt`, 15 November):
-  Down×3 reached the PC Row, Down Back, Up the PC Row, Up More Controls;
-  A and a mouse click each opened the PC page (`shown`: `pc page true`)
-  with `pctoggles` values drawn; Right and Left changed Rows and reported
-  them; B returned to Controls on the PC Row with the game's bytes back;
-  A on More Controls opened the real page; the save flag byte stayed
-  `0x52` throughout, and a state saved on the page loaded as the real
-  More Controls. With labels (`labels.txt`, `more.txt`, `mousemore.txt`):
-  the page shows Side Mirror, Tilt Mirror, High Refresh, Frame Rate and
-  More; the game's page entered 20 frames after leaving shows its own
-  labels; keys and a click on More each reported `pc settings opened true`
-  and returned to Controls; clicks on ON and OFF reported changes; a state
-  saved on the page loaded with the game's labels and values. Screenshots
-  at 5:3 and 16:9.
-- Acceptance: `trace/pc-page.txt` asserts all of the above with
-  `expectword`, `expectmenu` and `expectpc` (page shown, PC Preferences
-  asked for, Rows changed). It passes in the interpreter and with
-  `KIUTRACE_LIB=build/decomp-scalar/0004000000030100.so`, where the three
-  new hook sites each report one function interpreted. Keys pressed during
-  a page's slide are dropped: wait 45 frames after B. Physical controller
-  and Windows UI interaction remain unverified.
-- An offline potrace/TrueType experiment extracted 44 large/small letter
-  variants; J/K/Q/Z were absent from the inventoried labels. Tight tracking
-  and low-resolution masks produce rough contours, so traced outlines are
-  not used in the distributed label.
+  materials. In `MenOptionControlBt0006`, `NN_B0001`/`NN_B0004` are the
+  panel and border, `NN_B0002`/`NN_B0003` the Outline, `NN_B0005` the icon
+  and label.
+- Controls' and More Controls' Rows slide by a bone, not their model's
+  world position (which stays 0, 0): `BL_B0000` in the skeleton at model
+  `+0x22C` (world matrices at `+0x40`, 48 bytes each, x at `+0xC`). It is
+  0 at rest and -35 while the Row is away, about 10.3 bottom-screen pixels
+  a unit, and each Row slides in its own time.
+- Text drawn through the font call takes its height from `ctx+0x24`
+  (`[x scale, y scale, x, y]`), unscaled by the projection.
+- L4 texture pixels are Morton-swizzled 8×8 tiles, low nibble first.
+  `MenOptionOthersBt_Lang0001` (256×128, Profile, Subtitles, Hidden
+  Options) and `MenOptionSousaBt_Lang00000` are in LZ11 `/us/menu/220.zrc`
+  and `/us/menu/190.zrc`.
+- A `TXOB` has `'TXOB'` at `+4`, name at `+0xC`, format at `+0x34`, height
+  `+0x3C`, width `+0x40`, size `+0x44`, pixel address `+0x54`.
 
 ## More Controls as a template Screen (spike, 14 November)
 
@@ -1923,6 +1878,54 @@ key as the bundled hints; for this dump it is `D6E028C6175A2B07`.
 Override seeds change function partitioning across nearly every generated
 unit, so a same-tree no-override reference needs a full rebuild; it cannot be
 derived by recompiling a few files. Results are in `docs/decomp/LEDGER.md`.
+
+## Armory — Powers freeze: Windows delivery check (16 November)
+
+`aim_mouse/menu_top.rs::font` filters the shared bottom text pass to the
+native rectangle of the text-bearing Control being replayed. Scissoring
+alone still allocates the other Controls' glyphs in the game's shared draw
+buffer. The existing regression is
+`armory_text_replay_omits_glyphs_owned_by_other_controls`.
+
+The source already contained that filter, but `dist/zakuro-kiu-mouse.exe`
+was an older build (`2e60f1b1deb70fa6ee61a25956305d78b3d86705305cad691488ff97306cf3d5`).
+Rebuilt the Windows release and replaced it; the build and distributed file
+both hash to `6402f46598d661722755672b2ebbf92f8fff105ba7340dfb5944e3eb0a6594b7`.
+All 32 `aim_mouse::menu_top::tests` pass.
+
+Validation uses a copy of the current Windows save files, booted afresh,
+then File Select → Solo Hub → Gear → Powers. Its full board includes Sky
+Jump, Idol Transformation, Land Mine and Quick Charge, matching the user's
+reported inventory. The Windows shared-device GPU replay at 3x responds to
+mapped touches and returns to Gear with Back after 112 frames. The sparse
+historical Powers state was checked separately; it is insufficient by itself
+for this report. Artifacts and scripts are in `build/powers-delivery/`.
+
+While the earlier Zakuro instance was open, launching the replaced `dist`
+path failed with `0xC0000139`; the identical build and fresh-copy paths
+started successfully. After the user closed the earlier instance, the
+distributed path completed its five-frame Windows headless startup check.
+Interactive physical mouse acceptance remains unverified.
+
+## Armory — Powers: independent top artwork layers
+
+`screen_transform.rs::POWERS_TOP` appends five mesh-owned Placements to
+Screen 18, preserving Controls 0–5 and Details card 6. `MenEquipUp0200`
+owns Paper background (7); `MenEquipUp0202` owns Power set board (8).
+`MenEquipUp0210` nodes `NN_U0000`, `ML_B0000`, and `Wbase` own Power
+preview (9), Power shape (10), and Description background (11), respectively.
+The preview's grid and icon frame share `NN_U0000`. The remaining
+`MenEquipUp0211` decoration and text stay in Details card.
+
+`menu_top.rs::text` skips `TOP_TEXT` (`00727F10` → `00727F14`) for
+row-declared mesh-only top layers. Calling the text renderer and filtering
+its glyph calls afterward was insufficient when adding Powers' artwork
+replays: the Screen stopped responding after the first drawing interval.
+The earlier glyph guard remains for calls that reach it outside this pass.
+The new regression exercises the early skip for Gear and Powers artwork.
+Isolation, geometry/visibility edits, and Back replays are under
+`build/powers-top-layers/`; validation uses the current full save's Powers
+board rather than only the sparse historical state.
 
 ## The game's menu identity (MENUID)
 

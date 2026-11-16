@@ -170,5 +170,6 @@ Canonical names for the Screens a change request can name. Use the game's visibl
 | Idol Toss | Scripted Menu | Two instances: from Solo Hub and from Vault |
 | Treasure Hunt | Scripted Menu | Tile board |
 | Vault | Scripted Menu | Idols, Music Gallery, Power Portrait, Offering, Idol Toss, Records, AR, Back |
+| Idols | Scripted Menu | Idol List and one idol's description inside Vault; Rows, Back, AR |
 | Music Gallery | Scripted Menu | Track List inside Vault |
 | Fiend's Cauldron | Scripted Menu | Bet bar, pot, Move Out, Back |
