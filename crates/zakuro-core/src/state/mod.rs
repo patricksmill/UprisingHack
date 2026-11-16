@@ -93,16 +93,6 @@ fn images(system: &System) -> Images {
 impl System {
     /// the console as it is, between frames, as a saved state.
     pub fn save_state(&mut self) -> Result<Vec<u8>, String> {
-        // KIU's PC page shows the host's values and labels in the game's own
-        // memory: a state keeps the game's, as a load forgets the page was
-        // the host's
-        crate::aim_mouse::pc_page_before_save(self);
-        let saved = self.save_console_state();
-        crate::aim_mouse::pc_page_after_save(self);
-        saved
-    }
-
-    fn save_console_state(&mut self) -> Result<Vec<u8>, String> {
         // what the host's GPU drew comes down first, so that memory holds
         // all of it
         let linear_base = self.kernel.linear_base;

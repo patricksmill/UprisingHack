@@ -24,7 +24,6 @@ bitflags.workspace = true
 recomp-abi.workspace = true
 rayon.workspace = true
 ab_glyph = "0.2"
-png = "0.18.1"
 
 [dev-dependencies]
 env_logger = "0.11"

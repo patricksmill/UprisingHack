@@ -2132,9 +2132,6 @@ impl App {
         if let Some(recorder) = &mut game.recorder {
             recorder.record(input);
         }
-        if let Some(mouse) = game.system.aim_mouse.as_mut() {
-            mouse.set_pc_toggles(self.settings.pc_toggles());
-        }
         game.system.set_input(input);
         let pictures = game.system.pictures();
         let outcome = game.system.run_frame();
@@ -2145,10 +2142,8 @@ impl App {
         if !high_refresh || game.system.pictures() != pictures {
             game.count_frame();
         }
-        // KIU's PC page: its More opens the PC Preferences, with the pointer
-        // free, and its Rows hand over what the player set since the last frame.
+        // KIU's PC Settings Row opens the PC Preferences, with the pointer free.
         let open_settings = game.system.aim_mouse.as_mut().is_some_and(|mouse| mouse.take_open_settings());
-        let pc_toggles = game.system.aim_mouse.as_mut().and_then(|mouse| mouse.take_pc_toggles());
         let sound = game.system.take_audio();
         // fast forward plays no sound, there is too much of it too soon
         if let (Some(audio), false) = (&self.audio, self.fast_forwarding) {
@@ -2176,12 +2171,6 @@ impl App {
             self.menus.settings_open = true;
             self.set_aim_captured(false);
             self.keyboard.release();
-        }
-        if let Some(toggles) = pc_toggles {
-            self.settings.set_pc_toggles(toggles);
-            if let Err(error) = self.settings.save() {
-                log::warn!("could not keep the PC page's choices: {error}");
-            }
         }
     }
 

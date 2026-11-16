@@ -13,76 +13,19 @@ pub(super) const FINISHED: u32 = 0x0072A0B4;
 pub(super) const FONT_CALL: [u32; 7] = [0x00A36E64, 0x00A36EC8, 0x00A36EE4, 0x00A36F00, 0x00A36F1C, 0x00A36F74, 0x00A36FA4];
 pub(super) const FONT_DONE: [u32; 7] = [0x00A36E68, 0x00A36ECC, 0x00A36EE8, 0x00A36F04, 0x00A36F20, 0x00A36F78, 0x00A36FA8];
 
-/// the PC Settings Row on Controls: More Controls' Row model drawn a second
-/// time, below it.
+/// the PC Settings Row on Other: Subtitles' Row model drawn a second time.
 pub(super) const PC_SETTINGS_ROW: &str = "PcSettingsRow";
-/// the Row the PC Settings Row is drawn from and that the game outlines for
-/// it, the model lighting its Outline, and Controls' Back.
-const PC_DONOR: &str = "MenOptionControlBt0006";
-/// a Row's look, chosen or not, is its model's own animation, so both
-/// draws of the donor share it. Where one of the two must look unchosen
-/// while the game has the donor outlined, its panel and border are drawn
-/// from Reticle/Camera's Row instead, which is then not the one chosen.
-const PC_SIBLING: &str = "MenOptionControlBt0002";
-const PC_SIBLING_BOX: [f32; 4] = [0.0, 74.0, 320.0, 62.0];
-/// More Controls' panel and border drawn from that Row, under its own
-/// label, while the PC Settings Row is the one chosen.
-const PC_PLAIN_ROW: &str = "PcPlainRow";
-const PC_DONOR_HASH: u32 = 0xFB565F88;
-const CONTROLS_BACK: &str = "MenOptionControlBt9999";
-const CONTROLS_BACK_HASH: u32 = 0x928BEAA4;
-// Two halves keep the PNG within the native font's signed advance limit.
-const PC_SETTINGS_LABEL: &str = "\u{e000}\u{e001}";
+const PC_SETTINGS_LABEL: &str = "PC Settings";
 const PC_SETTINGS_HINT: &str = "Change controls, aiming, gyro and display settings.";
-/// Controls' Up and Down keys look the next Row up in its graph here, the
-/// current node in r0 and the next one's name at the direction's slot.
-const CONTROLS_UP: (u32, u32) = (0x00293848, 0x90);
-const CONTROLS_DOWN: (u32, u32) = (0x002938CC, 0xBC);
-/// Controls' page switch, 0x003181C0(object, page, 0): page 1 is More
-/// Controls, page 0 Controls. Native A on More Controls and B on its page
-/// both come through here.
-pub(super) const CONTROLS_PAGE: u32 = 0x003181C0;
-/// packs More Controls' four On/Off bytes into the save's flags,
-/// 0x003491A0(object).
-pub(super) const CONTROLS_COMMIT: u32 = 0x003491A0;
-/// More Controls' On/Off bytes on the object, in its Rows' order from the
-/// top: Guide Arrow, Shot Homing, Aim Assist, Autofire.
-const MORE_CONTROLS_VALUES: [u32; 4] = [0x11A, 0x11C, 0x11B, 0x119];
-/// the hashes of those Rows' names, in the same order.
-const MORE_CONTROLS_ROWS: [u32; 4] = [0x8D79D12E, 0x4998C4E7, 0x4A0C9579, 0x4A0F894B];
-/// the PC page's Rows, in the same order: their labels, set in the game's
-/// own lettering (`pc_labels`), and their hints.
-pub(super) const PC_PAGE_LABELS: [&str; 4] = ["Side Mirror", "Tilt Mirror", "High Refresh", "Frame Rate"];
-const PC_PAGE_HINTS: [&str; 4] = [
-    "Mirror the gyro's sideways aiming.",
-    "Mirror the gyro's up and down aiming.",
-    "Draw the frames in between for a smoother picture.",
-    "Show the frame rate over the game.",
-];
-/// Try It!, which the PC page shows as More: it leaves the page and opens
-/// the rest of the PC Preferences.
-const TRY_IT: u32 = 0x49B8FADA;
-const PC_MORE_HINT: &str = "Change bindings, sensitivity and the other PC settings.";
-/// Controls' A, 0x003186E8(object), on the Row or button outlined.
-pub(super) const CONTROLS_A: u32 = 0x003186E8;
-/// Controls' top-screen models: the backdrop, and the previews of its and
-/// More Controls' Rows (Pit, the arrow and the bubble), which the PC page
-/// does not show.
-const CONTROLS_TOP: &str = "MenOptionControlUp";
-const CONTROLS_BACKDROP: &str = "MenOptionControlUp0000";
-/// how long the PC page's labels stay painted after it is left, while its
-/// Rows slide away.
-const PC_LABELS_LINGER: u64 = 45;
-
-/// the PC page's labels painted over the game's atlas: where its pixels
-/// are, the game's own and the painted ones, and the frame to put the
-/// game's back at once the page has been left.
-struct PcLabels {
-    at: u32,
-    original: Vec<u8>,
-    painted: Vec<u8>,
-    until: Option<u64>,
-}
+/// Other's key moves outline a Row with OUTLINE_OTHER_PART, called from
+/// these two places for Down and Up, with a fresh {hash, &name, 0x20, name}.
+const OTHER_DOWN: u32 = 0x0023C414;
+const OTHER_UP: u32 = 0x0023C358;
+/// Other's A, on the Row the game has outlined.
+pub(super) const OTHER_A: u32 = 0x002D50FC;
+const SUBTITLES: (u32, &str) = (0xF28BAA60, "caption");
+const SPOTPASS: (u32, &str) = (0x9E610C53, "itunomani");
+const BACK: (u32, &str) = (0x928BEAA4, "return");
 /// in the top text loop, just after it empties the text batch (0x005C79CC
 /// at 0x00A358B0) and before it packs and draws it: glyphs queued here show.
 pub(super) const TEXT_BATCH_EMPTIED: u32 = 0x00A358B4;
@@ -131,17 +74,9 @@ pub(super) struct MenuTop {
     label_font: Option<u32>,
     /// the hint call's stack pointer, lowered below the PC Settings hint.
     hint_sp: Option<u32>,
-    /// the keys moved onto the PC Settings Row: the game has More Controls
+    /// the keys moved onto the PC Settings Row: the game has Subtitles
     /// outlined, and Up, Down and A act as if from the PC Settings Row.
     pub(super) pc_key: bool,
-    /// More Controls is shown as the PC page: the Options object, and the
-    /// game's own four On/Off bytes to put back when the page is left.
-    pc_page: Option<(u32, [u8; 4])>,
-    pc_labels: Option<PcLabels>,
-    /// the game has the PC Settings Row's donor outlined, and whether the
-    /// PC Settings Row is the one chosen there.
-    pc_donor_outlined: bool,
-    pc_chosen: bool,
     /// Chapter Select's Rows: the chapter number of each part from
     /// `CHAPTER_FIRST_ROW` on, the first one shown, the wheel's leftover,
     /// how many are open and fit, and the chapter last outlined.
@@ -222,7 +157,7 @@ impl MenuTop {
 
     fn available(&self, part: &Part) -> bool {
         match part.model {
-            Some("MenOptionControlBt0001" | "MenOptionControlBt0002" | "MenOptionControlBt0006" | PC_SETTINGS_ROW | PC_PLAIN_ROW) => !self.controls_more,
+            Some("MenOptionControlBt0001" | "MenOptionControlBt0002" | "MenOptionControlBt0006") => !self.controls_more,
             Some("MenOptionControlBt0003" | "MenOptionControlBt0004" | "MenOptionControlBt0005" |
                 "MenOptionControlBt0007" | "MenOptionControlBt0008") => self.controls_more,
             _ => true,
@@ -403,13 +338,13 @@ fn button_hash(model: &str) -> Option<u32> {
         "MenOptionTopBt9999" => 0x928BEAA4,
         "MenOptionOtherBt0001" => 0x49C14849,
         "MenOptionOtherBt0002" => 0xF28BAA60,
+        // Drawn from Subtitles' Row, so the game's hit test finds Subtitles
+        // there; which of the two the pointer is on is the candidate's part.
+        PC_SETTINGS_ROW => 0xF28BAA60,
         "MenOptionOtherBt0004" => 0x9E610C53,
         "MenOptionControlBt0001" => 0xDE4F96DF,
         "MenOptionControlBt0002" => 0x56866028,
-        // The PC Settings Row is drawn from More Controls' Row, so the game's
-        // hit test finds More Controls there; which of the two the pointer
-        // is on is the candidate's part.
-        "MenOptionControlBt0006" | PC_SETTINGS_ROW => PC_DONOR_HASH,
+        "MenOptionControlBt0006" => 0xFB565F88,
         "MenOptionControlBt0003" => 0x4A0F894B,
         "MenOptionControlBt0004" => 0x8D79D12E,
         "MenOptionControlBt0007" => 0x4A0C9579,
@@ -646,13 +581,12 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
             parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
         }
         if index == 11 { parts[0].model = None; }
-        if index == 5 {
-            // The PC Settings Row: More Controls' Row drawn again under it,
+        if index == 4 {
+            // The PC Settings Row: Subtitles' Row drawn again under SpotPass,
             // added after the backdrop so saved editor indices stay put.
-            // On the Controls page Back moves down to make room for it
-            // (`seat_pc_settings`).
-            let from = [0.0, 136.0, 320.0, 62.0];
-            let [x, y] = board.map_point([0.0, 198.0]);
+            // Back moves down to make room for it.
+            let from = [0.0, 60.0, 320.0, 60.0];
+            let [x, y] = board.map_point([0.0, 180.0]);
             let to = [x, y, from[2] * board.to[2] / 320.0, from[3] * board.to[3] / 240.0];
             pc_settings.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(PC_SETTINGS_ROW),
                 place: Placement { from, to } });
@@ -661,11 +595,8 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
             let text = [(to[0] * 400.0 / width).min(400.0 - to[2]).max(0.0), to[1], to[2], to[3]];
             pc_settings.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: None,
                 place: Placement { from: text, to } });
-            // More Controls' plain panel, shown while the PC Settings Row is
-            // chosen (`seat_pc_settings`).
-            if let Some(more) = parts.iter().find(|part| part.model == Some(PC_DONOR)).map(|part| part.place.to) {
-                pc_settings.push(Part { visible: false, backdrop: false, chapter: false, idol: None, top: false, model: Some(PC_PLAIN_ROW),
-                    place: Placement { from: PC_SIBLING_BOX, to: more } });
+            if let Some(back) = parts.iter_mut().find(|part| part.model == Some("MenOptionOtherBt9999")) {
+                back.place.to[1] = to[1] + to[3] + 2.0;
             }
         }
     } else if kind.is_some_and(LayoutKind::heart) {
@@ -721,21 +652,6 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
     // After the backdrop, so every saved index stays put.
     parts.extend(pc_settings);
     (native, parts)
-}
-
-/// Controls and More Controls share their parts. On Controls, Back moves
-/// below the PC Settings Row; on More Controls the Row and its label are
-/// not there, and Back stays where the game has it.
-fn seat_pc_settings(parts: &mut [Part], controls_more: bool, chosen: bool) {
-    let Some(row) = parts.iter().position(|part| part.model == Some(PC_SETTINGS_ROW)) else { return };
-    let to = parts[row].place.to;
-    if let Some(plain) = parts.iter_mut().find(|part| part.model == Some(PC_PLAIN_ROW)) { plain.visible = chosen && !controls_more; }
-    if controls_more {
-        // The label is the part after its Row.
-        for part in parts.iter_mut().skip(row).take(2) { part.visible = false; }
-    } else if let Some(back) = parts.iter_mut().find(|part| part.model == Some(CONTROLS_BACK)) {
-        back.place.to[1] = to[1] + to[3] + 2.0;
-    }
 }
 
 fn layout_with_dialog(index: usize, width: f32, idol_dialog: bool) -> (Placement, Vec<Part>) {
@@ -870,29 +786,15 @@ pub(super) fn navigate(system: &mut System, pc: u32) {
         }
         return;
     }
-    if pc == CONTROLS_PAGE {
-        pc_page_switch(system);
+    if pc == OUTLINE_OTHER_PART && matches!(system.cpu.regs[14], OTHER_DOWN | OTHER_UP) {
+        navigate_pc_settings(system);
         return;
     }
-    if pc == CONTROLS_COMMIT {
-        // The PC page's values are the host's: the save keeps the game's.
-        if system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menu_top.pc_page.is_some_and(|(object, _)| object == system.cpu.regs[0])) {
-            system.cpu.regs[15] = system.cpu.regs[14];
-        }
-        return;
-    }
-    if pc == CONTROLS_A {
-        // A on the PC page's More (the game's Try It!): leave the page as B
-        // does, and have the frontend open the rest of the PC Preferences.
-        let object = system.cpu.regs[0];
-        if use_pc_more(system, object) {
-            system.cpu.regs[1] = 0;
-            system.cpu.regs[2] = 0;
-            system.cpu.regs[15] = CONTROLS_PAGE;
-        }
-        return;
-    }
-    if (pc == CONTROLS_UP.0 || pc == CONTROLS_DOWN.0) && navigate_pc_settings(system, pc == CONTROLS_DOWN.0) {
+    if pc == OTHER_A && system.aim_mouse.as_ref().is_some_and(|mouse| mouse.pointer.is_none() && mouse.menu_top.pc_key) {
+        // A on the PC Settings Row, which the game outlines as Subtitles.
+        let mouse = system.aim_mouse.as_mut().unwrap();
+        mouse.open_settings_requested = true;
+        system.cpu.regs[15] = system.cpu.regs[14];
         return;
     }
     if matches!(pc, 0x002D590C | 0x002D5B40 | 0x002D5D74 | 0x002D699C) {
@@ -1090,25 +992,16 @@ impl AimMouse {
         self.menu_top.row_chapter(index)
     }
 
-    /// Whether the pointer is on the PC Settings Row rather than More
-    /// Controls.
+    /// Whether the pointer is on the PC Settings Row rather than Subtitles.
     pub(super) fn pc_settings_hovered(&self) -> bool {
         self.pointer.is_some() && self.menu_top.candidates.get(self.menu_top.candidate)
-            .is_some_and(|&(index, _)| self.menu_top.parts.get(index).is_some_and(|part|
-                part.model == Some(PC_SETTINGS_ROW) && self.menu_top.enabled(part)))
+            .is_some_and(|&(index, _)| self.menu_top.parts.get(index).is_some_and(|part| part.model == Some(PC_SETTINGS_ROW)))
     }
 
     /// Whether the PC Settings Row is the chosen one, by pointer or by keys:
-    /// it shows the Outline the game gives More Controls, and its own hint.
-    /// Never on the More Controls page, where the Row is not shown.
+    /// it shows the Outline and the hint the game gives Subtitles.
     pub(super) fn pc_settings_selected(&self) -> bool {
-        if self.menu_top.controls_more { return false; }
         if self.pointer.is_some() { self.pc_settings_hovered() } else { self.menu_top.pc_key }
-    }
-
-    /// Whether More Controls is shown as the PC page.
-    pub fn pc_page_shown(&self) -> bool {
-        self.menu_top.pc_page.is_some() && self.menu_top.controls_more
     }
 
     /// Scrolls Chapter Select's row by wheel steps, positive right. Only
@@ -1392,12 +1285,6 @@ pub(super) fn begin(system: &mut System) -> bool {
         mouse.menu_top.chapter_outlined = None;
     }
     let (mut native, mut parts) = layout_with_dialog(index, 400.0 * mouse.widen, idol_dialog);
-    let pc_donor_outlined = index == 5 && !controls_more && read_word(system, object + BUTTONS_OUTLINED) == PC_DONOR_HASH;
-    let mouse = system.aim_mouse.as_mut().unwrap();
-    let pc_chosen = index == 5 && !controls_more && pc_donor_outlined && mouse.pc_settings_selected();
-    mouse.menu_top.pc_donor_outlined = pc_donor_outlined;
-    mouse.menu_top.pc_chosen = pc_chosen;
-    if index == 5 { seat_pc_settings(&mut parts, controls_more, pc_chosen); }
     for &(screen, part, to) in &mouse.menu_top.overrides {
         if screen == index {
             if let Some(part) = parts.get_mut(part) {
@@ -1444,15 +1331,8 @@ pub(super) fn begin(system: &mut System) -> bool {
     mouse.menu_top.passthrough = native_touch;
     mouse.menu_top.started = system.frames;
     mouse.menu_top.parts = parts;
-    // The keys' PC Settings choice lasts while Controls stays shown, the
-    // PC page while its object does.
-    if index != 5 { mouse.menu_top.pc_key = false; }
-    if mouse.menu_top.pc_page.is_some_and(|(owner, _)| index != 5 || owner != object) { mouse.menu_top.pc_page = None; }
-    let frames = system.frames;
-    if mouse.menu_top.pc_labels.as_ref().is_some_and(|labels| index != 5 || labels.until.is_some_and(|until| frames >= until)) {
-        restore_pc_labels(system);
-    }
-    let mouse = system.aim_mouse.as_mut().unwrap();
+    // The keys' PC Settings choice lasts while Other stays shown.
+    if index != 4 { mouse.menu_top.pc_key = false; }
     let order = if mouse.menu_top.file_select() {
         // Background and information first; interactive Controls above them.
         [7, 8, 9, 10, 11, 12, 13, 14, 15, 6, 0, 1, 2, 3, 4, 5].into_iter().filter(|&index|
@@ -1462,17 +1342,13 @@ pub(super) fn begin(system: &mut System) -> bool {
         draw_order(system, bottom, &parts)
     };
     system.aim_mouse.as_mut().unwrap().menu_top.draw_order = order;
-    // What the player sets on the PC page counts at once, not on leaving.
-    if controls_more { read_pc_page(system); }
     let mut moved = Vec::new();
     place_scene(system, top, top, native, true, false, &mut moved);
     if system.aim_mouse.as_ref().unwrap().menu_top.file_select() {
         file_models(system, top, None, &mut moved);
     }
     if index == 12 { filter_models(system, top, true, false, &mut moved, |name| name != "MenCmnUpHeart0000"); }
-    if system.aim_mouse.as_ref().unwrap().pc_page_shown() {
-        filter_models(system, top, true, false, &mut moved, |name| !name.starts_with(CONTROLS_TOP) || name == CONTROLS_BACKDROP);
-    }
+    if index == 1 { chapter_models(system, top, true, false, None, &mut moved); }
     let mouse = system.aim_mouse.as_mut().unwrap();
     mouse.menu_top.native = moved;
     // A hidden backdrop keeps the game's pass but clips all of it away.
@@ -1790,34 +1666,19 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
     false
 }
 
-/// the host's hint in place of the game's: the PC Settings Row's on
-/// Controls, and on the PC page that of the Row outlined (Back
-/// keeps the game's, More has its own).
-fn pc_hint(system: &mut System) -> Option<&'static str> {
-    let mouse = system.aim_mouse.as_ref()?;
-    if mouse.pc_settings_selected() { return Some(PC_SETTINGS_HINT); }
-    let (object, _) = mouse.menu_top.pc_page.filter(|_| mouse.menu_top.controls_more)?;
-    let outlined = read_word(system, object + BUTTONS_OUTLINED);
-    if outlined == TRY_IT { return Some(PC_MORE_HINT); }
-    MORE_CONTROLS_ROWS.iter().position(|&row| row == outlined).map(|row| PC_PAGE_HINTS[row])
-}
-
 pub(super) fn font(system: &mut System) {
-    // On the PC Settings Row the game shows More Controls' hint, and on the
-    // PC page its own Rows': draw the host's, from the stack below the
-    // caller's, which font_done puts back.
-    if system.cpu.regs[15] == 0x00A36FA4 {
-        if let Some(hint) = pc_hint(system) {
-            let sp = system.cpu.regs[13];
-            let utf16: Vec<u8> = hint.encode_utf16().flat_map(u16::to_le_bytes).collect();
-            let text = (sp - utf16.len() as u32 - 0x10) & !7;
-            system.memory.write_bytes(text, &utf16);
-            system.aim_mouse.as_mut().unwrap().menu_top.hint_sp = Some(sp);
-            system.cpu.regs[1] = text;
-            system.cpu.regs[2] = hint.encode_utf16().count() as u32;
-            system.cpu.regs[13] = text - 8;
-            return;
-        }
+    // On the PC Settings Row the game shows Subtitles' hint: draw its own,
+    // from the stack below the caller's, which font_done puts back.
+    if system.cpu.regs[15] == 0x00A36FA4 && system.aim_mouse.as_ref().is_some_and(|mouse| mouse.pc_settings_selected()) {
+        let sp = system.cpu.regs[13];
+        let utf16: Vec<u8> = PC_SETTINGS_HINT.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let text = (sp - utf16.len() as u32 - 0x10) & !7;
+        system.memory.write_bytes(text, &utf16);
+        system.aim_mouse.as_mut().unwrap().menu_top.hint_sp = Some(sp);
+        system.cpu.regs[1] = text;
+        system.cpu.regs[2] = PC_SETTINGS_HINT.encode_utf16().count() as u32;
+        system.cpu.regs[13] = text - 8;
+        return;
     }
     if super::cauldron_text(system) { return; }
     if let Some(Drawing::MenuTop(step)) = drawing(system) {
@@ -1906,184 +1767,29 @@ pub(super) fn font(system: &mut System) {
     system.aim_mouse.as_mut().unwrap().menu_top.font_back = Some((at, old));
 }
 
-/// Controls' key moves around the PC Settings Row, which the game does not
-/// know: More Controls' Down and Back's Up land on it (the game keeps More
-/// Controls outlined), and from it Up goes to More Controls and Down to
-/// Back. The graph lookup is pointed at the node to outline before the game
-/// reads it. Returns whether it took the move.
-fn navigate_pc_settings(system: &mut System, down: bool) -> bool {
-    let record = system.cpu.regs[0];
-    let current = read_word(system, record + 0xC);
-    let Some(mouse) = system.aim_mouse.as_ref().filter(|mouse| mouse.menus_on_top
-        && mouse.menu_screen.is_some_and(|(screen, ..)| screen == 5)) else { return false };
-    if !mouse.menu_top.parts.iter().any(|part| part.model == Some(PC_SETTINGS_ROW) && mouse.menu_top.enabled(part)) { return false; }
+/// Other's key moves around the PC Settings Row, which the game does not
+/// know: SpotPass's Down and Back's Up land on it (the game outlines
+/// Subtitles), and from it Up goes to SpotPass and Down to Back. The move's
+/// record is rewritten in place before the game uses it.
+fn navigate_pc_settings(system: &mut System) {
+    let (object, record, down) = (system.cpu.regs[0], system.cpu.regs[1], system.cpu.regs[14] == OTHER_DOWN);
+    let Some(mouse) = system.aim_mouse.as_ref() else { return };
+    if !mouse.menu_top.parts.iter().any(|part| part.model == Some(PC_SETTINGS_ROW)) { return; }
     let on_pc = mouse.menu_top.pc_key;
-    // Where the move ends, by the Row the game is to outline: More Controls
-    // for the PC Settings Row itself and for the move up off it.
-    let (target, lands_on_pc) = match (on_pc, down) {
-        (true, true) => (CONTROLS_BACK_HASH, false),
-        (true, false) => (PC_DONOR_HASH, false),
-        (false, true) if current == PC_DONOR_HASH => (PC_DONOR_HASH, true),
-        (false, false) if current == CONTROLS_BACK_HASH => (PC_DONOR_HASH, true),
-        _ => return false,
+    let current = read_word(system, object + BUTTONS_OUTLINED);
+    let target = match (on_pc, down) {
+        (true, true) => Some(BACK),
+        (true, false) => Some(SPOTPASS),
+        (false, true) if current == SPOTPASS.0 => Some(SUBTITLES),
+        (false, false) if current == BACK.0 => Some(SUBTITLES),
+        _ => None,
     };
-    let slot = if down { CONTROLS_DOWN.1 } else { CONTROLS_UP.1 };
-    let mut at = record;
-    for _ in 0..128 {
-        if at == 0 || !system.memory.is_readable(at, 0x38) { return false; }
-        if read_word(system, at + 0xC) == target {
-            system.cpu.regs[0] = at + 0xC - slot;
-            system.aim_mouse.as_mut().unwrap().menu_top.pc_key = lands_on_pc;
-            return true;
-        }
-        at = read_word(system, at + 4);
-        if at == record { return false; }
-    }
-    false
-}
-
-/// More Controls shown as the PC page. Its page switch is about to run: on
-/// the way in from the PC Settings Row the host's values replace the game's
-/// four On/Off bytes, which are kept; on the way out they are read back and
-/// the game's own return, so its save never sees the host's.
-fn pc_page_switch(system: &mut System) {
-    let (object, page) = (system.cpu.regs[0], system.cpu.regs[1]);
-    let Some(mouse) = system.aim_mouse.as_ref().filter(|mouse| mouse.menus_on_top
-        && mouse.menu_screen.is_some_and(|(screen, owner, ..)| screen == 5 && owner == object)) else { return };
-    match (page, mouse.menu_top.pc_page) {
-        (1, None) if mouse.pc_settings_selected() => {
-            let host = mouse.pc_toggles;
-            let mut game = [0u8; 4];
-            for (byte, offset) in game.iter_mut().zip(MORE_CONTROLS_VALUES) {
-                system.memory.read_bytes(object + offset, std::slice::from_mut(byte));
-            }
-            for (on, offset) in host.into_iter().zip(MORE_CONTROLS_VALUES) {
-                system.memory.write_bytes(object + offset, &[on as u8]);
-            }
-            let mouse = system.aim_mouse.as_mut().unwrap();
-            mouse.menu_top.pc_page = Some((object, game));
-            // Back on Controls, the keys are on the PC Settings Row again.
-            mouse.menu_top.pc_key = true;
-            paint_pc_labels(system);
-        }
-        // The game's own More Controls, perhaps before the labels' linger ran out.
-        (1, None) => restore_pc_labels(system),
-        (0, Some((owner, _))) if owner == object => leave_pc_page(system),
-        _ => {}
-    }
-}
-
-/// the PC page is being left for Controls: its values are the host's from
-/// here, the game's own On/Off bytes return, and the labels stay painted
-/// while the Rows slide away.
-fn leave_pc_page(system: &mut System) {
-    read_pc_page(system);
-    let Some((object, game)) = system.aim_mouse.as_mut().and_then(|mouse| mouse.menu_top.pc_page.take()) else { return };
-    for (byte, offset) in game.into_iter().zip(MORE_CONTROLS_VALUES) {
-        system.memory.write_bytes(object + offset, &[byte]);
-    }
-    let until = system.frames + PC_LABELS_LINGER;
-    if let Some(labels) = system.aim_mouse.as_mut().unwrap().menu_top.pc_labels.as_mut() { labels.until = Some(until); }
-}
-
-/// whether A or a click is on the PC page's More (the game's Try It!). If
-/// so the page is left, as B leaves it, and the frontend is to open the
-/// rest of the PC Preferences: the caller runs `CONTROLS_PAGE(object, 0, 0)`
-/// in place of the game's A.
-pub(super) fn use_pc_more(system: &mut System, object: u32) -> bool {
-    if !system.aim_mouse.as_ref().is_some_and(|mouse| mouse.pc_page_shown()
-        && mouse.menu_top.pc_page.is_some_and(|(owner, _)| owner == object))
-        || read_word(system, object + BUTTONS_OUTLINED) != TRY_IT { return false; }
-    leave_pc_page(system);
-    system.aim_mouse.as_mut().unwrap().open_settings_requested = true;
-    true
-}
-
-/// paints the PC page's labels over More Controls' in the game's atlas,
-/// keeping the game's pixels to put back. Without the atlas, or with one
-/// that is not the one measured, the Rows keep the game's labels.
-fn paint_pc_labels(system: &mut System) {
-    if let Some(labels) = system.aim_mouse.as_mut().and_then(|mouse| mouse.menu_top.pc_labels.as_mut()) {
-        // Still painted from the last visit.
-        labels.until = None;
-        return;
-    }
-    let Some(at) = super::pc_labels::find(system) else {
-        log::warn!("the PC page keeps More Controls' labels: its label atlas was not found");
-        return;
-    };
-    let mut original = vec![0u8; super::pc_labels::SIZE];
-    system.memory.read_bytes(at, &mut original);
-    let Some(painted) = super::pc_labels::repaint(&original, PC_PAGE_LABELS) else {
-        log::warn!("the PC page keeps More Controls' labels: its label atlas is not the one its lettering was measured on");
-        return;
-    };
-    system.memory.write_bytes(at, &painted);
-    system.aim_mouse.as_mut().unwrap().menu_top.pc_labels = Some(PcLabels { at, original, painted, until: None });
-}
-
-/// whether the atlas still holds what was painted: the game may have let
-/// its memory go since.
-fn pc_labels_painted(system: &mut System, labels: &PcLabels) -> bool {
-    let mut now = vec![0u8; labels.painted.len()];
-    system.memory.is_readable(labels.at, now.len() as u32) && {
-        system.memory.read_bytes(labels.at, &mut now);
-        now == labels.painted
-    }
-}
-
-/// puts the game's own labels back, if the painted ones are still there.
-fn restore_pc_labels(system: &mut System) {
-    let Some(labels) = system.aim_mouse.as_mut().and_then(|mouse| mouse.menu_top.pc_labels.take()) else { return };
-    if pc_labels_painted(system, &labels) { system.memory.write_bytes(labels.at, &labels.original); }
-}
-
-/// a console state keeps the game's own On/Off bytes and labels, as a load
-/// forgets the page was the host's: they are in memory from `before_save`
-/// until `after_save` shows the host's again.
-pub(crate) fn pc_page_before_save(system: &mut System) {
-    swap_pc_page(system);
-    let Some(labels) = system.aim_mouse.as_mut().and_then(|mouse| mouse.menu_top.pc_labels.take()) else { return };
-    if pc_labels_painted(system, &labels) {
-        system.memory.write_bytes(labels.at, &labels.original);
-        system.aim_mouse.as_mut().unwrap().menu_top.pc_labels = Some(labels);
-    }
-}
-
-pub(crate) fn pc_page_after_save(system: &mut System) {
-    swap_pc_page(system);
-    let Some((at, painted)) = system.aim_mouse.as_ref().and_then(|mouse| mouse.menu_top.pc_labels.as_ref())
-        .map(|labels| (labels.at, labels.painted.clone())) else { return };
-    system.memory.write_bytes(at, &painted);
-}
-
-/// trades the PC page's four On/Off bytes on the object with the ones kept:
-/// once for the game's own to be in memory, again for the host's.
-fn swap_pc_page(system: &mut System) {
-    let Some((object, kept)) = system.aim_mouse.as_ref().and_then(|mouse| mouse.menu_top.pc_page) else { return };
-    let mut shown = [0u8; 4];
-    for ((byte, kept), offset) in shown.iter_mut().zip(kept).zip(MORE_CONTROLS_VALUES) {
-        system.memory.read_bytes(object + offset, std::slice::from_mut(byte));
-        system.memory.write_bytes(object + offset, &[kept]);
-    }
-    system.aim_mouse.as_mut().unwrap().menu_top.pc_page = Some((object, shown));
-}
-
-/// takes the PC page's four On/Off bytes as the host's values, noting a
-/// change for the frontend to keep.
-fn read_pc_page(system: &mut System) {
-    let Some((object, _)) = system.aim_mouse.as_ref().and_then(|mouse| mouse.menu_top.pc_page) else { return };
-    let mut shown = [false; 4];
-    for (on, offset) in shown.iter_mut().zip(MORE_CONTROLS_VALUES) {
-        let mut byte = [0u8];
-        system.memory.read_bytes(object + offset, &mut byte);
-        *on = byte[0] != 0;
-    }
-    let mouse = system.aim_mouse.as_mut().unwrap();
-    if mouse.pc_toggles != shown {
-        mouse.pc_toggles = shown;
-        mouse.pc_toggles_changed = true;
-    }
+    system.aim_mouse.as_mut().unwrap().menu_top.pc_key = !on_pc && target.is_some();
+    let Some((hash, name)) = target else { return };
+    let mut text = [0u8; 0x20];
+    text[..name.len()].copy_from_slice(name.as_bytes());
+    system.memory.write_bytes(record, &hash.to_le_bytes());
+    system.memory.write_bytes(record + 0xC, &text);
 }
 
 /// queues the PC Settings Row's label into the top text batch the loop just
@@ -2100,8 +1806,7 @@ pub(super) fn pc_settings_label(system: &mut System) {
         return;
     }
     // Only in the label's own text pass, drawn over the Row after it.
-    let Some(row) = mouse.menu_top.parts.iter().find(|part| part.model == Some(PC_SETTINGS_ROW) && mouse.menu_top.enabled(part))
-        .map(|part| part.place.to) else { return };
+    let Some(row) = mouse.menu_top.parts.iter().find(|part| part.model == Some(PC_SETTINGS_ROW)).map(|part| part.place.to) else { return };
     let Some(label) = step.and_then(|step| mouse.menu_top.part(step / 8))
         .filter(|part| part.top && part.model.is_none() && !part.backdrop && part.place.to == row).map(|part| part.place.from) else { return };
     let cached_font = mouse.menu_top.label_font;
@@ -2248,15 +1953,6 @@ pub(super) fn draw(system: &mut System) -> bool {
         }
         return true;
     };
-    // The PC Settings Row not chosen while its donor is: drawn from the
-    // sibling Row's place. Input keeps the donor's, which the game hits.
-    let (pc_donor_outlined, pc_chosen) = {
-        let menu_top = &system.aim_mouse.as_ref().unwrap().menu_top;
-        (menu_top.pc_donor_outlined, menu_top.pc_chosen)
-    };
-    let pc_source = if pc_donor_outlined && !pc_chosen { PC_SIBLING } else { PC_DONOR };
-    let mut part = part;
-    if part.model == Some(PC_SETTINGS_ROW) && pc_source == PC_SIBLING { part.place.from = PC_SIBLING_BOX; }
     let drawing = if part.top { top } else { bottom };
     let scene = read_word(system, top + 0x40);
     let renderer = read_word(system, scene + 4);
@@ -2335,20 +2031,17 @@ pub(super) fn draw(system: &mut System) -> bool {
         }
     } else {
         let slider = matches!(part.model, Some("MenOptionSoundBt0002" | "MenOptionSoundBt0003" | "MenOptionSoundBt0004"));
-        // On Controls the game outlines More Controls for the PC Settings
-        // Row too: the pointer there maps onto More Controls. A Row's panel
-        // is NN_B0001, its border NN_B0004, its Outline NN_B0002/NN_B0003
-        // and its icon and label NN_B0005 (the PC Row draws text). The one
-        // of the two Rows that is not chosen takes its panel and border
-        // from the sibling Row, as the donor's own look chosen.
+        // On Other the game outlines Subtitles for the PC Settings Row too:
+        // the pointer there maps onto Subtitles. The Outline is Subtitles'
+        // NN_B0002/NN_B0003 nodes, lit by MenOptionOtherBt0000; it shows on
+        // whichever of the two Rows is hovered.
+        let pc_hovered = system.aim_mouse.as_ref().unwrap().pc_settings_selected();
         let pc_row = part.model == Some(PC_SETTINGS_ROW);
-        let pc_plain = part.model == Some(PC_PLAIN_ROW);
-        let pc_source_model = if pc_plain { PC_SIBLING } else { pc_source };
         filter_models(system, drawing, part.top, !part.top, &mut moved, |name|
-            if pc_row || pc_plain { name == pc_source_model }
-            else { part.model.is_none_or(|model| name == model || board_companions(model).contains(&name)) }
+            part.model.is_none_or(|model| name == model || board_companions(model).contains(&name)
+                || (pc_row && matches!(name, "MenOptionOtherBt0002" | "MenOptionOtherBt0000")))
                 || (slider && matches!(name, "MenOptionSoundBt0001" | "MenOptionSoundBt0006")));
-        if pc_row || pc_plain || (pc_chosen && part.model == Some(PC_DONOR)) {
+        if pc_row || (pc_hovered && part.model == Some("MenOptionOtherBt0002")) {
             let layers = read_word(system, scene + SCENE_LAYERS);
             for layer in BOTTOM_LAYERS {
                 let list = read_word(system, layers + layer * LAYER_SIZE + 4);
@@ -2357,14 +2050,12 @@ pub(super) fn draw(system: &mut System) -> bool {
                 if end < start || end - start > 0x1000 { continue; }
                 for at in (start..end).step_by(4) {
                     let model = read_word(system, at);
-                    let name = model_name(system, model);
-                    if name != PC_DONOR && name != PC_SIBLING { continue; }
+                    if model_name(system, model) != "MenOptionOtherBt0002" { continue; }
+                    // NN_B0001 is the panel, NN_B0004 its border, NN_B0005
+                    // Subtitles' icon and label (the PC Row draws text).
                     show_nodes(system, &mut moved, model, |node| {
-                        let frame = matches!(node, "NN_B0001" | "NN_B0004");
-                        let outline = matches!(node, "NN_B0002" | "NN_B0003");
-                        if pc_row { frame || (outline && pc_chosen) }
-                        else if pc_plain { frame }
-                        else { node == "NN_B0005" }
+                        let outline = matches!(node, "NN_B0002" | "NN_B0003" | "NN_B0003_1");
+                        if pc_row { matches!(node, "NN_B0001" | "NN_B0004") || (outline && pc_hovered) } else { !outline }
                     });
                 }
             }
@@ -2803,49 +2494,6 @@ mod tests {
         mouse.set_editor_layer(0, moved);
         assert_eq!(mouse.editor_layers()[0].1, moved);
         assert_eq!(mouse.menu_top.overrides, vec![(13, 0, moved)]);
-    }
-
-    /// the PC Settings Row is Controls' alone: below More Controls with
-    /// Back under it, gone with its label on the More Controls page, where
-    /// Back keeps the game's place; and Other has none.
-    #[test]
-    fn the_pc_settings_row_sits_on_controls_only() {
-        let named = |parts: &[Part], name: &str| parts.iter().find(|part| part.model == Some(name)).map(|part| (part.place.to, part.visible));
-        assert!(named(&layout(4, 400.0).1, PC_SETTINGS_ROW).is_none());
-        let native_back = named(&layout(5, 400.0).1, CONTROLS_BACK).unwrap().0;
-        let mut controls = layout(5, 400.0).1;
-        seat_pc_settings(&mut controls, false, false);
-        let (row, shown) = named(&controls, PC_SETTINGS_ROW).unwrap();
-        assert!(!named(&controls, PC_PLAIN_ROW).unwrap().1, "More Controls keeps its own panel until the PC Row is chosen");
-        let mut chosen = layout(5, 400.0).1;
-        seat_pc_settings(&mut chosen, false, true);
-        assert_eq!(named(&chosen, PC_PLAIN_ROW).unwrap(), (named(&chosen, PC_DONOR).unwrap().0, true));
-        assert!(button_hash(PC_PLAIN_ROW).is_none(), "the plain panel takes no input");
-        let more = named(&controls, PC_DONOR).unwrap().0;
-        assert!(shown && row[1] >= more[1] + more[3] - 0.01);
-        assert!(named(&controls, CONTROLS_BACK).unwrap().0[1] >= row[1] + row[3]);
-        assert_eq!(button_hash(PC_SETTINGS_ROW), button_hash(PC_DONOR));
-        let mut more_controls = layout(5, 400.0).1;
-        seat_pc_settings(&mut more_controls, true, true);
-        assert!(!named(&more_controls, PC_PLAIN_ROW).unwrap().1);
-        let row = more_controls.iter().position(|part| part.model == Some(PC_SETTINGS_ROW)).unwrap();
-        assert!(!more_controls[row].visible && !more_controls[row + 1].visible);
-        assert_eq!(named(&more_controls, CONTROLS_BACK).unwrap().0, native_back);
-    }
-
-    /// the frontend's values reach the page until the player changes one,
-    /// and a change is handed over once.
-    #[test]
-    fn pc_toggles_pass_between_host_and_page() {
-        let mut mouse = AimMouse::default();
-        mouse.set_pc_toggles([true, false, false, true]);
-        assert_eq!(mouse.pc_toggles, [true, false, false, true]);
-        assert_eq!(mouse.take_pc_toggles(), None);
-        mouse.pc_toggles = [false, false, false, true];
-        mouse.pc_toggles_changed = true;
-        mouse.set_pc_toggles([true, true, true, true]);
-        assert_eq!(mouse.take_pc_toggles(), Some([false, false, false, true]));
-        assert_eq!(mouse.take_pc_toggles(), None);
     }
 
     #[test]
