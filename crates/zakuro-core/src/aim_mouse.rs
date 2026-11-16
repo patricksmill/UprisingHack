@@ -10,6 +10,7 @@ use crate::System;
 mod menu_top;
 mod screen_transform;
 use menu_top::MenuTop;
+pub use menu_top::current_menu;
 pub use screen_transform::{CauldronRole, CauldronRules, DialogRules, PauseRules, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
 use screen_transform::{Activate, QuadRole, ScreenLayout, ScreenTransform, CAULDRON_CONTROLS};
 
@@ -1638,6 +1639,11 @@ impl AimMouse {
 
     /// Requests the vehicle's native touch action once, only while its
     /// controls are available. `exit` selects dismount rather than ability.
+    /// the scripted Screen the mod last took input for, as an index.
+    pub fn menu_screen_index(&self) -> Option<usize> {
+        self.menu_screen.map(|(index, ..)| index)
+    }
+
     pub fn use_vehicle(&mut self, frame: u64, exit: bool) -> bool {
         if !self.in_battle(frame) || !self.vehicle_available.is_some_and(|seen| frame <= seen + 3) {
             return false;

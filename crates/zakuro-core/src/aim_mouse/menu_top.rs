@@ -1109,7 +1109,12 @@ fn scene(system: &mut System, top: u32) -> Option<(usize, u32, u32, bool)> {
     let current = read_word(system, top + 0x40);
     if read_word(system, bottom) != BOTTOM_SCENE || current == 0 || read_word(system, bottom + 0x40) != current { return None; }
     if let Some((index, object, _, native)) = rendering.filter(|&(_, _, scene, _)| scene == current) { return Some((index, object, bottom, native)); }
-    if let Some((index, object, _)) = active { return Some((index, object, bottom, false)); }
+    // The game's own MENUID changes before a menu's first drawn frame, while
+    // the last Screen to take input can still be the one it left.
+    let game = current_menu(system);
+    let agrees = |index: usize| game.is_none_or(|id| menus_of(index).is_empty() || menus_of(index).contains(&id));
+    if let Some((index, object, _)) = active.filter(|&(index, ..)| agrees(index)) { return Some((index, object, bottom, false)); }
+    if let Some(index) = game.and_then(screen_of) { return Some((index, 0, bottom, false)); }
     // Models are present during entrance and exit animations before the
     // corresponding input update runs. Draw their layout without enabling input.
     let layers = read_word(system, current + SCENE_LAYERS);
@@ -1638,7 +1643,10 @@ pub(super) fn font(system: &mut System) {
         }
     }
     let heart = system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menu_top.drawing_text);
-    let solo = system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menus_on_top
+    // The game names the hub before its controller's input runs, so its
+    // count is held back from the first frame the hub draws.
+    let hub = system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menus_on_top) && current_menu(system) == Some(MENUID_HOME);
+    let solo = hub || system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menus_on_top
         && mouse.menu_screen.is_some_and(|(index, _, _)| index == 12));
     if solo {
         let (text, len) = (system.cpu.regs[1], system.cpu.regs[2]);
@@ -1670,6 +1678,47 @@ pub(super) fn font(system: &mut System) {
     let bytes: Vec<u8> = values.into_iter().flat_map(f32::to_le_bytes).collect();
     system.memory.write_bytes(at, &bytes);
     system.aim_mouse.as_mut().unwrap().menu_top.font_back = Some((at, old));
+}
+
+/// the game's menu slot: a holder whose +0xC is the menu, whose +0x72C is
+/// its MENUID (analysis/FINDINGS.md, "The game's menu identity").
+const MENU_SLOT: u32 = 0x00E6F98C;
+const MENU_HOLDER: u32 = 0x00CFC5C0;
+const MENU_BODY: u32 = 0x00CFC314;
+const MENUID_HOME: u8 = 3;
+
+/// each scripted Screen and the MENUIDs it is shown under, measured on the
+/// trace states. Dialogs show under their parent's MENUID, and both Idol
+/// Tosses under 44, so those take the Screen the input last confirmed.
+const SCREEN_MENUS: [(usize, &[u8]); 26] = [
+    (0, &[2]), (1, &[1]), (2, &[4]), (3, &[17]), (4, &[22]), (5, &[19]), (6, &[25]),
+    (7, &[23]), (8, &[21]), (9, &[39]), (10, &[45]), (11, &[]), (12, &[3]), (13, &[11]),
+    (14, &[14]), (15, &[12]), (16, &[37]), (17, &[26]), (18, &[18]), (19, &[43]),
+    (20, &[42]), (21, &[10]), (22, &[44]), (23, &[13]), (24, &[16]), (25, &[44]),
+];
+
+/// the MENUIDs a scripted Screen is shown under, empty for any.
+fn menus_of(index: usize) -> &'static [u8] {
+    SCREEN_MENUS.iter().find(|&&(at, _)| at == index).map_or(&[], |&(_, ids)| ids)
+}
+
+/// the one scripted Screen a MENUID shows, none when it shows several or
+/// none (the Cauldron, Vault pages without a layout).
+fn screen_of(id: u8) -> Option<usize> {
+    let mut screens = SCREEN_MENUS.iter().filter(|&&(_, ids)| ids.contains(&id)).map(|&(index, _)| index);
+    let first = screens.next()?;
+    screens.next().is_none().then_some(first)
+}
+
+/// the MENUID the game has current, none outside a menu.
+pub fn current_menu(system: &mut System) -> Option<u8> {
+    let holder = read_word(system, MENU_SLOT);
+    if holder == 0 || !system.memory.is_readable(holder, 0x10) || read_word(system, holder) != MENU_HOLDER { return None; }
+    let body = read_word(system, holder + 0xC);
+    if body == 0 || !system.memory.is_readable(body, 0x730) || read_word(system, body) != MENU_BODY { return None; }
+    let mut id = [0u8];
+    system.memory.read_bytes(body + 0x72C, &mut id);
+    Some(id[0])
 }
 
 pub(super) fn font_done(system: &mut System) {
@@ -2189,6 +2238,18 @@ mod tests {
         mouse.menu_top.retrying_hit = true;
         refresh_hover(&mut mouse, 13);
         assert_eq!(mouse.menu_top.candidate, 2, "a slow hit query must finish before starting another");
+    }
+
+    #[test]
+    fn menuids_name_their_screen_unless_shared() {
+        assert_eq!(screen_of(3), Some(12), "MENUID_HOME is the Solo hub");
+        assert_eq!(screen_of(1), Some(1));
+        assert_eq!(screen_of(44), None, "both Idol Tosses show under 44");
+        assert_eq!(screen_of(5), None, "the Cauldron has no scripted Screen");
+        assert!(menus_of(11).is_empty(), "the SpotPass dialog shows under its parent");
+        for index in 0..ScreenTransform::scripted_len() {
+            assert_eq!(SCREEN_MENUS[index].0, index, "the table is in Screen order");
+        }
     }
 
     #[test]
