@@ -7,7 +7,6 @@
 
 use crate::System;
 
-mod label_font;
 mod menu_top;
 mod screen_transform;
 use menu_top::MenuTop;
