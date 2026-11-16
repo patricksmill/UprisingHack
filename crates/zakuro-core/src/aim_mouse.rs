@@ -29,7 +29,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 134] = [
+pub const PLACES: [u32; 135] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -104,6 +104,7 @@ pub const PLACES: [u32; 134] = [
     screen_transform::SCRIPTED_UPDATES[23],
     screen_transform::SCRIPTED_UPDATES[24],
     screen_transform::SCRIPTED_UPDATES[25],
+    screen_transform::SCRIPTED_UPDATES[26],
     0x003506C4,
     0x00321720, 0x0032178C, 0x003217F8, 0x00321864,
     0x0026E0A0, 0x0026E114, 0x0026E18C, 0x0026E204,
@@ -228,6 +229,12 @@ fn outline_vault(system: &mut System, object: u32, found: Found) -> Option<Vec<M
         return Some(Vec::new());
     }
     Some(vec![(OUTLINE_VAULT, [object, found.name, 1])])
+}
+
+/// The Vault's Idols keep no outline state of their own: a tap selects a
+/// Row or leaves by Back, so the pointer's press is that tap.
+fn outline_none(_: &mut System, _: u32, _: Found) -> Option<Vec<MenuCall>> {
+    None
 }
 
 /// Treasure Hunt's board and Back: the one picked a hash at +0x34 and its

@@ -1,14 +1,14 @@
 //! the one process that puts a game-owned Screen's drawing and input on the
 //! top screen, and the registry of the Screens it knows.
 //!
-//! Pause, its dialog, the 26 Scripted Menus and the Fiend's Cauldron are
+//! Pause, its dialog, the 27 Scripted Menus and the Fiend's Cauldron are
 //! here; see docs/agents/screen-transform.md.
 
 use serde::{Deserialize, Serialize};
 
 use super::{
     outline_altar, outline_armory, outline_buttons, outline_chapter, outline_controls, outline_dialog, outline_file,
-    outline_idol, outline_other, outline_practice, outline_profile, outline_queued, outline_solo, outline_subtitles,
+    outline_idol, outline_none, outline_other, outline_practice, outline_profile, outline_queued, outline_solo, outline_subtitles,
     outline_treasure, outline_vault, outline_volume, outline_yes_no, Found, MenuCall, Recorded, System, ToTop,
     CAULDRON, PAUSE_MENU, PAUSE_MENU_OFFSET,
 };
@@ -42,6 +42,7 @@ pub enum Screen {
     TreasureHunt,
     Vault,
     IdolTossVault,
+    Idols,
     FiendsCauldron,
     Pause,
     RetreatDialog,
@@ -202,6 +203,86 @@ const FILE_SELECT: &[(&str, [f32; 4])] = &[
     ("MenSelfileBt0004", [185.0, 192.0, 135.0, 48.0]),
 ];
 
+/// Editor label, owning model and mesh nodes; an empty list owns the rest.
+/// An owner ending in `*` owns every model whose name starts with the rest.
+pub(super) type TopLayer = (&'static str, &'static str, &'static [&'static str]);
+
+/// Armory Gear's top screen, split into editor layers by mesh node:
+/// (layer name, model, nodes). Ornaments are the rest of the backdrop
+/// model. Anything else on the top screen, such as the Powers grid, stays
+/// in the Details card.
+const GEAR_TOP: &[TopLayer] = &[
+    ("Paper background", "MenEquipUp0000", &["NN_U0000", "NN_U0001"]),
+    ("Silhouette", "MenEquipUp0000", &["NN_U0027"]),
+    ("Crest", "MenEquipUp0000", &["NN_U0002"]),
+    ("Ornaments", "MenEquipUp0000", &[]),
+    ("Page title", "MenEquipUp0001", &["NN_U0000", "NN_U0001"]),
+    ("Weapon", "MenEquipUp0001", &["NN_U0002", "NN_U00022"]),
+];
+
+/// Armory Weapons' top screen, split into editor layers back to front.
+/// Identified by moving one node at a time. `MenEquipUp0100` is the paper
+/// with its crest, ornaments and ink frame in one mesh. The weapon is a
+/// node of the board model, so it is a layer too; the Details card keeps
+/// the words. `NN_1111` and `pPlane2` draw nothing here and stay in it.
+/// `MenEquipUp0500` is the equip flash.
+const WEAPONS_TOP: &[TopLayer] = &[
+    ("Paper background", "MenEquipUp0100", &[]),
+    ("Description board", "MenEquipUp0121", &["NN_U0005", "NN_U0007"]),
+    ("Category emblem", "MenEquipUp0121", &["NN_U0000"]),
+    ("Stats card", "MenEquipUp0121", &["NN_U0003", "pPlane1"]),
+    ("Weapon shadow", "MenEquipUp0121", &["NN_U0002"]),
+    ("Weapon", "MenEquipUp0121", &["NN_U0001"]),
+    ("Equip flash", "MenEquipUp0500", &[]),
+];
+
+const POWERS_TOP: &[TopLayer] = &[
+    ("Paper background", "MenEquipUp0200", &[]),
+    ("Power set board", "MenEquipUp0202", &[]),
+    ("Power preview", "MenEquipUp0210", &["NN_U0000"]),
+    ("Power shape", "MenEquipUp0210", &["ML_B0000"]),
+    ("Description background", "MenEquipUp0210", &["Wbase"]),
+];
+
+/// The Vault's Idols, back to front: the backdrop, the figure's shadow and
+/// the figure. Each idol is its own `Dol*` model, so that owner is a prefix.
+const IDOLS_TOP: &[TopLayer] = &[
+    ("Backdrop", "MenColViewerUp0000", &[]),
+    ("Shadow", "maru_kage", &[]),
+    ("Idol", "Dol*", &[]),
+];
+
+/// The Idols chrome, `MenColViewerBt0000`, split by mesh node. Probed from
+/// `trace/idols-viewer.state` and its List (Back from there). `base` is the
+/// description page's white panel and `NN_B0002` its words' node; neither
+/// draws on the List.
+const IDOLS_BOTTOM: &[TopLayer] = &[
+    ("Background", "MenColViewerBt0000", &["bg"]),
+    ("Controls hint", "MenColViewerBt0000", &["sousa", "sousa_base"]),
+    ("Title bar", "MenColViewerBt0000", &["title", "L_button", "R_button"]),
+    ("Zoom bar", "MenColViewerBt0000", &["bar"]),
+    ("Description", "MenColViewerBt0000", &[]),
+    ("Page counter", "MenColViewerBt0000", &["pbase"]),
+];
+
+/// The Idols bottom Board, back to front within each model: the chrome
+/// layers, the List's frame, Rows (with their Cursor and mask) and Scroll
+/// bar, then Back and AR. Both pages, the List and one idol's description,
+/// are this Screen (MENUID 46); models a page lacks draw nothing.
+const IDOLS: &[(&str, [f32; 4])] = &[
+    ("Background", [0.0, 0.0, 320.0, 240.0]),
+    ("Controls hint", [0.0, 0.0, 300.0, 18.0]),
+    ("Title bar", [0.0, 18.0, 300.0, 32.0]),
+    ("Zoom bar", [296.0, 0.0, 24.0, 196.0]),
+    ("Description", [0.0, 50.0, 300.0, 176.0]),
+    ("Page counter", [100.0, 196.0, 120.0, 30.0]),
+    ("MenColViewlistBt0000", [0.0, 0.0, 300.0, 230.0]),
+    ("MenColViewlistBt0003", [0.0, 0.0, 286.0, 196.0]),
+    ("MenCmnScbar", [286.0, 0.0, 34.0, 196.0]),
+    ("MenColViewerBt9999", [0.0, 196.0, 52.0, 44.0]),
+    ("MenColViewerBt0002", [260.0, 194.0, 60.0, 46.0]),
+];
+
 /// Armory Controls are cut from the shared Board: their names, values,
 /// rows and highlights are text and models drawn across the whole screen.
 const GEAR: &[(&str, [f32; 4])] = &[
@@ -260,7 +341,7 @@ pub(super) enum LayoutKind {
     /// the game's fixed board of models.
     Group { group: &'static [(&'static str, [f32; 4])], hint: Option<[f32; 4]>, details: bool, heart: bool },
     /// Controls cut from the whole native Board, beside the details card.
-    Board { group: &'static [(&'static str, [f32; 4])], hint: Option<[f32; 4]> },
+    Board { group: &'static [(&'static str, [f32; 4])], hint: Option<[f32; 4]>, top_layers: &'static [TopLayer], bottom_layers: &'static [TopLayer] },
     /// Idol Toss's counters, Back and launcher, placed apart.
     Idol,
 }
@@ -288,6 +369,15 @@ impl LayoutKind {
             LayoutKind::FileSelect => FILE_SELECT,
             _ => &[],
         }
+    }
+
+    pub fn top_layers(self) -> &'static [TopLayer] {
+        match self { LayoutKind::Board { top_layers, .. } => top_layers, _ => &[] }
+    }
+
+    /// node layers of the bottom Board, named in `group` by layer name.
+    pub fn bottom_layers(self) -> &'static [TopLayer] {
+        match self { LayoutKind::Board { bottom_layers, .. } => bottom_layers, _ => &[] }
     }
 
     pub fn heart(self) -> bool {
@@ -341,10 +431,10 @@ impl ScreenSpec {
 
 /// the update function of each Scripted Menu, in registry order. Kept
 /// separately so `PLACES` can read it in a const context.
-pub(super) const SCRIPTED_UPDATES: [u32; 26] = [
+pub(super) const SCRIPTED_UPDATES: [u32; 27] = [
     0x002A3EC4, 0x002A3FCC, 0x002A3F9C, 0x00224BA0, 0x001ECB4C, 0x00224C18, 0x001B4C74, 0x001ECBBC, 0x00224BD4,
     0x001ECBF4, 0x0016756C, 0x002A4070, 0x002ECCF4, 0x002A1FD8, 0x002B6DB8, 0x00238CBC, 0x001C9734, 0x00230B5C,
-    0x002BB14C, 0x0019CDC8, 0x0019BDC4, 0x0023A9FC, 0x001B4D58, 0x0018AF44, 0x00224B80, 0x001B4D4C,
+    0x002BB14C, 0x0019CDC8, 0x0019BDC4, 0x0023A9FC, 0x001B4D58, 0x0018AF44, 0x00224B80, 0x001B4D4C, 0x001B4D70,
 ];
 
 pub(super) const SCRIPTED_COUNT: usize = SCRIPTED_UPDATES.len();
@@ -392,18 +482,19 @@ pub(super) static SCREENS: &[ScreenSpec] = &[
     scripted!(11, SpotPassDialog, 0x00CF8270, outline_dialog, Activate::Call(0x00314DF8), LayoutKind::Group { group: SPOTPASS_CHOICE, hint: HINT_BOTTOM, details: false, heart: false }),
     scripted!(12, SoloHub, 0x00CFC3D0, outline_solo, Activate::Call(0x00370300), LayoutKind::Group { group: SOLO, hint: HINT_BOTTOM, details: false, heart: true }),
     scripted!(13, ArmsAltar, 0x00CFCA28, outline_altar, Activate::Call(0x00322C34), LayoutKind::Group { group: ALTAR, hint: HINT_BOTTOM, details: false, heart: false }),
-    scripted!(14, ArmoryGear, 0x00CEC2B8, outline_armory, Activate::None, LayoutKind::Board { group: GEAR, hint: HINT_TOP }),
+    scripted!(14, ArmoryGear, 0x00CEC2B8, outline_armory, Activate::None, LayoutKind::Board { group: GEAR, hint: HINT_TOP, top_layers: GEAR_TOP, bottom_layers: &[] }),
     scripted!(15, ArmoryRedeemHearts, 0x00CEFCA8, outline_armory, Activate::None, LayoutKind::Generic { hint: None, details: true }),
     scripted!(16, ArmoryConvertToHearts, 0x00CEEBFC, outline_armory, Activate::None, LayoutKind::Generic { hint: None, details: true }),
     scripted!(17, ArmoryFuseWeapons, 0x00CEE148, outline_armory, Activate::None, LayoutKind::Generic { hint: HINT_BOTTOM, details: true }),
-    scripted!(18, ArmoryPowers, 0x00CEC2E0, outline_armory, Activate::None, LayoutKind::Board { group: POWERS, hint: None }),
-    scripted!(19, ArmoryWeapons, 0x00CEE1E8, outline_armory, Activate::None, LayoutKind::Board { group: WEAPON_LIST, hint: HINT_BOTTOM }),
-    scripted!(20, ArmoryCategories, 0x00CEE1C0, outline_armory, Activate::None, LayoutKind::Board { group: CATEGORIES, hint: HINT_TOP }),
+    scripted!(18, ArmoryPowers, 0x00CEC2E0, outline_armory, Activate::None, LayoutKind::Board { group: POWERS, hint: None, top_layers: POWERS_TOP, bottom_layers: &[] }),
+    scripted!(19, ArmoryWeapons, 0x00CEE1E8, outline_armory, Activate::None, LayoutKind::Board { group: WEAPON_LIST, hint: HINT_BOTTOM, top_layers: WEAPONS_TOP, bottom_layers: &[] }),
+    scripted!(20, ArmoryCategories, 0x00CEE1C0, outline_armory, Activate::None, LayoutKind::Board { group: CATEGORIES, hint: HINT_TOP, top_layers: &[], bottom_layers: &[] }),
     scripted!(21, PracticeRange, 0x00CF0154, outline_practice, Activate::Call(0x0030B5B4), LayoutKind::Group { group: PRACTICE, hint: HINT_PRACTICE, details: false, heart: false }),
     scripted!(22, IdolTossSolo, 0x00CF9400, outline_idol, Activate::Touch, LayoutKind::Idol),
     scripted!(23, TreasureHunt, 0x00CEEDD8, outline_treasure, Activate::Touch, LayoutKind::Generic { hint: HINT_TREASURE, details: false }),
     scripted!(24, Vault, 0x00CF8248, outline_vault, Activate::Call(0x00345FDC), LayoutKind::Group { group: VAULT, hint: HINT_VAULT, details: false, heart: false }),
     scripted!(25, IdolTossVault, 0x00CF9400, outline_idol, Activate::Touch, LayoutKind::Idol),
+    scripted!(26, Idols, 0x00CF93D8, outline_none, Activate::Touch, LayoutKind::Board { group: IDOLS, hint: None, top_layers: IDOLS_TOP, bottom_layers: IDOLS_BOTTOM }),
     ScreenSpec {
         id: Screen::FiendsCauldron,
         family: Family::Cauldron,
@@ -1281,7 +1372,7 @@ mod tests {
 
     #[test]
     fn scripted_rows_keep_their_order() {
-        assert_eq!(SCRIPTED_COUNT, 26);
+        assert_eq!(SCRIPTED_COUNT, 27);
         for (index, update) in SCRIPTED_UPDATES.iter().enumerate() {
             assert_eq!(SCREENS[index].update(), Some(*update));
         }

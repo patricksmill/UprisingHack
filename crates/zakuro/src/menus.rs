@@ -134,6 +134,10 @@ pub struct Menus {
     cheat_name: String,
     cheat_code: String,
     pub settings_open: bool,
+    /// the UprisingHack window: Kid Icarus's PC Preferences.
+    pub uprising_open: bool,
+    /// which tab of the UprisingHack window is shown.
+    uprising_tab: UprisingTab,
     /// the binding waiting for a key, by its place in Keys::all_mut.
     pub rebinding: Option<usize>,
     /// the controller binding waiting for a button, by its place in
@@ -274,6 +278,25 @@ fn cover(area: Vec2, picture: [usize; 2]) -> egui::Rect {
     }
 }
 
+/// the tabs of the UprisingHack window.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum UprisingTab {
+    #[default]
+    KeyboardMouse,
+    Controller,
+    Aiming,
+    Presentation,
+}
+
+impl UprisingTab {
+    const ALL: [(Self, &'static str); 4] = [
+        (Self::KeyboardMouse, "Keyboard and mouse"),
+        (Self::Controller, "Controller"),
+        (Self::Aiming, "Aiming and gyro"),
+        (Self::Presentation, "Presentation"),
+    ];
+}
+
 impl Menus {
     /// the library, filling the window.
     pub fn library(&mut self, ui: &mut egui::Ui, library: &Library, settings: &Settings, jobs: &[Job]) -> Vec<Action> {
@@ -291,6 +314,9 @@ impl Menus {
                     None => ui.label(RichText::new("no games folder yet").weak()),
                 };
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("UprisingHack").clicked() {
+                        self.uprising_open = true;
+                    }
                     if ui.button("Settings").clicked() {
                         self.settings_open = true;
                     }
@@ -528,6 +554,9 @@ impl Menus {
                     }
                     if wide(ui, "Settings") {
                         self.settings_open = true;
+                    }
+                    if wide(ui, "UprisingHack") {
+                        self.uprising_open = true;
                     }
                     if wide(ui, "Cheats") {
                         self.cheats_open = true;
@@ -1257,15 +1286,11 @@ impl Menus {
                     self.rebinding_pad = None;
                 }
 
-                ui.separator();
-                self.kid_icarus(ui, settings);
             });
         self.settings_open = open;
         if !open {
             self.rebinding = None;
             self.rebinding_pad = None;
-            self.rebinding_action = None;
-            self.binding_conflict = None;
         }
         if *settings != before {
             actions.push(Action::Settings);
@@ -1273,13 +1298,43 @@ impl Menus {
         actions
     }
 
-    /// Kid Icarus's PC Preferences, here for recovery: its own Options
-    /// Screens are where players change them.
+    /// whether the Settings or UprisingHack window is open.
+    pub fn settings_shown(&self) -> bool {
+        self.settings_open || self.uprising_open
+    }
+
+    /// the UprisingHack window, when open: the settings this port adds
+    /// for Kid Icarus: Uprising, apart from the emulator's own Settings.
+    pub fn uprising(&mut self, ctx: &egui::Context, settings: &mut Settings) -> Vec<Action> {
+        let mut actions = Vec::new();
+        let before = settings.clone();
+        let mut open = self.uprising_open;
+        let room = ctx.content_rect().height() - 16.0;
+        egui::Window::new("UprisingHack")
+            .id(egui::Id::new("uprising_hack"))
+            .open(&mut open)
+            .vscroll(true)
+            .default_size([460.0, room])
+            .max_height(room)
+            .show(ctx, |ui| self.kid_icarus(ui, settings));
+        self.uprising_open = open;
+        if !open {
+            self.rebinding_action = None;
+            self.binding_conflict = None;
+            self.pending_reset = None;
+        }
+        if *settings != before {
+            actions.push(Action::Settings);
+        }
+        actions
+    }
+
+    /// Kid Icarus's PC Preferences, shown in the UprisingHack window.
     fn kid_icarus(&mut self, ui: &mut egui::Ui, settings: &mut Settings) {
         use crate::bindings::{Action as Act, Device, Resolve};
         use crate::preferences::{Category, GyroMode, Presentation};
         ui.heading("Kid Icarus: Uprising");
-        ui.label(RichText::new("Recovery for the PC Preferences its own Options show. Escape cancels a binding.").weak());
+        ui.label(RichText::new("The PC Preferences UprisingHack adds. Escape cancels a binding.").weak());
         if !settings.pc.review.is_empty() {
             ui.label(
                 RichText::new(format!(
@@ -1314,8 +1369,19 @@ impl Menus {
                 }
             });
         }
-        for (device, title, grid) in [(Device::KeyboardMouse, "Keyboard and mouse", "kiu_keys"), (Device::Controller, "Controller", "kiu_pad")] {
-            ui.label(RichText::new(title).strong());
+        ui.horizontal(|ui| {
+            for (tab, name) in UprisingTab::ALL {
+                ui.selectable_value(&mut self.uprising_tab, tab, name);
+            }
+        });
+        ui.separator();
+        let tab = self.uprising_tab;
+        let device = match tab {
+            UprisingTab::KeyboardMouse => Some((Device::KeyboardMouse, "Keyboard and mouse", "kiu_keys")),
+            UprisingTab::Controller => Some((Device::Controller, "Controller", "kiu_pad")),
+            _ => None,
+        };
+        if let Some((device, title, grid)) = device {
             egui::Grid::new(grid).num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
                 for action in Act::ALL {
                     ui.label(action.name());
@@ -1342,10 +1408,10 @@ impl Menus {
             });
             let category = if device == Device::KeyboardMouse { Category::KeyboardMouse } else { Category::Controller };
             self.reset_button(ui, settings, category, &format!("Default {}", title.to_lowercase()));
+            ui.label(RichText::new("Right-click a binding to clear it.").weak());
         }
-        ui.label(RichText::new("Right-click a binding to clear it.").weak());
-
-        let aim = &mut settings.pc.aim;
+        if tab == UprisingTab::Aiming {
+            let aim = &mut settings.pc.aim;
         ui.add(egui::Slider::new(&mut aim.mouse_sensitivity, 0.1..=3.0).text("Mouse sensitivity"));
         ui.add(egui::Slider::new(&mut aim.stick_sensitivity, 0.25..=3.0).text("Right stick sensitivity"));
         ui.add(egui::Slider::new(&mut aim.dead_zone, 0.0..=0.5).text("Stick dead zone"));
@@ -1365,10 +1431,13 @@ impl Menus {
         });
         ui.label(RichText::new(&self.gyro_status).weak());
         self.reset_button(ui, settings, Category::ReticleCamera, "Default aiming and gyro");
+        }
+        if tab == UprisingTab::Presentation {
         let shown = &mut settings.pc.presentation;
         ui.add(egui::Slider::new(&mut shown.hud_scale, Presentation::HUD.0..=Presentation::HUD.1).text("HUD and reticle size"));
         ui.add(egui::Slider::new(&mut shown.portrait_scale, Presentation::PORTRAIT.0..=Presentation::PORTRAIT.1).text("Portrait size"));
         self.reset_button(ui, settings, Category::Presentation, "Default presentation");
+        }
     }
 
     /// a Restore Defaults button for one category, asking before it does.

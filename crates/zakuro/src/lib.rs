@@ -752,7 +752,7 @@ impl ApplicationHandler for App {
         };
         let in_game = self.game.as_ref().is_some_and(|game| game.system.keyboard_request().is_none())
             && !self.menus.menu_open
-            && !self.menus.settings_open;
+            && !self.menus.settings_shown();
         // a Tab held down keeps repeating over a message too
         let withheld = tab && (in_game || (repeat && self.game.is_some()));
         let consumed = match (&mut self.gui, &self.window) {
@@ -1126,7 +1126,7 @@ impl App {
         }
         let to_game = self.game.is_some()
             && !self.menus.menu_open
-            && !self.menus.settings_open
+            && !self.menus.settings_shown()
             && !self.menus.editor_open
             && !consumed
             && !self.gui.as_ref().is_some_and(Gui::wants_keyboard);
@@ -1258,12 +1258,12 @@ impl App {
             } else if pressed && button == gilrs::Button::Mode && self.game.is_some() {
                 self.toggle_frontend_menu();
             } else if self.keyboard.acting() {
-                let to_game = !self.menus.menu_open && !self.menus.settings_open && !self.menus.editor_open;
+                let to_game = !self.menus.menu_open && !self.menus.settings_shown() && !self.menus.editor_open;
                 if to_game || !pressed {
                     let started = self.keyboard.source(bindings::Source::Pad(button), pressed);
                     self.do_actions(started);
                 }
-            } else if pressed && !self.menus.menu_open && !self.menus.settings_open && !self.menus.editor_open {
+            } else if pressed && !self.menus.menu_open && !self.menus.settings_shown() && !self.menus.editor_open {
                 let exit = if button == self.settings.pad.vehicle_ability {
                     Some(false)
                 } else if button == self.settings.pad.vehicle_exit {
@@ -1948,7 +1948,7 @@ impl App {
         // a game waiting on its keyboard waits for the user, not running
         let typing = self.game.as_ref().is_some_and(|game| game.system.keyboard_request().is_some());
         let playing =
-            self.game.is_some() && !self.paused && !self.menus.menu_open && !self.menus.settings_open && !typing;
+            self.game.is_some() && !self.paused && !self.menus.menu_open && !self.menus.settings_shown() && !typing;
         // Tab or a controller's right trigger, or the right stick's click
         // while ZR has the trigger, whichever no binding is on
         let free = |button: gilrs::Button| match self.keyboard.acting() {
@@ -2426,6 +2426,7 @@ impl App {
                 None => actions.extend(menus.library(ui, library, settings, jobs)),
             }
             actions.extend(menus.settings(ui.ctx(), settings));
+            actions.extend(menus.uprising(ui.ctx(), settings));
             if menus.multiplayer_open {
                 actions.extend(menus.multiplayer(ui.ctx(), settings, room.as_ref()));
             }
