@@ -569,8 +569,7 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
             pc_settings.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(PC_SETTINGS_ROW),
                 place: Placement { from, to } });
             // Its label: a top-screen text pass over the Row, drawn after it.
-            // The source is the Row's own size, so the text keeps its shape.
-            let text = [(to[0] * 400.0 / width).min(400.0 - to[2]).max(0.0), to[1], to[2], to[3]];
+            let text = [to[0] * 400.0 / width, to[1], to[2] * 400.0 / width, to[3]];
             pc_settings.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: None,
                 place: Placement { from: text, to } });
             if let Some(back) = parts.iter_mut().find(|part| part.model == Some("MenOptionOtherBt9999")) {
