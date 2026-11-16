@@ -1406,9 +1406,6 @@ pub struct AimMouse {
     /// whether a click is to use the part under the mouse once it is
     /// outlined.
     menu_click: bool,
-    /// the PC Settings Row was used, for the frontend to open the PC
-    /// Preferences.
-    open_settings_requested: bool,
     menu_button_down: bool,
     menu_press: Option<MenuPress>,
     /// Keep hover out of a native drag's release handling too.
@@ -1483,7 +1480,6 @@ impl Default for AimMouse {
             menu_part: None,
             menu_calls: Vec::new(),
             menu_click: false,
-            open_settings_requested: false,
             menu_button_down: false,
             menu_press: None,
             menu_touched: None,
@@ -1517,12 +1513,6 @@ impl AimMouse {
 
     pub fn set_editor_navigation(&mut self, links: Vec<NavigationLink>) {
         self.navigation_links = links;
-    }
-
-    /// whether the PC Settings Row was used since the last look: the
-    /// frontend opens the PC Preferences.
-    pub fn take_open_settings(&mut self) -> bool {
-        std::mem::take(&mut self.open_settings_requested)
     }
 
     /// the mouse moved to the bottom screen's pixel, or off it: menus light
@@ -2942,12 +2932,6 @@ fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
     let call = match aim_mouse.menu_calls.is_empty() {
         true => {
             if !std::mem::take(&mut aim_mouse.menu_click) { return; }
-            // The game took the PC Settings Row as Subtitles: open the PC
-            // Preferences instead of Subtitles.
-            if aim_mouse.pc_settings_hovered() {
-                aim_mouse.open_settings_requested = true;
-                return;
-            }
             let Activate::Call(function) = activate else { return };
             Some((function, [object, 0, 0]))
         }
