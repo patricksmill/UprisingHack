@@ -7,6 +7,7 @@
 
 use crate::System;
 
+mod idol_view;
 mod menu_top;
 mod screen_transform;
 use menu_top::MenuTop;
@@ -1384,6 +1385,11 @@ pub struct AimMouse {
     /// Scripted menus also draw their controls on the top screen.
     pub menus_on_top: bool,
     menu_top: MenuTop,
+    /// the Orbit of the Idols Screen's Idol View and its momentum.
+    idol_view: idol_view::IdolView,
+    /// degrees an Orbit turns the Idol View for each top-screen pixel the
+    /// pointer moves (the frontend scales it by the window's size).
+    pub idol_orbit_gain: f32,
     /// the bottom screen pixel the mouse is over, none off it.
     pointer: Option<(f32, f32)>,
     /// whether the mouse moved since a key was last pressed in a menu.
@@ -1475,6 +1481,8 @@ impl Default for AimMouse {
             menu_hover: false,
             menus_on_top: true,
             menu_top: MenuTop::default(),
+            idol_view: idol_view::IdolView::default(),
+            idol_orbit_gain: 0.3,
             pointer: None,
             mouse_mode: false,
             paused: None,
@@ -2836,6 +2844,10 @@ fn outline_menu(system: &mut System, pc: u32) {
     let object = system.cpu.regs[0];
     if Some(read_word(system, object)) != screen.vtable() {
         return;
+    }
+    if screen.id == screen_transform::Screen::Idols {
+        let gain = system.aim_mouse.as_ref().map_or(0.0, |mouse| mouse.idol_orbit_gain);
+        idol_view::update(system, object, gain);
     }
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
     let age = aim_mouse.menu_age();

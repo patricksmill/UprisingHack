@@ -27,6 +27,8 @@ pub enum GyroMode {
 pub struct Aim {
     /// reticle pixels a count of the mouse moves it.
     pub mouse_sensitivity: f32,
+    /// how fast a mouse drag Orbits the Idol View, 1 for 0.3° a window pixel.
+    pub idol_view_sensitivity: f32,
     /// how far the right stick turns, 1 as the game's own C-stick does.
     pub stick_sensitivity: f32,
     /// how far either stick leans before it counts, 0 to 1.
@@ -42,6 +44,7 @@ impl Default for Aim {
     fn default() -> Self {
         Aim {
             mouse_sensitivity: 0.5,
+            idol_view_sensitivity: 1.0,
             stick_sensitivity: 1.0,
             dead_zone: 0.15,
             gyro: GyroMode::Off,
@@ -105,6 +108,7 @@ impl Category {
                 settings.pc.bindings.keyboard_mouse = defaults.pc.bindings.keyboard_mouse;
                 let aim = &mut settings.pc.aim;
                 aim.mouse_sensitivity = defaults.pc.aim.mouse_sensitivity;
+                aim.idol_view_sensitivity = defaults.pc.aim.idol_view_sensitivity;
             }
             Category::Controller => {
                 settings.pc.bindings.controller = defaults.pc.bindings.controller;
@@ -117,6 +121,7 @@ impl Category {
                 // the mouse's and sticks' own choices are on their Screens
                 *aim = Aim {
                     mouse_sensitivity: aim.mouse_sensitivity,
+                    idol_view_sensitivity: aim.idol_view_sensitivity,
                     stick_sensitivity: aim.stick_sensitivity,
                     dead_zone: aim.dead_zone,
                     ..fresh

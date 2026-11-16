@@ -398,6 +398,9 @@ fn part_cut(index: usize, model: Option<&str>) -> bool {
     drawn_cut(index) && !(armory_board(index) && model.is_some() && !board_text(index, model))
 }
 
+/// The Idols Screen's top layer that is the Idol View, where an Orbit starts.
+const IDOL_VIEW_LAYER: &str = "Idol";
+
 /// The node layers declared by the Screen's layout row.
 fn top_layers(index: usize) -> &'static [super::screen_transform::TopLayer] {
     if index < ScreenTransform::scripted_len() { ScreenTransform::scripted(index).layout.top_layers() } else { &[] }
@@ -920,7 +923,7 @@ pub(super) fn navigate(system: &mut System, pc: u32) {
 impl AimMouse {
     pub(super) fn menu_age(&self) -> u64 { 3 + if self.menus_on_top { self.menu_top.duration } else { 0 } }
 
-    pub fn menus_top_dragging(&self) -> bool { self.menu_top.grab.is_some() }
+    pub fn menus_top_dragging(&self) -> bool { self.menu_top.grab.is_some() || self.idol_view.dragging() }
 
     pub fn clear_menus_top_pointer(&mut self) {
         self.menu_top.pointer = None;
@@ -946,8 +949,14 @@ impl AimMouse {
 
     /// Frontend top-screen pixels (400 across), converted to native touch.
     pub fn menus_top_touch(&mut self, frame: u64, x: f32, y: f32, pressed: bool) -> Option<(f32, f32)> {
-        if !self.menus_on_top_shown(frame) || self.menu_top.blocked { self.menu_top.grab = None; return None; }
+        let began = pressed && !std::mem::replace(&mut self.idol_view.held, pressed);
+        if !self.menus_on_top_shown(frame) || self.menu_top.blocked { self.menu_top.grab = None; self.idol_view.cancel(); return None; }
         let point = [x * self.widen, y];
+        // An Orbit owns its drag until release, wherever the pointer goes.
+        if self.idol_view.dragging() {
+            if pressed { self.idol_view.drag(point); return None; }
+            self.idol_view.release(self.idol_orbit_gain);
+        }
         if !pressed { self.menu_top.grab = None; }
         if self.menu_top.pointer != Some(point) {
             self.menu_top.pointer = Some(point);
@@ -967,6 +976,15 @@ impl AimMouse {
                 Some((index, native))
             }).collect();
             self.menu_top.candidate = 0;
+        }
+        // A press on the Idol View, off every Control, starts an Orbit.
+        if began && self.menu_top.grab.is_none() && self.menu_top.candidates.is_empty()
+            && self.menu_screen.is_some_and(|(index, ..)| ScreenTransform::scripted(index).id == super::screen_transform::Screen::Idols)
+            && self.menu_top.parts.iter().any(|part| part.top && part.model == Some(IDOL_VIEW_LAYER)
+                && self.menu_top.enabled(part) && inside(point, part.place.to)) {
+            self.idol_view.begin(point);
+            self.menu_part = None;
+            return None;
         }
         let over = self.menu_top.candidates.get(self.menu_top.candidate).map(|&(index, _)| index);
         let Some(index) = self.menu_top.grab.filter(|_| pressed).or(over) else {
@@ -1150,8 +1168,9 @@ pub(super) fn refresh_hover(mouse: &mut AimMouse, frame: u64) {
     // A hit query can span a refresh. Finish its candidate chain before
     // starting another query for the same stationary host pointer.
     if std::mem::take(&mut mouse.menu_top.retrying_hit) { return; }
+    // An Orbit holds the button down; this re-query would read as a release.
     if mouse.menu_top.hit_frame == Some(frame) || !mouse.mouse_mode || mouse.menu_top.grab.is_some()
-        || mouse.menu_click || !mouse.menus_on_top_shown(frame) { return; }
+        || mouse.idol_view.dragging() || mouse.menu_click || !mouse.menus_on_top_shown(frame) { return; }
     mouse.menu_top.hit_frame = Some(frame);
     if let Some(point) = mouse.menu_top.pointer {
         mouse.menu_top.pointer = None;

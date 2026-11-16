@@ -1399,12 +1399,15 @@ impl App {
                 mouse.clear_menus_top_pointer();
             }
         }
+        let orbit = self.settings.pc.aim.idol_view_sensitivity;
         let top_pointer = top.and_then(|top| {
             let x = (self.cursor.0 - top.x) / top.width * 400.0;
             let y = (self.cursor.1 - top.y) / top.height * 240.0;
             let game = self.game.as_mut()?;
             let frames = game.system.frames;
             let mouse = game.system.aim_mouse.as_mut()?;
+            // 0.3° a window pixel; a top-screen pixel is height / 240 of them.
+            mouse.idol_orbit_gain = 0.3 * orbit * top.height / 240.0;
             let dragging = self.mouse_down && mouse.menus_top_dragging();
             if !dragging && (!(0.0..400.0).contains(&x) || !(0.0..240.0).contains(&y)) {
                 mouse.clear_menus_top_pointer();
