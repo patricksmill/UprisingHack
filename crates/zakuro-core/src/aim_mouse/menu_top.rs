@@ -17,15 +17,6 @@ pub(super) const FONT_DONE: [u32; 7] = [0x00A36E68, 0x00A36ECC, 0x00A36EE8, 0x00
 pub(super) const PC_SETTINGS_ROW: &str = "PcSettingsRow";
 const PC_SETTINGS_LABEL: &str = "PC Settings";
 const PC_SETTINGS_HINT: &str = "Change controls, aiming, gyro and display settings.";
-/// Other's key moves outline a Row with OUTLINE_OTHER_PART, called from
-/// these two places for Down and Up, with a fresh {hash, &name, 0x20, name}.
-const OTHER_DOWN: u32 = 0x0023C414;
-const OTHER_UP: u32 = 0x0023C358;
-/// Other's A, on the Row the game has outlined.
-pub(super) const OTHER_A: u32 = 0x002D50FC;
-const SUBTITLES: (u32, &str) = (0xF28BAA60, "caption");
-const SPOTPASS: (u32, &str) = (0x9E610C53, "itunomani");
-const BACK: (u32, &str) = (0x928BEAA4, "return");
 /// in the top text loop, just after it empties the text batch (0x005C79CC
 /// at 0x00A358B0) and before it packs and draws it: glyphs queued here show.
 pub(super) const TEXT_BATCH_EMPTIED: u32 = 0x00A358B4;
@@ -70,9 +61,6 @@ pub(super) struct MenuTop {
     label_back: Option<([u32; 16], zakuro_cpu::psr::Psr, [u32; 32], Vec<(u32, Vec<u8>)>)>,
     /// the hint call's stack pointer, lowered below the PC Settings hint.
     hint_sp: Option<u32>,
-    /// the keys moved onto the PC Settings Row: the game has Subtitles
-    /// outlined, and Up, Down and A act as if from the PC Settings Row.
-    pub(super) pc_key: bool,
     /// Chapter Select's Rows: the chapter number of each part from
     /// `CHAPTER_FIRST_ROW` on, the first one shown, the wheel's leftover,
     /// how many are open and fit, and the chapter last outlined.
@@ -782,17 +770,6 @@ pub(super) fn navigate(system: &mut System, pc: u32) {
         }
         return;
     }
-    if pc == OUTLINE_OTHER_PART && matches!(system.cpu.regs[14], OTHER_DOWN | OTHER_UP) {
-        navigate_pc_settings(system);
-        return;
-    }
-    if pc == OTHER_A && system.aim_mouse.as_ref().is_some_and(|mouse| mouse.pointer.is_none() && mouse.menu_top.pc_key) {
-        // A on the PC Settings Row, which the game outlines as Subtitles.
-        let mouse = system.aim_mouse.as_mut().unwrap();
-        mouse.open_settings_requested = true;
-        system.cpu.regs[15] = system.cpu.regs[14];
-        return;
-    }
     if matches!(pc, 0x002D590C | 0x002D5B40 | 0x002D5D74 | 0x002D699C) {
         let direction = match pc {
             0x002D590C => NavigationDirection::Up,
@@ -992,12 +969,6 @@ impl AimMouse {
     pub(super) fn pc_settings_hovered(&self) -> bool {
         self.pointer.is_some() && self.menu_top.candidates.get(self.menu_top.candidate)
             .is_some_and(|&(index, _)| self.menu_top.parts.get(index).is_some_and(|part| part.model == Some(PC_SETTINGS_ROW)))
-    }
-
-    /// Whether the PC Settings Row is the chosen one, by pointer or by keys:
-    /// it shows the Outline and the hint the game gives Subtitles.
-    pub(super) fn pc_settings_selected(&self) -> bool {
-        if self.pointer.is_some() { self.pc_settings_hovered() } else { self.menu_top.pc_key }
     }
 
     /// Scrolls Chapter Select's row by wheel steps, positive right. Only
@@ -1327,8 +1298,6 @@ pub(super) fn begin(system: &mut System) -> bool {
     mouse.menu_top.passthrough = native_touch;
     mouse.menu_top.started = system.frames;
     mouse.menu_top.parts = parts;
-    // The keys' PC Settings choice lasts while Other stays shown.
-    if index != 4 { mouse.menu_top.pc_key = false; }
     let order = if mouse.menu_top.file_select() {
         // Background and information first; interactive Controls above them.
         [7, 8, 9, 10, 11, 12, 13, 14, 15, 6, 0, 1, 2, 3, 4, 5].into_iter().filter(|&index|
@@ -1665,7 +1634,7 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
 pub(super) fn font(system: &mut System) {
     // On the PC Settings Row the game shows Subtitles' hint: draw its own,
     // from the stack below the caller's, which font_done puts back.
-    if system.cpu.regs[15] == 0x00A36FA4 && system.aim_mouse.as_ref().is_some_and(|mouse| mouse.pc_settings_selected()) {
+    if system.cpu.regs[15] == 0x00A36FA4 && system.aim_mouse.as_ref().is_some_and(|mouse| mouse.pc_settings_hovered()) {
         let sp = system.cpu.regs[13];
         let utf16: Vec<u8> = PC_SETTINGS_HINT.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let text = (sp - utf16.len() as u32 - 0x10) & !7;
@@ -1761,31 +1730,6 @@ pub(super) fn font(system: &mut System) {
     let bytes: Vec<u8> = values.into_iter().flat_map(f32::to_le_bytes).collect();
     system.memory.write_bytes(at, &bytes);
     system.aim_mouse.as_mut().unwrap().menu_top.font_back = Some((at, old));
-}
-
-/// Other's key moves around the PC Settings Row, which the game does not
-/// know: SpotPass's Down and Back's Up land on it (the game outlines
-/// Subtitles), and from it Up goes to SpotPass and Down to Back. The move's
-/// record is rewritten in place before the game uses it.
-fn navigate_pc_settings(system: &mut System) {
-    let (object, record, down) = (system.cpu.regs[0], system.cpu.regs[1], system.cpu.regs[14] == OTHER_DOWN);
-    let Some(mouse) = system.aim_mouse.as_ref() else { return };
-    if !mouse.menu_top.parts.iter().any(|part| part.model == Some(PC_SETTINGS_ROW)) { return; }
-    let on_pc = mouse.menu_top.pc_key;
-    let current = read_word(system, object + BUTTONS_OUTLINED);
-    let target = match (on_pc, down) {
-        (true, true) => Some(BACK),
-        (true, false) => Some(SPOTPASS),
-        (false, true) if current == SPOTPASS.0 => Some(SUBTITLES),
-        (false, false) if current == BACK.0 => Some(SUBTITLES),
-        _ => None,
-    };
-    system.aim_mouse.as_mut().unwrap().menu_top.pc_key = !on_pc && target.is_some();
-    let Some((hash, name)) = target else { return };
-    let mut text = [0u8; 0x20];
-    text[..name.len()].copy_from_slice(name.as_bytes());
-    system.memory.write_bytes(record, &hash.to_le_bytes());
-    system.memory.write_bytes(record + 8, &text);
 }
 
 /// queues the PC Settings Row's label into the top text batch the loop just
@@ -2027,7 +1971,7 @@ pub(super) fn draw(system: &mut System) -> bool {
         // the pointer there maps onto Subtitles. The Outline is Subtitles'
         // NN_B0002/NN_B0003 nodes, lit by MenOptionOtherBt0000; it shows on
         // whichever of the two Rows is hovered.
-        let pc_hovered = system.aim_mouse.as_ref().unwrap().pc_settings_selected();
+        let pc_hovered = system.aim_mouse.as_ref().unwrap().pc_settings_hovered();
         let pc_row = part.model == Some(PC_SETTINGS_ROW);
         filter_models(system, drawing, part.top, !part.top, &mut moved, |name|
             part.model.is_none_or(|model| name == model || board_companions(model).contains(&name)
