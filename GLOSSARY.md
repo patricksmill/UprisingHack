@@ -104,6 +104,28 @@ _Avoid_: Virtual touch, mouse emulation, fake stylus
 Forced broadcast of an out-of-bounds release event to clear guest touch state on window focus loss or scene change.
 _Avoid_: Touch cancel, cursor release, input flush
 
+### Idol View
+
+**Idol View**:
+The 3D figure of the idol shown on the Idols Screen, and the area of the top screen where it is drawn.
+_Avoid_: Model viewer, figure pane, 3D preview
+
+**Orbit**:
+Turning the Idol View's camera around the idol.
+_Avoid_: Rotate, spin, turn
+
+**Pan**:
+Sliding the idol across the Idol View without turning or zooming it; the game's own name is Move.
+_Avoid_: Move (outside quoting the game), drag, shift
+
+**Zoom**:
+Bringing the Idol View's camera closer to or further from the idol.
+_Avoid_: Scale, magnify
+
+**Reset View**:
+Returning the Idol View to the angle, position and zoom it shows an idol with first.
+_Avoid_: Recenter, home
+
 ### Rendering
 
 **Top Screen Pass**:

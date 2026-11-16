@@ -82,6 +82,7 @@
 //!   narr <x> <y> <frames>         run, also drawing the narration line on the top screen at x, y
 //!   call <function> <r0> <r1> [r2]  run a frame, the game calling function with r0..r2 where the menus outside
 //!                                 battle's touch has none (0x00A391E4), as the mouse's hooks call a menu's own code
+//!   mpress <x> <y>                run a frame with the mouse button held at top-screen x, y; mhover releases it
 //!   mouse <dx> <dy> <frames>      run, adding a mouse movement of dx, dy reticle pixels per frame to
 //!                                 the aim delta where 0x00B12218 returns, as the override will
 use std::collections::HashMap;
@@ -308,6 +309,17 @@ fn main() {
                 mouse.menu_hover = true;
                 mouse.hover(pointer);
                 println!("  top {point:?} -> bottom {pointer:?}");
+            }
+            "mpress" => {
+                // one frame with the button held at a top-screen point, as
+                // the frontend sends it; `mhover` lets the button go.
+                let mouse = system.aim_mouse.as_mut().expect("menutop before mpress");
+                let pointer = mouse.menus_top_touch(system.frames, float(1), float(2), true);
+                mouse.menu_hover = true;
+                mouse.hover(pointer);
+                input.touch = mouse.menu_touch(system.frames, true).map(|(x, y)| (x.clamp(0.0, 319.0) as u16, y.clamp(0.0, 239.0) as u16));
+                if !run_frame(&mut system, input, &mut frame) { return; }
+                input.touch = None;
             }
             "mdragtop" => {
                 let (start, end, count) = ([float(1), float(2)], [float(3), float(4)], num(5).max(1));

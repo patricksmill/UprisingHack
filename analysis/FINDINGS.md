@@ -800,6 +800,25 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   title (150, 38), the description block (14, 64), its "1/9" (151, 211).
   Back and AR are no glyphs. A saved List state reloads with a black top;
   reach the List from the description state instead.
+- Idols view state (viewer object 0x14040508 in `trace/idols-viewer.state`,
+  ticking at 30 Hz): zoom `+0x168` (0 out, 0.5 default, 1 in; X/Y and the
+  zoom bar), tilt `+0x170` (game clamps to ±90, limits at +0x1C4/+0x1C8),
+  angle `+0x174` (degrees, wraps at 360), position `+0x178`/`+0x17C` with
+  twins `+0x184`/`+0x188` (re-clamped every tick to a zoom/tilt bound),
+  camera offset `+0x194` from zoom. Writing angle, tilt and zoom sticks.
+  Idle spin `+0x524` (6 spinning, 0 stopped; first input clears it at
+  0x0024CE78). Stylus momentum is a velocity at `+0x2D4`/`+0x2D8` that only
+  the game's own release path sets; poking it does nothing, so the PC Orbit
+  keeps its own. Writers: 0x00297E80 (zoom 0x00298030, tilt 0x00298264,
+  angle 0x00298280), position in 0x0024C270. L/R and B restore the idol's
+  own default view and spin. On the List page the view takes no input.
+- Reticle/Camera choices live in the save singleton `*0x00D636C4`
+  (0x00EE33C0): flags byte `+0x163EC` (Land Invert Horizontal 0x02, Invert
+  Vertical 0x04; Air Invert Horizontal 0x08, Invert Vertical 0x10, Invert
+  Vertical Movement 0x20), Land speeds `+0x163D0` (horizontal) and
+  `+0x163D4` (vertical), Land stop `+0x163C8`, Air speed `+0x163D8` and stop
+  `+0x163CC`, each -1..1. 0x00B12218 applies the inversion bits after the
+  aim delta each frame; written as soon as the Row is touched.
 - Gear top-screen node ownership: `MenEquipUp0000` nodes `NN_U0000` and
   `NN_U0001` are Paper background, `NN_U0027` Silhouette, `NN_U0002` Crest,
   and its remaining nodes Ornaments. `MenEquipUp0001` nodes `NN_U0000`
