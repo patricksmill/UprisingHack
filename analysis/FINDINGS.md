@@ -806,7 +806,7 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   angle `+0x174` (degrees, wraps at 360), position `+0x178`/`+0x17C` with
   twins `+0x184`/`+0x188` (re-clamped every tick to a zoom/tilt bound),
   camera offset `+0x194` from zoom. Writing angle, tilt and zoom sticks.
-  Idle spin `+0x524` (6 spinning, 0 stopped; first input clears it at
+  Idle spin byte `+0x524` (the bytes after it are other state; 6 spinning, 0 stopped; first input clears it at
   0x0024CE78). Stylus momentum is a velocity at `+0x2D4`/`+0x2D8` that only
   the game's own release path sets; poking it does nothing, so the PC Orbit
   keeps its own. Writers: 0x00297E80 (zoom 0x00298030, tilt 0x00298264,
@@ -824,6 +824,10 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   is screen `+0x40C` (list `+0xDC`). Its keys call 0x0031AA88(list, down,
   1, 1) from 0x00297E98 once per Row, stopping at the last Row. The wheel
   makes the same call per notch, on the List page only.
+  The idol shown is screen `+0x414` (List Row's idol; L/R and the Cursor
+  change it). On the frame it changes the game resets zoom, tilt and
+  position but keeps the angle, which the idle spin then turns; the drawn
+  y twin settles over the next frames.
 - Reticle/Camera choices live in the save singleton `*0x00D636C4`
   (0x00EE33C0): flags byte `+0x163EC` (Land Invert Horizontal 0x02, Invert
   Vertical 0x04; Air Invert Horizontal 0x08, Invert Vertical 0x10, Invert
