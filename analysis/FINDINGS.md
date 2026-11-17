@@ -820,6 +820,10 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   with the C-stick (the PC right stick) by itself: about 5°/frame at full
   tilt after a short ramp, stick right raising the angle, stick up lowering
   the tilt, nothing below about 0.2 of tilt.
+  The Idols List is the generic list class at screen `+0x330`; its Cursor
+  is screen `+0x40C` (list `+0xDC`). Its keys call 0x0031AA88(list, down,
+  1, 1) from 0x00297E98 once per Row, stopping at the last Row. The wheel
+  makes the same call per notch, on the List page only.
 - Reticle/Camera choices live in the save singleton `*0x00D636C4`
   (0x00EE33C0): flags byte `+0x163EC` (Land Invert Horizontal 0x02, Invert
   Vertical 0x04; Air Invert Horizontal 0x08, Invert Vertical 0x10, Invert
