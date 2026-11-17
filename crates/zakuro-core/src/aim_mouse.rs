@@ -569,6 +569,12 @@ fn outline_armory(system: &mut System, object: u32, found: Found) -> Option<Vec<
     None
 }
 
+/// the Idols Screen's vtable, its List (the generic list class) and that
+/// class's one-Row scroll.
+const IDOLS: u32 = 0x00CF93D8;
+const IDOLS_LIST: u32 = 0x330;
+const LIST_SCROLL: u32 = 0x0031AA88;
+
 fn scroll_armory(system: &mut System, object: u32, steps: [i32; 2], scratch: u32) -> Vec<MenuCall> {
     let vtable = read_word(system, object);
     if let Some(list) = armory_list(system, object) {
@@ -605,6 +611,11 @@ fn scroll_armory(system: &mut System, object: u32, steps: [i32; 2], scratch: u32
             system.memory.write_bytes(object + offset, &value.to_le_bytes());
         }
         return vec![(0x002C5588, [object, 0, 1]), (0x002C5398, [object, 0, 0])];
+    }
+    // Idols: the List's keys move the Cursor a Row at a time through the
+    // list class's scroll, with its third and fourth words 1 (FINDINGS.md).
+    if vtable == IDOLS && system.aim_mouse.as_ref().is_some_and(|mouse| mouse.idols_list_shown()) {
+        return (0..steps[1].unsigned_abs()).map(|_| (LIST_SCROLL, [object + IDOLS_LIST, u32::from(steps[1] > 0), 1])).collect();
     }
     if read_word(system, object) == 0x00CEFCA8 && read_word(system, object + 0x5A8) == 3 {
         return (0..steps[1].unsigned_abs()).map(|_| (0x002CC320, [object, u32::from(steps[1] < 0), 0])).collect();
@@ -2965,6 +2976,8 @@ fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
     call_here(system, function, r0, r1, Drawing::Menu(2, index), Vec::new());
     system.cpu.regs[2] = r2;
     if index >= 14 { system.cpu.regs[3] = 0; }
+    // the Idols List's keys pass 1 for the scroll's fourth word too
+    if function == LIST_SCROLL && read_word(system, r0.wrapping_sub(IDOLS_LIST)) == IDOLS { system.cpu.regs[3] = 1; }
     system.cpu.regs[13] = at;
 }
 

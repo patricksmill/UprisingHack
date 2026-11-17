@@ -1061,6 +1061,9 @@ impl AimMouse {
         Some((x / self.widen, y))
     }
 
+    /// whether the Idols List page, not one idol's description, is shown.
+    pub(super) fn idols_list_shown(&self) -> bool { self.menu_top.idols_list }
+
     pub fn hovered_menu_part(&self) -> Option<u32> { self.menu_part.map(|part| part.hash) }
 
     /// The chapter of the Chapter Select Row under the pointer, if any.
