@@ -2206,6 +2206,13 @@ pub(super) fn font(system: &mut System) {
             return;
         }
     }
+    // A placed bottom Control's text: the native bold effect's
+    // same-colour offset copy reads as a doubled label once scaled.
+    if system.cpu.regs[15] == 0x00A36F74 && matches!(drawing(system), Some(Drawing::MenuTop(step))
+        if system.aim_mouse.as_ref().and_then(|mouse| mouse.menu_top.part(step / 8)).is_some_and(|part| !part.top)) {
+        system.cpu.regs[15] += 4;
+        return;
+    }
     let heart = system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menu_top.drawing_text);
     // The game names the hub before its controller's input runs, so its
     // count is held back from the first frame the hub draws.
