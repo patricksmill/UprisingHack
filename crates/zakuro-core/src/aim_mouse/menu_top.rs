@@ -20,6 +20,8 @@ pub(super) const FONT_DONE: [u32; 7] = [0x00A36E68, 0x00A36ECC, 0x00A36EE8, 0x00
 pub(super) struct MenuTop {
     drawn: Option<(u64, usize, u32, f32)>,
     idol_dialog: bool,
+    /// where the play-coin Dialog sits among Idol Toss's own layers.
+    dialog_at: Option<usize>,
     idol_revealing: bool,
     /// the Idols List page is shown, not one idol's description.
     idols_list: bool,
@@ -148,6 +150,19 @@ impl Part {
 }
 
 impl MenuTop {
+    /// the screen and layer an edit to shown layer `index` is saved under:
+    /// Idol Toss's own while its Dialog shows, the Dialog itself unsaved.
+    fn saved_as(&self, screen: usize, index: usize) -> Option<(usize, usize)> {
+        match self.dialog_at {
+            Some(at) if self.idol_dialog => match index.cmp(&at) {
+                std::cmp::Ordering::Less => Some((IDOL_TOSS_SCREEN, index)),
+                std::cmp::Ordering::Equal => None,
+                std::cmp::Ordering::Greater => Some((IDOL_TOSS_SCREEN, index - 1)),
+            },
+            _ => Some((screen, index)),
+        }
+    }
+
     fn file_select(&self) -> bool {
         self.active.map(|(index, ..)| index).or_else(|| self.drawn.map(|(_, index, ..)| index))
             .is_some_and(|index| index < ScreenTransform::scripted_len()
@@ -914,12 +929,20 @@ fn idol_toss(width: f32) -> Placement {
     Placement { from, to: [idol_eggs(width).to[0] - from[2] * scale, 62.0 - IDOL_LAUNCHER[1] * scale, from[2] * scale, from[3] * scale] }
 }
 
+/// Idol Toss's screen while its play-coin Dialog shows over the hub.
+const IDOL_TOSS_SCREEN: usize = 22;
+
+/// where the Dialog goes among a layout's parts: before the hint, which
+/// precedes the backdrop.
+fn dialog_slot(parts: &[Part]) -> usize {
+    parts.iter().position(|part| part.top && part.model.is_none() && !part.backdrop).unwrap()
+}
+
 fn layout_with_dialog(index: usize, width: f32, idol_dialog: bool) -> (Placement, Vec<Part>) {
     let (native, mut parts) = layout(if idol_dialog { 22 } else { index }, width);
     if idol_dialog {
         let place = fitted([0.0, 0.0, 320.0, 240.0], [8.0, 48.0, width - 16.0, 180.0]);
-        // before the hint, which precedes the backdrop
-        let hint = parts.iter().position(|part| part.top && part.model.is_none() && !part.backdrop).unwrap();
+        let hint = dialog_slot(&parts);
         parts.insert(hint, Part { visible: true, backdrop: false, chapter: false, idol: Some(IdolGroup::Dialog), top: false, model: None, place });
     }
     (native, parts)
@@ -1380,8 +1403,9 @@ impl AimMouse {
         self.menu_top.hidden = hidden;
         if let Some(screen) = self.menu_screen.map(|(screen, ..)| screen)
             .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) {
-            for (index, part) in self.menu_top.parts.iter_mut().enumerate() {
-                part.visible = !self.menu_top.hidden.contains(&(screen, index));
+            let saved: Vec<_> = (0..self.menu_top.parts.len()).map(|index| self.menu_top.saved_as(screen, index)).collect();
+            for (part, saved) in self.menu_top.parts.iter_mut().zip(saved) {
+                part.visible = saved.is_none_or(|entry| !self.menu_top.hidden.contains(&entry));
             }
         }
         self.cancel_menu_touch();
@@ -1395,8 +1419,9 @@ impl AimMouse {
             .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) else { return };
         let Some(part) = self.menu_top.parts.get_mut(index) else { return };
         part.visible = visible;
-        self.menu_top.hidden.retain(|&entry| entry != (screen, index));
-        if !visible { self.menu_top.hidden.push((screen, index)); }
+        let Some(entry) = self.menu_top.saved_as(screen, index) else { return };
+        self.menu_top.hidden.retain(|&kept| kept != entry);
+        if !visible { self.menu_top.hidden.push(entry); }
         self.cancel_menu_touch();
         self.clear_menus_top_pointer();
     }
@@ -1438,6 +1463,7 @@ impl AimMouse {
             to[2] *= IDOL_COUNTERS_WIDTH / part.place.from[2];
         }
         let kept = unseat_override(to, 400.0 * self.widen);
+        let Some((screen, index)) = self.menu_top.saved_as(screen, index) else { return };
         match self.menu_top.overrides.iter_mut().find(|(kept, part, _)| *kept == screen && *part == index) {
             Some(entry) => entry.2 = kept,
             None => self.menu_top.overrides.push((screen, index, kept)),
@@ -1647,16 +1673,21 @@ pub(super) fn begin(system: &mut System) -> bool {
         mouse.menu_top.chapter_outlined = None;
     }
     let (mut native, mut parts) = layout_with_dialog(index, 400.0 * mouse.widen, idol_dialog);
+    // With the Dialog up, the hub draws Idol Toss's layers: its saved
+    // edits apply, each past the Dialog one further along.
+    let dialog_at = idol_dialog.then(|| parts.iter().position(|part| part.idol == Some(IdolGroup::Dialog)).unwrap());
+    let edits = if idol_dialog { IDOL_TOSS_SCREEN } else { index };
+    let shown = |part: usize| part + dialog_at.is_some_and(|at| part >= at) as usize;
     for &(screen, part, to) in &mouse.menu_top.overrides {
-        if screen == index {
-            if let Some(part) = parts.get_mut(part) {
+        if screen == edits {
+            if let Some(part) = parts.get_mut(shown(part)) {
                 part.place.to = seat_override(to, 400.0 * mouse.widen);
             }
         }
     }
     for &(screen, part) in &mouse.menu_top.hidden {
-        if screen == index {
-            if let Some(part) = parts.get_mut(part) { part.visible = false; }
+        if screen == edits {
+            if let Some(part) = parts.get_mut(shown(part)) { part.visible = false; }
         }
     }
     // The revealed idol's name bar draws with the counters but runs past
@@ -1696,6 +1727,7 @@ pub(super) fn begin(system: &mut System) -> bool {
     let backdrop = parts.iter().find(|part| part.backdrop).map(|part| (part.place.to, part.visible));
     if let Some((to, _)) = backdrop { native.to = to; }
     mouse.menu_top.idol_dialog = idol_dialog;
+    mouse.menu_top.dialog_at = dialog_at;
     mouse.menu_top.idol_revealing = idol_revealing;
     mouse.menu_top.controls_more = controls_more;
     mouse.menu_top.active = Some((index, object, current, native_touch));
