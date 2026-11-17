@@ -417,6 +417,122 @@ fn bottom_layers(index: usize) -> &'static [super::screen_transform::TopLayer] {
     if index < ScreenTransform::scripted_len() { ScreenTransform::scripted(index).layout.bottom_layers() } else { &[] }
 }
 
+/// The texture layers declared by the Screen's layout row.
+fn texture_layers(index: usize) -> &'static [super::screen_transform::TextureLayer] {
+    if index < ScreenTransform::scripted_len() { ScreenTransform::scripted(index).layout.texture_layers() } else { &[] }
+}
+
+/// A texture layer's own label, model and native box, if the part is one.
+fn texture_layer(index: usize, model: Option<&str>) -> Option<super::screen_transform::TextureLayer> {
+    texture_layers(index).iter().copied().find(|&(layer, ..)| Some(layer) == model)
+}
+
+/// The Placement that draws a texture layer's model: the node layer owning
+/// it, or the Details card when no node layer does.
+fn texture_owner(index: usize, parts: &[Part], model: &str) -> Option<Placement> {
+    let owner = top_layers(index).iter().find(|&&(_, owns, _)| owns == model).map(|&(layer, ..)| layer);
+    parts.iter().find(|part| match owner { Some(layer) => part.model == Some(layer), None => part.backdrop }).map(|part| part.place)
+}
+
+/// A texture layer's box as shown, kept inside where its texture can draw:
+/// the native box moved with its owner's Placement. Its size never exceeds
+/// that box and it slides back inside, so the drawing matches the editor.
+fn clamp_texture_box(to: [f32; 4], native: [f32; 4], owner: Placement) -> [f32; 4] {
+    let area = owner.to_box(native);
+    // max then min, not clamp: a full-size box rounds its bounds a hair apart
+    let (width, height) = (to[2].max(1.0).min(area[2].max(1.0)), to[3].max(1.0).min(area[3].max(1.0)));
+    [to[0].min(area[0] + area[2] - width).max(area[0]), to[1].min(area[1] + area[3] - height).max(area[1]), width, height]
+}
+
+/// The material's texture Scale and Translate (U, V) that draw a texture
+/// whose identity box is `native` into `shown`, both in the owner's native
+/// pixels. Measured on the Idols emblem: Scale divides the box about its
+/// bottom left corner and Translate moves it right and up by its size.
+fn texture_transform(native: [f32; 4], shown: [f32; 4]) -> [f32; 4] {
+    let [x, y, width, height] = native;
+    [width / shown[2].max(0.01), height / shown[3].max(0.01), (shown[0] - x) / width, (y + height - shown[1] - shown[3]) / height]
+}
+
+/// Texture coordinator 0 of a CGFX material (`MTOB`): Scale U and V,
+/// Rotate, Translate U and V, then flags whose low byte asks the engine to
+/// rebuild the matrix from them (it clears it once done).
+const MTOB_COORDINATOR: u32 = 0x16C;
+const COORDINATOR_SCALE: u32 = 0x10;
+const COORDINATOR_TRANSLATE: u32 = 0x1C;
+const COORDINATOR_FLAGS: u32 = 0x24;
+/// The Idols backdrop's texture-unit-0 commands in its `MTOB`: the border
+/// colour, then (after the header for registers 0x81..0x84) the size and
+/// the sampler parameters. ClampToBorder with a white border keeps the
+/// texture's edge texels from smearing across the mesh when it shrinks
+/// or moves; white is "no emblem" in this material.
+const MTOB_BORDER: u32 = 0x2F0;
+const MTOB_SAMPLER_HEADER: u32 = 0x2F4;
+const MTOB_SAMPLER: u32 = 0x2FC;
+const SAMPLER_HEADER: u32 = 0x804F_0081;
+const WRAP_BORDER: u32 = 0x1100;
+const WRAP_MASK: u32 = 0x7700;
+
+/// Write a texture layer's transform into its model's materials. These
+/// writes persist: the engine reads them on its own update, and the model
+/// is the Screen's, released with it.
+fn place_texture(system: &mut System, model: u32, transform: [f32; 4]) {
+    if read_word(system, model) != 0x00D14AF4 { return; }
+    let (start, end) = (read_word(system, model + 0x164), read_word(system, model + 0x168));
+    if start == 0 || end < start || end - start > 128 * 4 || !system.memory.is_readable(start, end - start) { return; }
+    for at in (start..end).step_by(4) {
+        let material = read_word(system, at);
+        if !system.memory.is_readable(material, 0x18) || read_word(system, material) != 0x00D1510C { continue; }
+        for offset in [8, 0x14] {
+            let mtob = read_word(system, material + offset);
+            if mtob == 0 || !system.memory.is_readable(mtob, MTOB_SAMPLER + 4) || read_word(system, mtob + 4) != u32::from_le_bytes(*b"MTOB") { continue; }
+            let coordinator = mtob + MTOB_COORDINATOR;
+            // Scale U, V; Translate U, V (Rotate, between them, stays 0)
+            let fields = [COORDINATOR_SCALE, COORDINATOR_SCALE + 4, COORDINATOR_TRANSLATE, COORDINATOR_TRANSLATE + 4];
+            let old = fields.map(|at| f32::from_bits(read_word(system, coordinator + at)));
+            if old != transform {
+                for (at, value) in fields.into_iter().zip(transform) {
+                    system.memory.write_bytes(coordinator + at, &value.to_le_bytes());
+                }
+                let flags = read_word(system, coordinator + COORDINATOR_FLAGS);
+                system.memory.write_bytes(coordinator + COORDINATOR_FLAGS, &(flags | 1).to_le_bytes());
+            }
+            if read_word(system, mtob + MTOB_SAMPLER_HEADER) == SAMPLER_HEADER {
+                system.memory.write_bytes(mtob + MTOB_BORDER, &u32::MAX.to_le_bytes());
+                let sampler = read_word(system, mtob + MTOB_SAMPLER) & !WRAP_MASK | WRAP_BORDER;
+                system.memory.write_bytes(mtob + MTOB_SAMPLER, &sampler.to_le_bytes());
+            }
+        }
+    }
+}
+
+/// Place every texture layer of the Screen's top models from its part.
+fn place_textures(system: &mut System, index: usize, top: u32) {
+    if texture_layers(index).is_empty() { return; }
+    let parts = system.aim_mouse.as_ref().unwrap().menu_top.parts.clone();
+    let scene = read_word(system, top + 0x40);
+    let layers = read_word(system, scene + SCENE_LAYERS);
+    for layer in 0..0x10 {
+        let list = read_word(system, layers + layer * LAYER_SIZE + 4);
+        if list == 0 { continue; }
+        let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
+        if end < start || end - start > 0x1000 { continue; }
+        for at in (start..end).step_by(4) {
+            let model = read_word(system, at);
+            let name = model_name(system, model);
+            for &(label, owner, native) in texture_layers(index).iter().filter(|&&(_, owner, _)| owner == name) {
+                let (Some(part), Some(place)) = (parts.iter().find(|part| part.model == Some(label)), texture_owner(index, &parts, owner)) else { continue };
+                // Hidden, the texture moves wholly off its box.
+                let transform = if !part.visible { [1.0, 1.0, 4.0, 4.0] } else {
+                    let shown = clamp_texture_box(part.place.to, native, place);
+                    let [x, y] = place.unmap_point([shown[0], shown[1]]);
+                    texture_transform(native, [x, y, shown[2] * place.from[2] / place.to[2], shown[3] * place.from[3] / place.to[3]])
+                };
+                place_texture(system, model, transform);
+            }
+        }
+    }
+}
+
 /// Whether a bottom Board part is one of the Screen's node layers.
 fn bottom_layer_part(index: usize, model: Option<&str>) -> bool {
     model.is_some_and(|model| bottom_layers(index).iter().any(|&(layer, ..)| layer == model))
@@ -695,6 +811,10 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
     // After the backdrop, so Gear's earlier saved indices are kept; back to front.
     for &(layer, ..) in kind.map_or(&[][..], LayoutKind::top_layers) {
         parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some(layer), place: native });
+    }
+    // After the node layers, so their saved indices are kept.
+    for &(layer, _, from) in kind.map_or(&[][..], LayoutKind::texture_layers) {
+        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some(layer), place: Placement { from, to: native.to_box(from) } });
     }
     (native, parts)
 }
@@ -1125,6 +1245,13 @@ impl AimMouse {
         }).collect()
     }
 
+    /// the Scripted Menu the editor's layers belong to, by registry index;
+    /// none for the Cauldron, Pause and the Retreat Dialog.
+    pub fn editor_scripted_index(&self) -> Option<usize> {
+        if self.editing_cauldron() || !self.editing_scripted() { return None; }
+        self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen))
+    }
+
     /// the dev editor's saved moves, by screen and part index.
     pub fn editor_overrides(&self) -> Vec<(usize, usize, [f32; 4])> {
         self.menu_top.overrides.clone()
@@ -1176,6 +1303,26 @@ impl AimMouse {
         if self.editing_cauldron() { return self.set_cauldron_editor_layer(index, to); }
         if !self.editing_scripted() { return; }
         let screen = self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen));
+        // A texture layer rides on the layer drawing its texture: moving
+        // that owner moves and scales it the same way.
+        if let (Some(screen), Some(owner)) = (screen, self.menu_top.parts.get(index).cloned()) {
+            let owned_by = |model: &str| top_layers(screen).iter().find(|&&(_, owns, _)| owns == model).map(|&(layer, ..)| layer);
+            let riders: Vec<(usize, [f32; 4])> = texture_layers(screen).iter()
+                .filter(|&&(_, model, _)| match owned_by(model) { Some(layer) => owner.model == Some(layer), None => owner.backdrop })
+                .filter_map(|&(label, ..)| self.menu_top.parts.iter().position(|part| part.model == Some(label)))
+                .map(|rider| {
+                    let moved = Placement { from: owner.place.to, to };
+                    (rider, moved.to_box(self.menu_top.parts[rider].place.to))
+                }).collect();
+            if let Some(part) = self.menu_top.parts.get_mut(index) { part.place.to = to; }
+            for (rider, box_) in riders { self.set_editor_layer(rider, box_); }
+        }
+        // A texture layer stays where its texture can draw.
+        let to = match screen.and_then(|screen| Some((screen, texture_layer(screen, self.menu_top.parts.get(index)?.model)?))) {
+            Some((screen, (_, owner, native))) => texture_owner(screen, &self.menu_top.parts, owner)
+                .map_or(to, |place| clamp_texture_box(to, native, place)),
+            None => to,
+        };
         if let Some(part) = self.menu_top.parts.get_mut(index) {
             part.place.to = to;
         }
@@ -1440,7 +1587,10 @@ pub(super) fn begin(system: &mut System) -> bool {
             mouse.menu_top.enabled(&mouse.menu_top.parts[index])).collect()
     } else {
         let parts = mouse.menu_top.parts.clone();
-        draw_order(system, bottom, &parts, !top_layers(index).is_empty(), bottom_layers(index))
+        let mut order = draw_order(system, bottom, &parts, !top_layers(index).is_empty(), bottom_layers(index));
+        // A texture layer draws through its owner's mesh, never by itself.
+        order.retain(|&part| texture_layer(index, parts[part].model).is_none());
+        order
     };
     system.aim_mouse.as_mut().unwrap().menu_top.draw_order = order;
     let idols_list = !bottom_layers(index).is_empty() && {
@@ -1478,6 +1628,7 @@ pub(super) fn begin(system: &mut System) -> bool {
         }
     }
     if index == 1 { chapter_models(system, top, true, false, None, &mut moved); }
+    place_textures(system, index, top);
     let mouse = system.aim_mouse.as_mut().unwrap();
     mouse.menu_top.native = moved;
     // A hidden backdrop keeps the game's pass but clips all of it away.
@@ -2032,6 +2183,7 @@ fn target(system: &mut System, eye: u32, step: usize, mut moved: Vec<(u32, Vec<u
     change(system, &mut moved, manager + 0x210, &eye.to_le_bytes());
     call_here(system, 0x00916588, manager, eye, Drawing::MenuTop(step), moved);
 }
+
 
 pub(super) fn draw(system: &mut System) -> bool {
     let mut top = system.cpu.regs[4];

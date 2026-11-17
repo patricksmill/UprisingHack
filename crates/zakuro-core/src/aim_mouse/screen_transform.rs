@@ -252,6 +252,23 @@ const IDOLS_TOP: &[TopLayer] = &[
     ("Idol", "Dol*", &[]),
 ];
 
+/// A layer that is a texture inside another layer's mesh, not a mesh of
+/// its own: editor label, owning model, and the box (top-screen pixels of
+/// the model's native drawing) the texture fills at its identity transform.
+/// It is placed by the material's texture Scale and Translate, so it shows
+/// only inside that box: the mesh's texture coordinates are not linear
+/// outside it.
+pub(super) type TextureLayer = (&'static str, &'static str, [f32; 4]);
+
+/// The Idols backdrop's category emblem. The game binds one texture per
+/// category (`MenColVwUp_Dynamic00NN`) to the backdrop's only material, so
+/// the emblem shares the backdrop's one mesh node. Measured from
+/// `trace/idols-viewer.state` with a black border: Scale divides the box
+/// about its bottom left corner; Translate moves it by its own size.
+const IDOLS_TEXTURE: &[TextureLayer] = &[
+    ("Emblem", "MenColViewerUp0000", [248.0, 25.0, 114.0, 113.0]),
+];
+
 /// The Idols chrome, `MenColViewerBt0000`, split by mesh node. Probed from
 /// `trace/idols-viewer.state` and its List (Back from there). `base` is the
 /// description page's white panel and `NN_B0002` its words' node; neither
@@ -341,7 +358,7 @@ pub(super) enum LayoutKind {
     /// the game's fixed board of models.
     Group { group: &'static [(&'static str, [f32; 4])], hint: Option<[f32; 4]>, details: bool, heart: bool },
     /// Controls cut from the whole native Board, beside the details card.
-    Board { group: &'static [(&'static str, [f32; 4])], hint: Option<[f32; 4]>, top_layers: &'static [TopLayer], bottom_layers: &'static [TopLayer] },
+    Board { group: &'static [(&'static str, [f32; 4])], hint: Option<[f32; 4]>, top_layers: &'static [TopLayer], bottom_layers: &'static [TopLayer], texture_layers: &'static [TextureLayer] },
     /// Idol Toss's counters, Back and launcher, placed apart.
     Idol,
 }
@@ -373,6 +390,11 @@ impl LayoutKind {
 
     pub fn top_layers(self) -> &'static [TopLayer] {
         match self { LayoutKind::Board { top_layers, .. } => top_layers, _ => &[] }
+    }
+
+    /// top layers drawn by moving a texture inside its model's mesh.
+    pub fn texture_layers(self) -> &'static [TextureLayer] {
+        match self { LayoutKind::Board { texture_layers, .. } => texture_layers, _ => &[] }
     }
 
     /// node layers of the bottom Board, named in `group` by layer name.
@@ -482,19 +504,19 @@ pub(super) static SCREENS: &[ScreenSpec] = &[
     scripted!(11, SpotPassDialog, 0x00CF8270, outline_dialog, Activate::Call(0x00314DF8), LayoutKind::Group { group: SPOTPASS_CHOICE, hint: HINT_BOTTOM, details: false, heart: false }),
     scripted!(12, SoloHub, 0x00CFC3D0, outline_solo, Activate::Call(0x00370300), LayoutKind::Group { group: SOLO, hint: HINT_BOTTOM, details: false, heart: true }),
     scripted!(13, ArmsAltar, 0x00CFCA28, outline_altar, Activate::Call(0x00322C34), LayoutKind::Group { group: ALTAR, hint: HINT_BOTTOM, details: false, heart: false }),
-    scripted!(14, ArmoryGear, 0x00CEC2B8, outline_armory, Activate::None, LayoutKind::Board { group: GEAR, hint: HINT_TOP, top_layers: GEAR_TOP, bottom_layers: &[] }),
+    scripted!(14, ArmoryGear, 0x00CEC2B8, outline_armory, Activate::None, LayoutKind::Board { group: GEAR, hint: HINT_TOP, top_layers: GEAR_TOP, bottom_layers: &[], texture_layers: &[] }),
     scripted!(15, ArmoryRedeemHearts, 0x00CEFCA8, outline_armory, Activate::None, LayoutKind::Generic { hint: None, details: true }),
     scripted!(16, ArmoryConvertToHearts, 0x00CEEBFC, outline_armory, Activate::None, LayoutKind::Generic { hint: None, details: true }),
     scripted!(17, ArmoryFuseWeapons, 0x00CEE148, outline_armory, Activate::None, LayoutKind::Generic { hint: HINT_BOTTOM, details: true }),
-    scripted!(18, ArmoryPowers, 0x00CEC2E0, outline_armory, Activate::None, LayoutKind::Board { group: POWERS, hint: None, top_layers: POWERS_TOP, bottom_layers: &[] }),
-    scripted!(19, ArmoryWeapons, 0x00CEE1E8, outline_armory, Activate::None, LayoutKind::Board { group: WEAPON_LIST, hint: HINT_BOTTOM, top_layers: WEAPONS_TOP, bottom_layers: &[] }),
-    scripted!(20, ArmoryCategories, 0x00CEE1C0, outline_armory, Activate::None, LayoutKind::Board { group: CATEGORIES, hint: HINT_TOP, top_layers: &[], bottom_layers: &[] }),
+    scripted!(18, ArmoryPowers, 0x00CEC2E0, outline_armory, Activate::None, LayoutKind::Board { group: POWERS, hint: None, top_layers: POWERS_TOP, bottom_layers: &[], texture_layers: &[] }),
+    scripted!(19, ArmoryWeapons, 0x00CEE1E8, outline_armory, Activate::None, LayoutKind::Board { group: WEAPON_LIST, hint: HINT_BOTTOM, top_layers: WEAPONS_TOP, bottom_layers: &[], texture_layers: &[] }),
+    scripted!(20, ArmoryCategories, 0x00CEE1C0, outline_armory, Activate::None, LayoutKind::Board { group: CATEGORIES, hint: HINT_TOP, top_layers: &[], bottom_layers: &[], texture_layers: &[] }),
     scripted!(21, PracticeRange, 0x00CF0154, outline_practice, Activate::Call(0x0030B5B4), LayoutKind::Group { group: PRACTICE, hint: HINT_PRACTICE, details: false, heart: false }),
     scripted!(22, IdolTossSolo, 0x00CF9400, outline_idol, Activate::Touch, LayoutKind::Idol),
     scripted!(23, TreasureHunt, 0x00CEEDD8, outline_treasure, Activate::Touch, LayoutKind::Generic { hint: HINT_TREASURE, details: false }),
     scripted!(24, Vault, 0x00CF8248, outline_vault, Activate::Call(0x00345FDC), LayoutKind::Group { group: VAULT, hint: HINT_VAULT, details: false, heart: false }),
     scripted!(25, IdolTossVault, 0x00CF9400, outline_idol, Activate::Touch, LayoutKind::Idol),
-    scripted!(26, Idols, 0x00CF93D8, outline_none, Activate::Touch, LayoutKind::Board { group: IDOLS, hint: None, top_layers: IDOLS_TOP, bottom_layers: IDOLS_BOTTOM }),
+    scripted!(26, Idols, 0x00CF93D8, outline_none, Activate::Touch, LayoutKind::Board { group: IDOLS, hint: None, top_layers: IDOLS_TOP, bottom_layers: IDOLS_BOTTOM, texture_layers: IDOLS_TEXTURE }),
     ScreenSpec {
         id: Screen::FiendsCauldron,
         family: Family::Cauldron,
