@@ -192,6 +192,20 @@ fn main() {
             "touch" => input.touch = Some((num(1) as u16, num(2) as u16)),
             "untouch" => input.touch = None,
             "circle" => (input.circle_x, input.circle_y) = (float(1), float(2)),
+            "cstick" => (input.c_stick_x, input.c_stick_y) = (float(1), float(2)),
+            "mpan" => {
+                // a right-drag over top-screen points, one frame a step
+                let (start, end, count) = ([float(1), float(2)], [float(3), float(4)], num(5).max(1));
+                for step in 0..=count {
+                    let t = step as f32 / count as f32;
+                    let point = [start[0] + (end[0] - start[0]) * t, start[1] + (end[1] - start[1]) * t];
+                    let mouse = system.aim_mouse.as_mut().expect("menutop before mpan");
+                    let taken = mouse.idol_view_pan(system.frames, point[0], point[1], true);
+                    if step == 0 { println!("  pan taken: {taken}"); }
+                    if !run_frame(&mut system, input, &mut frame) { return; }
+                }
+                system.aim_mouse.as_mut().unwrap().idol_view_pan(system.frames, end[0], end[1], false);
+            }
             "drag" => {
                 let (x0, y0, x1, y1, frames) = (float(1), float(2), float(3), float(4), num(5).max(1));
                 for i in 0..=frames {

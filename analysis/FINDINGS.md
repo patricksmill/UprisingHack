@@ -812,6 +812,14 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   keeps its own. Writers: 0x00297E80 (zoom 0x00298030, tilt 0x00298264,
   angle 0x00298280), position in 0x0024C270. L/R and B restore the idol's
   own default view and spin. On the List page the view takes no input.
+  Position x is right, y up; the picture is drawn from the twins (`+0x184`
+  x, `+0x188` = y - 9), so a write must move both. Default zoom limits are
+  x ±19.6, y 12 up to about 24. A position unit spans about
+  1 / (0.147 - 0.098 * zoom) native top pixels (6.8 at zoom 0, 10.2 at
+  0.5, about 20 at 1; measured from the idol's centroid). The game Orbits
+  with the C-stick (the PC right stick) by itself: about 5°/frame at full
+  tilt after a short ramp, stick right raising the angle, stick up lowering
+  the tilt, nothing below about 0.2 of tilt.
 - Reticle/Camera choices live in the save singleton `*0x00D636C4`
   (0x00EE33C0): flags byte `+0x163EC` (Land Invert Horizontal 0x02, Invert
   Vertical 0x04; Air Invert Horizontal 0x08, Invert Vertical 0x10, Invert
