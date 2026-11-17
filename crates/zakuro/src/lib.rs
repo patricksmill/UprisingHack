@@ -197,6 +197,7 @@ pub fn run(linked: Option<Linked>) {
         modifiers: winit::keyboard::ModifiersState::empty(),
         tilting_from: None,
         idol_panning: false,
+        idol_orbit_from: None,
         aim_captured: false,
         released_for_pause: false,
         cursor: (0.0, 0.0),
@@ -503,6 +504,11 @@ struct App {
     tilting_from: Option<(f32, f32)>,
     /// a right-drag Panning the Idol View on Idols, in place of the tilt.
     idol_panning: bool,
+    /// while an Orbit holds the pointer: where it was pressed, in window
+    /// pixels. The pointer is hidden and held there; raw motion moves a
+    /// stand-in cursor that drives the drag, and the pointer comes back
+    /// where it was pressed.
+    idol_orbit_from: Option<(f32, f32)>,
     /// the mouse aims in Kid Icarus: Uprising, F6 turns it on and off: the
     /// pointer is held in the window, its movement moves the reticle, the
     /// bottom screen is held touched in its middle and the left button
@@ -815,6 +821,8 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { .. } if self.aim_captured => {}
+            // an Orbit holds the pointer still; raw motion drives it
+            WindowEvent::CursorMoved { .. } if self.idol_orbit_from.is_some() => {}
             WindowEvent::MouseInput { state, button, .. } => {
                 if button == MouseButton::Left {
                     let pressed = state == ElementState::Pressed && !self.pointer_taken(consumed);
@@ -844,6 +852,11 @@ impl ApplicationHandler for App {
     }
 
     fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let (Some(_), DeviceEvent::MouseMotion { delta }) = (self.idol_orbit_from, &event) {
+            self.cursor = (self.cursor.0 + delta.0 as f32, self.cursor.1 + delta.1 as f32);
+            self.touch();
+            return;
+        }
         if let (true, DeviceEvent::MouseMotion { delta }) = (self.aim_captured, event) {
             let sensitivity = self.settings.pc.aim.mouse_sensitivity;
             if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
@@ -1460,6 +1473,43 @@ impl App {
         let Some(game) = self.game.as_mut() else { return false };
         let frames = game.system.frames;
         game.system.aim_mouse.as_mut().is_some_and(|mouse| mouse.idol_view_pan(frames, x, y, pressed))
+    }
+
+    /// the pointer's look over the Idol View: a grab hand over it, hidden
+    /// and held while Orbiting, a held hand while Panning. Starts and ends
+    /// the Orbit's hold of the pointer.
+    fn idol_pointer_look(&mut self) -> Option<egui::CursorIcon> {
+        use zakuro_core::aim_mouse::IdolPointer;
+        let look = (!self.pointer_taken(false)).then(|| {
+            let game = self.game.as_ref()?;
+            game.system.aim_mouse.as_ref()?.idol_view_pointer(game.system.frames)
+        }).flatten();
+        let window = self.window.as_ref()?;
+        let orbiting = look == Some(IdolPointer::Orbit) && self.mouse_down;
+        match (orbiting, self.idol_orbit_from) {
+            (true, None) => {
+                if window.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined)).is_ok() {
+                    self.idol_orbit_from = Some(self.cursor);
+                }
+            }
+            (false, Some(from)) => {
+                let _ = window.set_cursor_grab(CursorGrabMode::None);
+                let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(from.0 as f64, from.1 as f64));
+                self.idol_orbit_from = None;
+                self.cursor = from;
+            }
+            _ => {}
+        }
+        // a confined pointer would stop at the window's edge: keep it put
+        if let Some(from) = self.idol_orbit_from {
+            let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(from.0 as f64, from.1 as f64));
+        }
+        if !orbiting && look == Some(IdolPointer::Orbit) { self.touch(); }
+        match look? {
+            IdolPointer::Hover => Some(egui::CursorIcon::Grab),
+            IdolPointer::Orbit => Some(egui::CursorIcon::None),
+            IdolPointer::Pan => Some(egui::CursorIcon::Grabbing),
+        }
     }
 
     fn tilt(&mut self) {
@@ -2383,6 +2433,7 @@ impl App {
 
     /// the menus, and the actions they asked for, done.
     fn interface(&mut self, event_loop: &ActiveEventLoop) -> Overlay {
+        let idol_icon = self.idol_pointer_look();
         // when the slot chosen was saved to, while the menu shows it
         let saved = self
             .menus
@@ -2463,6 +2514,7 @@ impl App {
             }
             actions.extend(menus.compiler_offer(ui.ctx()));
             menus.message(ui.ctx());
+            if let Some(icon) = idol_icon { ui.ctx().set_cursor_icon(icon); }
         });
         self.library.changed = false;
         for action in actions {

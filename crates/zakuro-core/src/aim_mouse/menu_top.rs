@@ -400,6 +400,10 @@ fn part_cut(index: usize, model: Option<&str>) -> bool {
 
 /// The Idols Screen's top layer that is the Idol View, where an Orbit starts.
 const IDOL_VIEW_LAYER: &str = "Idol";
+/// what the pointer does with the Idol View (`idol_view_pointer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdolPointer { Hover, Orbit, Pan }
+
 /// Zoom a wheel notch takes, of the game's 0..1.
 const ZOOM_STEP: f32 = 0.1;
 
@@ -1022,6 +1026,15 @@ impl AimMouse {
         let part = self.menu_top.parts.iter().find(|part| part.top && part.model == Some(IDOL_VIEW_LAYER)
             && self.menu_top.enabled(part) && inside(point, part.place.to))?;
         Some([part.place.from[2] / part.place.to[2], part.place.from[3] / part.place.to[3]])
+    }
+
+    /// what the pointer is doing with the Idol View, for its look: over it
+    /// off every Control, Orbiting or Panning it; none elsewhere.
+    pub fn idol_view_pointer(&self, frame: u64) -> Option<IdolPointer> {
+        if self.idol_view.dragging() { return Some(IdolPointer::Orbit); }
+        if self.idol_view.panning() { return Some(IdolPointer::Pan); }
+        let point = self.menu_top.pointer.filter(|_| self.menus_on_top_shown(frame) && !self.menu_top.blocked)?;
+        (self.menu_top.candidates.is_empty() && self.idol_view_scale(point).is_some()).then_some(IdolPointer::Hover)
     }
 
     /// A right-button event at a frontend top-screen point (400 across):

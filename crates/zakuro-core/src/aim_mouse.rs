@@ -11,7 +11,7 @@ mod idol_view;
 mod menu_top;
 mod screen_transform;
 use menu_top::MenuTop;
-pub use menu_top::current_menu;
+pub use menu_top::{current_menu, IdolPointer};
 pub use screen_transform::{CauldronRole, CauldronRules, DialogRules, PauseRules, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
 use screen_transform::{Activate, QuadRole, ScreenLayout, ScreenTransform, CAULDRON_CONTROLS};
 
