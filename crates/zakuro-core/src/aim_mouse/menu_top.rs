@@ -428,6 +428,19 @@ fn board_text(index: usize, model: Option<&str>) -> bool {
 /// allocates every glyph its box admits, so a node layer carries text only
 /// where it owns some: the Idols List's Row names sit inside the full-screen
 /// Background's box and overflowed the buffer once per layer, a black frame.
+/// whether an Idols Board layer takes the pointer. The game Orbits on any
+/// stylus drag of the bottom screen, and most layers' native boxes cover
+/// it, so only the Controls do: the Title bar's arrows, the Zoom bar, Back,
+/// AR, and on the List page its Rows, frame and Scroll bar. The PC Orbit is
+/// the Idol layer's (idol_view.rs), so the rest can be placed anywhere.
+fn idols_takes_pointer(model: Option<&str>, list_page: bool) -> bool {
+    match model {
+        Some("MenColViewlistBt0000" | "MenColViewlistBt0003" | "MenCmnScbar") => list_page,
+        Some("Background" | "Controls hint" | "Description" | "Page counter") => false,
+        _ => true,
+    }
+}
+
 fn board_text_now(index: usize, model: Option<&str>, idols_list: bool) -> bool {
     // The List's Rows and its frame's page pill carry the List's words.
     if matches!(model, Some("MenColViewlistBt0000" | "MenColViewlistBt0003")) { return idols_list; }
@@ -965,9 +978,11 @@ impl AimMouse {
             let file = self.menu_top.file_select();
             let cropped = self.menu_screen.is_some_and(|(index, ..)| board_cut(index));
             let on_screen = inside(point, [0.0, 0.0, 400.0 * self.widen, 240.0]);
+            let idols = self.menu_screen.is_some_and(|(index, ..)| ScreenTransform::scripted(index).id == super::screen_transform::Screen::Idols);
             self.menu_top.candidates = self.menu_top.parts.iter().enumerate().rev().filter_map(|(index, part)| {
                 if !self.menu_top.enabled(part) || part.top
-                    || (self.menu_top.idol_dialog && part.idol != Some(IdolGroup::Dialog)) { return None; }
+                    || (self.menu_top.idol_dialog && part.idol != Some(IdolGroup::Dialog))
+                    || (idols && !idols_takes_pointer(part.model, self.menu_top.idols_list)) { return None; }
                 let addressable = part.model.and_then(button_hash).is_some();
                 if file && !addressable { return None; }
                 let hit = part.hit(point);
