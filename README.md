@@ -93,25 +93,6 @@ grouped lists and compact hints.
 - The arrow keys and d-pad reach the game's own power list in battle (Down
   shows it); moving through it and using items from the keyboard still
   need checking.
-- Options → Controls has a PC Settings Row below More Controls. Mouse click or
-  keyboard/controller Confirm opens the PC page: the game's own More Controls
-  Screen showing four host On/Off choices, labelled in the game's own
-  lettering: Side Mirror and Tilt Mirror (the gyro's aiming mirrored sideways,
-  and up and down), High Refresh and Frame Rate. Its button reads More, and
-  leaves the page for the rest of the PC Preferences. The top screen's
-  preview is not shown there. The game's Guide Arrow, Shot Homing, Aim
-  Assist and Autofire are untouched by it. Up/Down navigates the Row.
-  Its label is the editable `assets/pc-settings-label.png` beside the
-  executable: a 160 × 24 PNG whose transparency is the lettering (the game
-  applies its own label colour; RGB is ignored). If the file is missing, the
-  first visit to Controls exports it from the player's own Options artwork; an
-  existing file is never overwritten. A wrong size, a flattened PNG or a
-  corrupt file falls back to the original artwork with a warning in the log.
-  Edits take effect after restarting or loading a state. A label exported
-  before 15 November has garbled lettering (its pixels were read in the wrong
-  order): delete it to have it exported again. Every other PC Preference
-  remains host-rendered, reached through the PC page's More or F12 →
-  Settings. The CPU overclock is still `ZAKURO_OVERCLOCK`.
 - Dialog text can occasionally stack in some scenes; the cause is known and
   the fix is planned.
 

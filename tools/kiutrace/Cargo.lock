@@ -1763,7 +1763,6 @@ dependencies = [
  "chrono",
  "log",
  "lz4_flex",
- "png",
  "postcard",
  "rayon",
  "recomp-abi",

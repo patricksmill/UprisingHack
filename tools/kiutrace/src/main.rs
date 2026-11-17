@@ -877,6 +877,12 @@ fn trace_frame(system: &mut System, input: InputState, watches: &[(u32, u32)], f
                         })
                         .collect();
                     println!("  write pc={pc:08X} lr={lr:08X} {address:08X} {}", changed.join(" "));
+                    if std::env::var_os("KIUTRACE_WATCH_REGS").is_some() {
+                        let r = system.cpu.regs;
+                        println!("    regs {}", (0..15).map(|i| format!("r{i}={:08X}", r[i])).collect::<Vec<_>>().join(" "));
+                        let sp = r[13];
+                        println!("    stack {}", (0..48).map(|i| format!("{:08X}", read32(system, sp + i * 4))).collect::<Vec<_>>().join(" "));
+                    }
                 }
                 before[i] = now;
             }
