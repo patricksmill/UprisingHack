@@ -3370,7 +3370,7 @@ impl Hardware {
                 t[2][0] * w,
                 t[2][1] * w,
                 depth,
-                0.0,
+                v.texcoord0_w_over_w * w,
                 q[0] * w,
                 q[1] * w,
                 q[2] * w,
