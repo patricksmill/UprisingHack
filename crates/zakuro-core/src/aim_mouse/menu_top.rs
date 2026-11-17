@@ -400,6 +400,8 @@ fn part_cut(index: usize, model: Option<&str>) -> bool {
 
 /// The Idols Screen's top layer that is the Idol View, where an Orbit starts.
 const IDOL_VIEW_LAYER: &str = "Idol";
+/// Zoom a wheel notch takes, of the game's 0..1.
+const ZOOM_STEP: f32 = 0.1;
 
 /// The node layers declared by the Screen's layout row.
 fn top_layers(index: usize) -> &'static [super::screen_transform::TopLayer] {
@@ -923,7 +925,7 @@ pub(super) fn navigate(system: &mut System, pc: u32) {
 impl AimMouse {
     pub(super) fn menu_age(&self) -> u64 { 3 + if self.menus_on_top { self.menu_top.duration } else { 0 } }
 
-    pub fn menus_top_dragging(&self) -> bool { self.menu_top.grab.is_some() || self.idol_view.dragging() }
+    pub fn menus_top_dragging(&self) -> bool { self.menu_top.grab.is_some() || self.idol_view.dragging() || self.idol_view.panning() }
 
     pub fn clear_menus_top_pointer(&mut self) {
         self.menu_top.pointer = None;
@@ -978,10 +980,7 @@ impl AimMouse {
             self.menu_top.candidate = 0;
         }
         // A press on the Idol View, off every Control, starts an Orbit.
-        if began && self.menu_top.grab.is_none() && self.menu_top.candidates.is_empty()
-            && self.menu_screen.is_some_and(|(index, ..)| ScreenTransform::scripted(index).id == super::screen_transform::Screen::Idols)
-            && self.menu_top.parts.iter().any(|part| part.top && part.model == Some(IDOL_VIEW_LAYER)
-                && self.menu_top.enabled(part) && inside(point, part.place.to)) {
+        if began && self.menu_top.grab.is_none() && self.menu_top.candidates.is_empty() && self.idol_view_scale(point).is_some() {
             self.idol_view.begin(point);
             self.menu_part = None;
             return None;
@@ -999,6 +998,39 @@ impl AimMouse {
         self.menu_top.grab = (pressed && (self.menu_top.grab.is_some() || validated)).then_some(index);
         let native = mapped(point, part.place.to, part.place.from);
         Some(if part.model.and_then(button_hash).is_some() { native } else { touch_point(native) })
+    }
+
+    /// On Idols, over the Idol layer's Placement at a top-screen point: the
+    /// native pixels a top-screen pixel there spans.
+    fn idol_view_scale(&self, point: [f32; 2]) -> Option<[f32; 2]> {
+        if !self.menu_screen.is_some_and(|(index, ..)| ScreenTransform::scripted(index).id == super::screen_transform::Screen::Idols) { return None; }
+        let part = self.menu_top.parts.iter().find(|part| part.top && part.model == Some(IDOL_VIEW_LAYER)
+            && self.menu_top.enabled(part) && inside(point, part.place.to))?;
+        Some([part.place.from[2] / part.place.to[2], part.place.from[3] / part.place.to[3]])
+    }
+
+    /// A right-button event at a frontend top-screen point (400 across):
+    /// a press over the Idol View starts a Pan that holds the pointer until
+    /// release. Whether the Pan took it.
+    pub fn idol_view_pan(&mut self, frame: u64, x: f32, y: f32, pressed: bool) -> bool {
+        let point = [x * self.widen, y];
+        if self.idol_view.panning() {
+            if pressed { self.idol_view.pan_to(point); } else { self.idol_view.end_pan(); }
+            return true;
+        }
+        if !pressed || !self.menus_on_top_shown(frame) || self.menu_top.blocked || self.idol_view.dragging() { return false; }
+        let Some(scale) = self.idol_view_scale(point) else { return false };
+        self.idol_view.begin_pan(point, scale);
+        true
+    }
+
+    /// Wheel steps over the Idol View, positive down, Zoom it; whether the
+    /// Idol View took them.
+    pub(super) fn idol_view_wheel(&mut self, frame: u64, steps: f32) -> bool {
+        let Some(point) = self.menu_top.pointer.filter(|_| self.menus_on_top_shown(frame) && !self.menu_top.blocked) else { return false };
+        if self.idol_view_scale(point).is_none() { return false; }
+        self.idol_view.zoom_by(-steps * ZOOM_STEP);
+        true
     }
 
     /// The corresponding top-screen point, useful to drive the same
@@ -1170,7 +1202,7 @@ pub(super) fn refresh_hover(mouse: &mut AimMouse, frame: u64) {
     if std::mem::take(&mut mouse.menu_top.retrying_hit) { return; }
     // An Orbit holds the button down; this re-query would read as a release.
     if mouse.menu_top.hit_frame == Some(frame) || !mouse.mouse_mode || mouse.menu_top.grab.is_some()
-        || mouse.idol_view.dragging() || mouse.menu_click || !mouse.menus_on_top_shown(frame) { return; }
+        || mouse.idol_view.dragging() || mouse.idol_view.panning() || mouse.menu_click || !mouse.menus_on_top_shown(frame) { return; }
     mouse.menu_top.hit_frame = Some(frame);
     if let Some(point) = mouse.menu_top.pointer {
         mouse.menu_top.pointer = None;

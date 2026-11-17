@@ -1624,6 +1624,7 @@ impl AimMouse {
     /// or activate an item, and never carry a wheel gesture into a battle.
     pub fn scroll_menu(&mut self, frame: u64, delta: [f32; 2]) -> bool {
         let Some((index, object, seen)) = self.menu_screen else { return false };
+        if delta[1].is_finite() && delta[1] != 0.0 && !self.captured && self.idol_view_wheel(frame, delta[1]) { return true; }
         // Chapter Select's row scrolls by itself, with no game call
         if index == 1 && frame <= seen + self.menu_age() && self.menu_hover && !self.captured
             && delta.iter().all(|value| value.is_finite()) {

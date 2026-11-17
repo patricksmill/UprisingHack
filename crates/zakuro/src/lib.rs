@@ -196,6 +196,7 @@ pub fn run(linked: Option<Linked>) {
         mouse_down: false,
         modifiers: winit::keyboard::ModifiersState::empty(),
         tilting_from: None,
+        idol_panning: false,
         aim_captured: false,
         released_for_pause: false,
         cursor: (0.0, 0.0),
@@ -500,6 +501,8 @@ struct App {
     /// where the pointer was when the right button went down, which tilts
     /// the console while held.
     tilting_from: Option<(f32, f32)>,
+    /// a right-drag Panning the Idol View on Idols, in place of the tilt.
+    idol_panning: bool,
     /// the mouse aims in Kid Icarus: Uprising, F6 turns it on and off: the
     /// pointer is held in the window, its movement moves the reticle, the
     /// bottom screen is held touched in its middle and the left button
@@ -820,13 +823,19 @@ impl ApplicationHandler for App {
                 }
                 if button == MouseButton::Right {
                     let pressed = state == ElementState::Pressed && !self.pointer_taken(consumed);
-                    self.tilting_from = pressed.then_some(self.cursor);
-                    self.tilt();
+                    if (pressed || self.idol_panning) && self.idol_pan(pressed) {
+                        self.idol_panning = pressed;
+                    } else {
+                        self.idol_panning = false;
+                        self.tilting_from = pressed.then_some(self.cursor);
+                        self.tilt();
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as f32, position.y as f32);
                 self.touch();
+                if self.idol_panning { self.idol_pan(true); }
                 self.tilt();
             }
             WindowEvent::RedrawRequested => self.step(event_loop),
@@ -1440,6 +1449,19 @@ impl App {
     /// tilts the console while the right button is held, toward where the
     /// pointer went and by how far, as Citra's motion emulation does,
     /// which titles were tried with. letting go stands it upright again.
+    /// the right button at the cursor, to the Idol View's Pan; whether the
+    /// Pan took it.
+    fn idol_pan(&mut self, pressed: bool) -> bool {
+        let Some(window) = &self.window else { return false };
+        let size = window.inner_size();
+        let (Some(top), _) = layout(size.width, size.height, self.layout.screens(), self.top_width(), self.settings.integer_scale) else { return false };
+        let x = (self.cursor.0 - top.x) / top.width * 400.0;
+        let y = (self.cursor.1 - top.y) / top.height * 240.0;
+        let Some(game) = self.game.as_mut() else { return false };
+        let frames = game.system.frames;
+        game.system.aim_mouse.as_mut().is_some_and(|mouse| mouse.idol_view_pan(frames, x, y, pressed))
+    }
+
     fn tilt(&mut self) {
         // radians a pixel, and the furthest it goes, a quarter turn
         const PER_PIXEL: f32 = 0.01;

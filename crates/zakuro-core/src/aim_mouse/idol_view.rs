@@ -1,9 +1,11 @@
-//! Orbit of the Idol View on the Vault's Idols: a left-drag over the Idol
-//! layer turns the game's own camera angle and tilt, and on release keeps
-//! turning at the release speed, slowing as the game's own stylus momentum
-//! does. The game's momentum only follows a real stylus release, so it is
-//! kept here and written as angles each frame (analysis/FINDINGS.md,
-//! "Idols view state").
+//! The Idol View on the Vault's Idols, driven through the game's own view
+//! state (analysis/FINDINGS.md, "Idols view state"):
+//! - Orbit: a left-drag over the Idol layer turns the camera angle and
+//!   tilt, and keeps turning after release, slowing as the game's own stylus
+//!   momentum does. The game's momentum only follows a real stylus release,
+//!   so it is kept here. The right stick, the C-stick, Orbits natively.
+//! - Pan: a right-drag moves the idol with the pointer.
+//! - Zoom: the wheel, eased over a few frames.
 
 use super::{read_word, System};
 
@@ -12,6 +14,17 @@ const PITCH: u32 = 0x170;
 const YAW: u32 = 0x174;
 /// 6 while the idol spins by itself; any input sets 0 for good.
 const SPIN: u32 = 0x524;
+const ZOOM: u32 = 0x168;
+/// position, and the twins the picture is drawn from; the game holds both
+/// within its own Pan limits each tick.
+const POSITION: [u32; 2] = [0x178, 0x17C];
+const POSITION_DRAWN: [u32; 2] = [0x184, 0x188];
+/// native top-screen pixels a unit of position moves the idol, measured at
+/// zoom 0 and 1: the inverse of the scale is about linear in zoom.
+const PAN_PIXELS: [f32; 2] = [0.147, 0.049];
+/// a wheel notch's Zoom goes in over about 80 ms: this share of what is
+/// left each 30 Hz tick.
+const ZOOM_EASE: f32 = 0.6;
 /// the game holds tilt within its own limit, ±90°.
 const PITCH_LIMIT: f32 = 90.0;
 /// momentum lost each frame after release: about the game's own decay,
@@ -39,6 +52,13 @@ pub(super) struct IdolView {
     velocity: [f32; 2],
     /// whether this drag has stopped the idle spin yet.
     spin_stopped: bool,
+    /// a Pan in progress: its last point and the native pixels a top-screen
+    /// pixel spans there.
+    pan: Option<([f32; 2], [f32; 2])>,
+    /// Pan motion not yet written, native pixels.
+    pan_pending: [f32; 2],
+    /// Zoom not yet written.
+    zoom_pending: f32,
 }
 
 impl IdolView {
@@ -70,6 +90,39 @@ impl IdolView {
         let sum = self.recent.iter().fold([0.0; 2], |sum, step| [sum[0] + step[0], sum[1] + step[1]]);
         self.velocity = [sum[0] / frames * gain, sum[1] / frames * gain];
         self.recent.clear();
+    }
+
+    pub(super) fn panning(&self) -> bool {
+        self.pan.is_some()
+    }
+
+    pub(super) fn begin_pan(&mut self, point: [f32; 2], scale: [f32; 2]) {
+        self.pan = Some((point, scale));
+        self.pan_pending = [0.0; 2];
+        self.velocity = [0.0; 2];
+    }
+
+    pub(super) fn pan_to(&mut self, point: [f32; 2]) {
+        let Some((last, scale)) = self.pan.as_mut() else { return };
+        for axis in 0..2 { self.pan_pending[axis] += (point[axis] - last[axis]) * scale[axis]; }
+        *last = point;
+    }
+
+    pub(super) fn end_pan(&mut self) {
+        self.pan = None;
+    }
+
+    /// Zoom by a share of the game's 0..1, in positive.
+    pub(super) fn zoom_by(&mut self, amount: f32) {
+        self.zoom_pending = (self.zoom_pending + amount).clamp(-1.0, 1.0);
+    }
+
+    /// this tick's Zoom, eased.
+    fn zoom_step(&mut self) -> f32 {
+        if self.zoom_pending.abs() < 0.002 { return std::mem::take(&mut self.zoom_pending); }
+        let step = self.zoom_pending * ZOOM_EASE;
+        self.zoom_pending -= step;
+        step
     }
 
     /// stops any Orbit, as when the Screen goes.
@@ -117,16 +170,46 @@ fn land_invert(system: &mut System) -> [bool; 2] {
 pub(super) fn update(system: &mut System, object: u32, gain: f32) {
     let invert = land_invert(system);
     let Some(mouse) = system.aim_mouse.as_mut() else { return };
-    let Some(turn) = mouse.idol_view.step(gain) else { return };
-    let stop_spin = mouse.idol_view.grab.is_some() && !std::mem::replace(&mut mouse.idol_view.spin_stopped, true);
+    let view = &mut mouse.idol_view;
+    let turn = view.step(gain);
+    let pan = std::mem::take(&mut view.pan_pending);
+    let zoom = view.zoom_step();
+    let acting = view.grab.is_some() || view.pan.is_some() || zoom != 0.0;
+    let stop_spin = acting && !std::mem::replace(&mut view.spin_stopped, true);
+    if !acting && turn.is_none() { view.spin_stopped = false; }
+    let read = |system: &mut System, offset: u32| f32::from_bits(read_word(system, object + offset));
+    let write = |system: &mut System, offset: u32, value: f32| system.memory.write_bytes(object + offset, &value.to_le_bytes());
     if stop_spin { system.memory.write_bytes(object + SPIN, &0u32.to_le_bytes()); }
-    if turn == [0.0; 2] { return; }
-    let sign = |inverted: bool| if inverted { -1.0 } else { 1.0 };
-    let yaw = f32::from_bits(read_word(system, object + YAW)) + turn[0] * sign(invert[0]);
-    let pitch = f32::from_bits(read_word(system, object + PITCH)) + turn[1] * sign(invert[1]);
-    let (yaw, pitch) = (yaw.rem_euclid(360.0), pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT));
-    system.memory.write_bytes(object + YAW, &yaw.to_le_bytes());
-    system.memory.write_bytes(object + PITCH, &pitch.to_le_bytes());
+    if let Some(turn) = turn.filter(|turn| *turn != [0.0; 2]) {
+        let sign = |inverted: bool| if inverted { -1.0 } else { 1.0 };
+        let yaw = read(system, YAW) + turn[0] * sign(invert[0]);
+        let pitch = read(system, PITCH) + turn[1] * sign(invert[1]);
+        write(system, YAW, yaw.rem_euclid(360.0));
+        write(system, PITCH, pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT));
+    }
+    if zoom != 0.0 {
+        let level = read(system, ZOOM);
+        let next = (level + zoom).clamp(0.0, 1.0);
+        write(system, ZOOM, next);
+        if next != level + zoom {
+            if let Some(mouse) = system.aim_mouse.as_mut() { mouse.idol_view.zoom_pending = 0.0; }
+        }
+    }
+    if pan != [0.0; 2] {
+        // the idol keeps the grabbed point under the pointer: screen down is
+        // position down
+        let units = pan_units(read(system, ZOOM), pan);
+        for (axis, offset) in [(0, POSITION[0]), (1, POSITION[1]), (0, POSITION_DRAWN[0]), (1, POSITION_DRAWN[1])] {
+            let value = read(system, offset) + units[axis];
+            write(system, offset, value);
+        }
+    }
+}
+
+/// native top-screen pixels of Pan, right and down, as position at a zoom.
+fn pan_units(zoom: f32, pixels: [f32; 2]) -> [f32; 2] {
+    let per_pixel = PAN_PIXELS[0] + (PAN_PIXELS[1] - PAN_PIXELS[0]) * zoom.clamp(0.0, 1.0);
+    [pixels[0] * per_pixel, -pixels[1] * per_pixel]
 }
 
 #[cfg(test)]
@@ -158,5 +241,20 @@ mod tests {
         for _ in 0..RECENT { view.step(0.3); }
         view.release(0.3);
         assert_eq!(view.step(0.3), None);
+    }
+
+    #[test]
+    fn a_wheel_notch_eases_in_over_a_few_frames() {
+        let mut view = IdolView::default();
+        view.zoom_by(0.1);
+        let steps: Vec<f32> = std::iter::from_fn(|| Some(view.zoom_step()).filter(|step| *step != 0.0)).collect();
+        assert!((steps.iter().sum::<f32>() - 0.1).abs() < 1e-6);
+        assert!((3..=8).contains(&steps.len()), "{steps:?}");
+    }
+
+    #[test]
+    fn a_pan_moves_by_the_measured_scale_and_screen_down_is_position_down() {
+        let units = pan_units(0.5, [10.2, 10.2]);
+        assert!((units[0] - 1.0).abs() < 0.03 && (units[1] + 1.0).abs() < 0.03, "{units:?}");
     }
 }
