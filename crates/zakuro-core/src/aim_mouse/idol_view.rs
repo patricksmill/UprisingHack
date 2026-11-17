@@ -6,14 +6,20 @@
 //!   so it is kept here. The right stick, the C-stick, Orbits natively.
 //! - Pan: a right-drag moves the idol with the pointer.
 //! - Zoom: the wheel, eased over a few frames.
+//! - Reset View: a double-click puts back the view each idol was first
+//!   shown with, its spin still off.
 
 use super::{read_word, System};
 
 /// the viewer object's view state.
 const PITCH: u32 = 0x170;
 const YAW: u32 = 0x174;
-/// 6 while the idol spins by itself; any input sets 0 for good.
+/// a byte, 6 while the idol spins by itself; any input sets 0 until the
+/// idol changes. The bytes after it are not the switch's.
 const SPIN: u32 = 0x524;
+/// the idol shown, which moves with L/R and the List's Cursor; the game
+/// sets that idol's first view the frame it changes.
+const IDOL: u32 = 0x414;
 const ZOOM: u32 = 0x168;
 /// position, and the twins the picture is drawn from; the game holds both
 /// within its own Pan limits each tick.
@@ -59,11 +65,35 @@ pub(super) struct IdolView {
     pan_pending: [f32; 2],
     /// Zoom not yet written.
     zoom_pending: f32,
+    /// the last press that began an Orbit: its frame and point.
+    last_press: Option<(u64, [f32; 2])>,
+    /// a double-click asked for Reset View.
+    reset: bool,
+    /// the view the shown idol was first shown with: the Screen object,
+    /// the idol and the view words, in VIEW's order.
+    first_view: Option<(u32, u32, [u32; VIEW.len()])>,
 }
+
+/// the view words Reset View puts back. The drawn position twins settle
+/// after the idol changes, so they move with the position instead.
+const VIEW: [u32; 5] = [ZOOM, PITCH, YAW, POSITION[0], POSITION[1]];
+/// a second press this soon (60 Hz frames) and near (top-screen pixels)
+/// after the first makes a double-click.
+const DOUBLE_CLICK: (u64, f32) = (24, 6.0);
 
 impl IdolView {
     pub(super) fn dragging(&self) -> bool {
         self.grab.is_some()
+    }
+
+    /// starts an Orbit at a top-screen point on a frame; a double-click
+    /// also asks for Reset View.
+    pub(super) fn press(&mut self, frame: u64, point: [f32; 2]) {
+        let double = self.last_press.is_some_and(|(at, from)| frame.saturating_sub(at) <= DOUBLE_CLICK.0
+            && (point[0] - from[0]).hypot(point[1] - from[1]) <= DOUBLE_CLICK.1);
+        self.last_press = (!double).then_some((frame, point));
+        self.begin(point);
+        self.reset |= double;
     }
 
     /// starts an Orbit at a top-screen point.
@@ -127,7 +157,7 @@ impl IdolView {
 
     /// stops any Orbit, as when the Screen goes.
     pub(super) fn cancel(&mut self) {
-        *self = IdolView { held: self.held, ..IdolView::default() };
+        *self = IdolView { held: self.held, first_view: self.first_view, ..IdolView::default() };
     }
 
     /// this frame's turn, in degrees: the drag's motion, or the momentum.
@@ -179,7 +209,30 @@ pub(super) fn update(system: &mut System, object: u32, gain: f32) {
     if !acting && turn.is_none() { view.spin_stopped = false; }
     let read = |system: &mut System, offset: u32| f32::from_bits(read_word(system, object + offset));
     let write = |system: &mut System, offset: u32, value: f32| system.memory.write_bytes(object + offset, &value.to_le_bytes());
-    if stop_spin { system.memory.write_bytes(object + SPIN, &0u32.to_le_bytes()); }
+    let reset = std::mem::take(&mut view.reset);
+    if reset {
+        view.velocity = [0.0; 2];
+        view.zoom_pending = 0.0;
+        view.pending = [0.0; 2];
+    }
+    if stop_spin { system.memory.write_bytes(object + SPIN, &[0]); }
+    let idol = read_word(system, object + IDOL);
+    let Some(mouse) = system.aim_mouse.as_mut() else { return };
+    let remembered = mouse.idol_view.first_view.filter(|&(screen, shown, _)| screen == object && shown == idol);
+    let Some((_, _, first)) = remembered else {
+        let words = VIEW.map(|offset| read_word(system, object + offset));
+        if let Some(mouse) = system.aim_mouse.as_mut() { mouse.idol_view.first_view = Some((object, idol, words)); }
+        return;
+    };
+    if reset {
+        for axis in 0..2 {
+            let moved = f32::from_bits(first[3 + axis]) - read(system, POSITION[axis]);
+            let drawn = read(system, POSITION_DRAWN[axis]) + moved;
+            write(system, POSITION_DRAWN[axis], drawn);
+        }
+        for (offset, word) in VIEW.into_iter().zip(first) { system.memory.write_bytes(object + offset, &word.to_le_bytes()); }
+        return;
+    }
     if let Some(turn) = turn.filter(|turn| *turn != [0.0; 2]) {
         let sign = |inverted: bool| if inverted { -1.0 } else { 1.0 };
         let yaw = read(system, YAW) + turn[0] * sign(invert[0]);
@@ -256,5 +309,22 @@ mod tests {
     fn a_pan_moves_by_the_measured_scale_and_screen_down_is_position_down() {
         let units = pan_units(0.5, [10.2, 10.2]);
         assert!((units[0] - 1.0).abs() < 0.03 && (units[1] + 1.0).abs() < 0.03, "{units:?}");
+    }
+
+    #[test]
+    fn a_second_press_soon_and_near_is_a_double_click() {
+        let mut view = IdolView::default();
+        view.press(100, [50.0, 50.0]);
+        view.release(0.3);
+        assert!(!view.reset);
+        view.press(110, [52.0, 51.0]);
+        assert!(view.reset, "a double-click");
+        view.reset = false;
+        view.release(0.3);
+        view.press(115, [52.0, 51.0]);
+        assert!(!view.reset, "a third press starts over");
+        view.release(0.3);
+        view.press(200, [52.0, 51.0]);
+        assert!(!view.reset, "too late");
     }
 }

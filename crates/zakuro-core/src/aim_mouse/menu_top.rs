@@ -964,7 +964,7 @@ impl AimMouse {
 
     /// Frontend top-screen pixels (400 across), converted to native touch.
     pub fn menus_top_touch(&mut self, frame: u64, x: f32, y: f32, pressed: bool) -> Option<(f32, f32)> {
-        let began = pressed && !std::mem::replace(&mut self.idol_view.held, pressed);
+        let began = !std::mem::replace(&mut self.idol_view.held, pressed) && pressed;
         if !self.menus_on_top_shown(frame) || self.menu_top.blocked { self.menu_top.grab = None; self.idol_view.cancel(); return None; }
         let point = [x * self.widen, y];
         // An Orbit owns its drag until release, wherever the pointer goes.
@@ -996,7 +996,7 @@ impl AimMouse {
         }
         // A press on the Idol View, off every Control, starts an Orbit.
         if began && self.menu_top.grab.is_none() && self.menu_top.candidates.is_empty() && self.idol_view_scale(point).is_some() {
-            self.idol_view.begin(point);
+            self.idol_view.press(frame, point);
             self.menu_part = None;
             return None;
         }
@@ -1460,7 +1460,7 @@ pub(super) fn begin(system: &mut System) -> bool {
                 if trace_models { log_model_nodes(system, layer, model, &name); }
                 if layer >= 0x10 { continue; }
                 if top_layers(index).is_empty() { continue; }
-                show_nodes(system, &mut moved, model, |node| top_layer(top_layers(index), &name, node).is_none());
+                show_parts(system, &mut moved, model, |node| top_layer(top_layers(index), &name, node).is_none());
             }
         }
     }
@@ -1608,6 +1608,10 @@ fn log_model_nodes(system: &mut System, layer: u32, model: u32, name: &str) {
         }
     }
     log::info!("model layer {layer:X} {model:08X} {name}: {}", list.join(", "));
+    for (index, mesh) in super::model_meshes(system, model).into_iter().enumerate() {
+        let (visible, node) = (read_word(system, mesh + 0x24) & 0xFF, read_word(system, mesh + 0x26) as i16);
+        log::info!("  mesh {index} at {mesh:08X} visible {visible} node {node}");
+    }
 }
 
 fn foreground_materials(system: &mut System, model: u32, moved: &mut Vec<(u32, Vec<u8>)>) {
@@ -2135,7 +2139,7 @@ pub(super) fn draw(system: &mut System) -> bool {
                 let model = read_word(system, at);
                 let name = model_name(system, model);
                 let selected = part.model.is_some_and(|layer| layer == name);
-                show_nodes(system, &mut moved, model, |node| if part.backdrop {
+                show_parts(system, &mut moved, model, |node| if part.backdrop {
                     top_layer(top_layers(index), &name, node).is_none()
                 } else if part.model.is_some_and(|layer| top_layers(index).iter().any(|&(name, ..)| name == layer)) {
                     top_layer(top_layers(index), &name, node) == part.model

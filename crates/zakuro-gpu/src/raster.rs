@@ -1293,6 +1293,11 @@ impl TextureCache {
             .flat_map(|y| (0..width).map(move |x| (x, y)))
             .map(|(x, y)| crate::texture::sample_texel(data, format, width, x, y))
             .collect();
+        let texels: Arc<[[u8; 4]]> = match std::env::var("ZAKURO_BLANK_TEXTURE") {
+            Ok(blank) if crate::pack::hash(crate::pack::Hashing::Rows, data, format, width, height, &mut self.rows).is_some_and(|hash| format!("{hash:016X}") == blank) =>
+                texels.iter().map(|_| [255, 0, 255, 255]).collect(),
+            _ => texels,
+        };
         let replacement = picture_for(self.pack.as_deref(), data, &texels, key, &mut self.rows);
         let decoded = Decoded { hash, bytes: data.to_vec(), texels: texels.clone(), checked, replacement: replacement.clone() };
         if let Some(old) = self.entries.insert(key, decoded) {

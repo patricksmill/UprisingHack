@@ -3187,6 +3187,35 @@ fn show_nodes(system: &mut System, moved: &mut Vec<(u32, Vec<u8>)>, model: u32, 
     }
 }
 
+/// a model's CGFX meshes (ResMesh), from the CMDL's +0xB4 count and +0xB8
+/// table of self-relative offsets. 0x008F5FB4 draws a mesh only while its
+/// +0x24 byte is set, besides its node (+0x26) being shown.
+fn model_meshes(system: &mut System, model: u32) -> Vec<u32> {
+    let (start, end) = (read_word(system, model + 0x170), read_word(system, model + 0x174));
+    if start != end {
+        if end < start || end - start > 64 * 4 { return Vec::new(); }
+        return (start..end).step_by(4).map(|at| at.wrapping_add(read_word(system, at))).collect();
+    }
+    let cmdl = read_word(system, model + 8);
+    let (count, table) = (read_word(system, cmdl + 0xB4), read_word(system, cmdl + 0xB8));
+    if cmdl == 0 || table == 0 || count > 64 { return Vec::new(); }
+    let table = cmdl + 0xB8 + table;
+    (0..count).map(|mesh| table + mesh * 4).map(|at| at.wrapping_add(read_word(system, at))).collect()
+}
+
+/// show_nodes, and also hides a model whose meshes belong to no node (such
+/// as `maru_kage`, the Idols' shadow) when shown refuses the empty node
+/// name. Its meshes ignore node visibility and the draw loop (0x00BA67A4)
+/// does not take it from the layer lists, so it drew in every layer's
+/// replay; that loop skips a model whose +0x1F6 byte is clear.
+fn show_parts(system: &mut System, moved: &mut Vec<(u32, Vec<u8>)>, model: u32, shown: impl Fn(&str) -> bool) {
+    show_nodes(system, moved, model, &shown);
+    let meshes = model_meshes(system, model);
+    if !shown("") && !meshes.is_empty() && meshes.iter().all(|&mesh| (read_word(system, mesh + 0x26) as i16) < 0) {
+        log::debug!("hide nodeless {model:08X}"); change(system, moved, model + 0x1F6, &[0]);
+    }
+}
+
 /// the string at at, up to 32 bytes.
 fn c_string(system: &mut System, at: u32) -> String {
     let mut bytes = [0u8; 32];
