@@ -10,6 +10,9 @@ pub(super) const BOTTOM_TEXT: u32 = 0x007C912C;
 pub(super) const BOTTOM_TRANSLUCENT: u32 = 0x007C90F8;
 pub(super) const START: u32 = 0x0072A050;
 pub(super) const FINISHED: u32 = 0x0072A0B4;
+/// the `CircleShadow` draw (this in r0: positions at +0, count at +0x14),
+/// run inside each scene pass: the Idols' floor shadow.
+pub(super) const CIRCLE_SHADOW_DRAW: u32 = 0x0080B100;
 pub(super) const FONT_CALL: [u32; 7] = [0x00A36E64, 0x00A36EC8, 0x00A36EE4, 0x00A36F00, 0x00A36F1C, 0x00A36F74, 0x00A36FA4];
 pub(super) const FONT_DONE: [u32; 7] = [0x00A36E68, 0x00A36ECC, 0x00A36EE8, 0x00A36F04, 0x00A36F20, 0x00A36F78, 0x00A36FA8];
 
@@ -2184,6 +2187,20 @@ fn target(system: &mut System, eye: u32, step: usize, mut moved: Vec<(u32, Vec<u
     call_here(system, 0x00916588, manager, eye, Drawing::MenuTop(step), moved);
 }
 
+/// Circle shadows draw in every replay of a split top screen, at that
+/// replay's Placement. Only the layer owning `CIRCLE_SHADOW` keeps them;
+/// any other replay, and the clipped native pass, returns at once.
+pub(super) fn circle_shadow(system: &mut System) {
+    let Some(mouse) = system.aim_mouse.as_ref() else { return };
+    let Some((index, ..)) = mouse.menu_top.active else { return };
+    let Some(&(owner, ..)) = top_layers(index).iter().find(|&&(_, model, _)| model == super::screen_transform::CIRCLE_SHADOW) else { return };
+    let skip = match drawing(system) {
+        Some(Drawing::MenuTop(step)) => mouse.menu_top.part(step / 8).is_none_or(|part| part.model != Some(owner)),
+        Some(Drawing::MenuClip(_)) => true,
+        _ => false,
+    };
+    if skip { system.cpu.regs[15] = system.cpu.regs[14]; }
+}
 
 pub(super) fn draw(system: &mut System) -> bool {
     let mut top = system.cpu.regs[4];

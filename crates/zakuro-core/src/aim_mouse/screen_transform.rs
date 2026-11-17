@@ -203,6 +203,11 @@ const FILE_SELECT: &[(&str, [f32; 4])] = &[
     ("MenSelfileBt0004", [185.0, 192.0, 135.0, 48.0]),
 ];
 
+/// The owner naming the game's `CircleShadow` sprites (drawn by 0x0080B100
+/// in every scene pass) rather than a model: only that layer's replay draws
+/// them.
+pub(super) const CIRCLE_SHADOW: &str = "CircleShadow";
+
 /// Editor label, owning model and mesh nodes; an empty list owns the rest.
 /// An owner ending in `*` owns every model whose name starts with the rest.
 pub(super) type TopLayer = (&'static str, &'static str, &'static [&'static str]);
@@ -246,9 +251,11 @@ const POWERS_TOP: &[TopLayer] = &[
 
 /// The Vault's Idols, back to front: the backdrop, the figure's shadow and
 /// the figure. Each idol is its own `Dol*` model, so that owner is a prefix.
+/// The floor shadow is the game's `CircleShadow` sprite, not a model, so
+/// its owner is `CIRCLE_SHADOW`; `maru_kage` draws nothing visible here.
 const IDOLS_TOP: &[TopLayer] = &[
     ("Backdrop", "MenColViewerUp0000", &[]),
-    ("Shadow", "maru_kage", &[]),
+    ("Shadow", CIRCLE_SHADOW, &[]),
     ("Idol", "Dol*", &[]),
 ];
 

@@ -30,7 +30,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 135] = [
+pub const PLACES: [u32; 136] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -78,6 +78,7 @@ pub const PLACES: [u32; 135] = [
     HINT_CAMERA[0],
     menu_top::START,
     menu_top::FINISHED,
+    menu_top::CIRCLE_SHADOW_DRAW,
     MENU_NO_TOUCH,
     screen_transform::SCRIPTED_UPDATES[0],
     screen_transform::SCRIPTED_UPDATES[1],
@@ -1987,6 +1988,7 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         DIALOG_INPUT => hover_dialog(system),
         TOP_SCENE_3D => top_scene_ring(system),
         menu_top::START => { menu_top::begin(system); }
+        menu_top::CIRCLE_SHADOW_DRAW => menu_top::circle_shadow(system),
         menu_top::FINISHED => { menu_top::draw(system); }
         CAULDRON_CURSOR_KEYS_DONE => light_cauldron_cursor(system),
         TOP_TEXT | TOP_TEXT_DRAWN => {
