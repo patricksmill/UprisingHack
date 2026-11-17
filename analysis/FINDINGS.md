@@ -798,8 +798,43 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   which `BOTTOM_LAYERS` (0xF..0x13) covers. Bottom text anchors: Row names
   x 89 and counts x 262 every 25 from y 15; the List's "1/9" (160, 220); the
   title (150, 38), the description block (14, 64), its "1/9" (151, 211).
+- The Idols floor shadow is not `maru_kage` and not part of the backdrop
+  (`MenColViewerUp0000`: one mesh, one texture `MenColVwUp_Dynamic00NN`,
+  the category emblem; the gradient is vertex colour). It is a
+  `CircleShadow` (manager built by 0x00238B5C, 12 slots): a one-vertex
+  geometry-shader sprite (stride 64) sampling the 16x16 radial texture
+  hashed `519EDA1CAB804F1C` (Citra rows hash). It draws in every split-layer
+  replay at that replay's Placement, so a moved Backdrop carries a copy.
+  Mesh visibility (+0x24), model +0x1F6, `maru_kage`'s matrices and its
+  material depth test all leave it drawn; `maru_kage`'s mesh has no node
+  (+0x26 = -1). A texture pack blanking that hash removes every copy.
+  The draw is 0x0080B100(this): count at +0x14 (returns at once when 0),
+  positions (12 bytes each) at `*this`, offset by the camera at
+  `r1[1]+0x28 -> +0x134`, written to 64-byte vertices at this+0x10; the
+  texture bind goes through 0x00152714 (called at 0x0080B22C). Found by
+  watching the command-list words that bind the shadow texture (GPU reg
+  0x85 = 0x18142D80 >> 3) with `KIUTRACE_WATCH_REGS=1`. The Shadow layer
+  owns `CIRCLE_SHADOW`; `menu_top::circle_shadow` returns from that
+  function in every other replay, so the Backdrop stretches without a copy.
   Back and AR are no glyphs. A saved List state reloads with a black top;
   reach the List from the description state instead.
+- Idols Emblem (`MenColViewerUp0000`'s only material, `Dynamic_00`, its
+  texture a by-name reference that code binds per category from
+  `MenColVwUp_Dynamic00%02d`, string at ROM 0x1534D0; the 20 emblems are
+  ETC1 64x64 in `us/menu/460.zrc`, white for no emblem). The runtime
+  material (vtable 0x00D1510C) points at the file's `MTOB` at +8, no copy
+  at +0x14. Texture coordinator 0 at `MTOB`+0x16C: Scale U/V +0x10/+0x14,
+  Rotate +0x18, Translate U/V +0x1C/+0x20, flags +0x24 (0x100; the engine
+  rebuilds the matrix when bit 0 is set and clears it; writing the matrix
+  at +0x28 alone does nothing). Texture unit 0's commands at `MTOB`+0x2F0:
+  border colour, header 0x804F0081 (regs 0x81..0x84), size, sampler
+  parameters 0x26 (ClampToEdge); writing them takes effect. Measured with
+  a black border and the Backdrop at 0 0 400 240: identity fills
+  (248, 25, 114x113); Scale divides that box about its lower left corner;
+  Translate moves it right and up by its own size, independent of Scale.
+  Outside that quad the mesh's UVs vary on one axis only, so a texture
+  moved past it smears; ClampToBorder with a white border keeps a shrunk
+  emblem clean.
 - Idols view state (viewer object 0x14040508 in `trace/idols-viewer.state`,
   ticking at 30 Hz): zoom `+0x168` (0 out, 0.5 default, 1 in; X/Y and the
   zoom bar), tilt `+0x170` (game clamps to ±90, limits at +0x1C4/+0x1C8),
