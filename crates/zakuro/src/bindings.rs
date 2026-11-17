@@ -56,10 +56,16 @@ pub enum Action {
     Back,
     /// Start outside a battle, which skips a scene.
     Skip,
+    /// on Idols, L and R: the idol before and after.
+    PreviousIdol,
+    NextIdol,
+    /// on Idols, X and Y: the Idol View's Zoom.
+    ZoomIn,
+    ZoomOut,
 }
 
 impl Action {
-    pub const ALL: [Action; 26] = [
+    pub const ALL: [Action; 30] = [
         Action::MoveUp,
         Action::MoveDown,
         Action::MoveLeft,
@@ -86,6 +92,10 @@ impl Action {
         Action::Confirm,
         Action::Back,
         Action::Skip,
+        Action::PreviousIdol,
+        Action::NextIdol,
+        Action::ZoomIn,
+        Action::ZoomOut,
     ];
 
     pub fn name(self) -> &'static str {
@@ -116,6 +126,10 @@ impl Action {
             Action::Confirm => "Confirm",
             Action::Back => "Back",
             Action::Skip => "Skip Scene",
+            Action::PreviousIdol => "Previous Idol",
+            Action::NextIdol => "Next Idol",
+            Action::ZoomIn => "Zoom In",
+            Action::ZoomOut => "Zoom Out",
         }
     }
 
@@ -124,7 +138,8 @@ impl Action {
         use Action::*;
         match self {
             MoveUp | MoveDown | MoveLeft | MoveRight => &[Context::Gameplay, Context::Screens],
-            NavigateUp | NavigateDown | NavigateLeft | NavigateRight | Confirm | Back | Skip => &[Context::Screens],
+            NavigateUp | NavigateDown | NavigateLeft | NavigateRight | Confirm | Back | Skip
+            | PreviousIdol | NextIdol | ZoomIn | ZoomOut => &[Context::Screens],
             _ => &[Context::Gameplay],
         }
     }
@@ -152,6 +167,10 @@ impl Action {
             Pause | Skip => PadState::START,
             Confirm => PadState::A,
             Back => PadState::B,
+            PreviousIdol => PadState::L,
+            NextIdol => PadState::R,
+            ZoomIn => PadState::X,
+            ZoomOut => PadState::Y,
             _ => return None,
         })
     }
@@ -220,10 +239,42 @@ pub enum BindError {
 
 /// each action's primary and secondary input, one map a device.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, from = "StoredBindings")]
 pub struct ActionBindings {
     pub keyboard_mouse: BTreeMap<Action, Vec<Source>>,
     pub controller: BTreeMap<Action, Vec<Source>>,
+}
+
+/// bindings as saved, which may predate some actions.
+#[derive(Deserialize)]
+#[serde(default)]
+struct StoredBindings {
+    keyboard_mouse: BTreeMap<Action, Vec<Source>>,
+    controller: BTreeMap<Action, Vec<Source>>,
+}
+
+impl Default for StoredBindings {
+    fn default() -> Self {
+        let ActionBindings { keyboard_mouse, controller } = ActionBindings::default();
+        StoredBindings { keyboard_mouse, controller }
+    }
+}
+
+impl From<StoredBindings> for ActionBindings {
+    /// an action saved bindings lack gets its defaults, less any input an
+    /// action wanted at the same time already uses.
+    fn from(stored: StoredBindings) -> Self {
+        let mut bindings = ActionBindings { keyboard_mouse: stored.keyboard_mouse, controller: stored.controller };
+        let defaults = ActionBindings::default();
+        for device in [Device::KeyboardMouse, Device::Controller] {
+            for (&action, sources) in defaults.map(device) {
+                if bindings.map(device).contains_key(&action) { continue; }
+                let free: Vec<Source> = sources.iter().copied().filter(|&source| bindings.conflicts(action, source).is_empty()).collect();
+                bindings.map_mut(device).insert(action, free);
+            }
+        }
+        bindings
+    }
 }
 
 impl Default for ActionBindings {
@@ -253,6 +304,10 @@ impl Default for ActionBindings {
             (Confirm, vec![key(KeyCode::Enter), key(KeyCode::Space)]),
             (Back, vec![key(KeyCode::Escape), key(KeyCode::Backspace)]),
             (Skip, vec![key(KeyCode::KeyX)]),
+            (PreviousIdol, vec![key(KeyCode::KeyQ)]),
+            (NextIdol, vec![key(KeyCode::KeyE)]),
+            (ZoomIn, vec![key(KeyCode::KeyR)]),
+            (ZoomOut, vec![key(KeyCode::KeyF)]),
         ];
         let controller = [
             (Attack, vec![pad(Button::RightTrigger2)]),
@@ -273,6 +328,10 @@ impl Default for ActionBindings {
             (Confirm, vec![pad(Button::South)]),
             (Back, vec![pad(Button::East)]),
             (Skip, vec![pad(Button::Start)]),
+            (PreviousIdol, vec![pad(Button::LeftTrigger)]),
+            (NextIdol, vec![pad(Button::RightTrigger)]),
+            (ZoomIn, vec![pad(Button::RightTrigger2)]),
+            (ZoomOut, vec![pad(Button::LeftTrigger2)]),
         ];
         ActionBindings { keyboard_mouse: keyboard_mouse.into_iter().collect(), controller: controller.into_iter().collect() }
     }
@@ -646,10 +705,20 @@ mod tests {
     /// an input used in the same context is a conflict; one used only in
     /// the other context is not.
     #[test]
+    fn saved_bindings_without_the_idol_actions_get_their_free_defaults() {
+        // Q taken by Confirm in the saved map: Previous Idol gets no key
+        let saved = "[keyboard_mouse]\nconfirm = [{ Key = \"KeyQ\" }]\n";
+        let bindings: ActionBindings = toml::from_str(saved).unwrap();
+        assert_eq!(bindings.sources(Device::KeyboardMouse, Action::PreviousIdol), &[]);
+        assert_eq!(bindings.sources(Device::KeyboardMouse, Action::NextIdol), &[key(KeyCode::KeyE)]);
+        assert_eq!(bindings.sources(Device::Controller, Action::ZoomIn), &[Source::Pad(Button::RightTrigger2)]);
+    }
+
+    #[test]
     fn conflicts_are_only_within_a_context() {
         let bindings = ActionBindings::default();
-        // E is Use Power, a battle's; Confirm is a Screen's
-        assert!(bindings.conflicts(Action::Confirm, key(KeyCode::KeyE)).is_empty());
+        // G is Exit Vehicle, a battle's; Confirm is a Screen's
+        assert!(bindings.conflicts(Action::Confirm, key(KeyCode::KeyG)).is_empty());
         // W moves everywhere, so it conflicts with both kinds
         assert_eq!(bindings.conflicts(Action::Attack, key(KeyCode::KeyW)), vec![Action::MoveUp]);
         assert_eq!(bindings.conflicts(Action::Confirm, key(KeyCode::KeyW)), vec![Action::MoveUp]);
