@@ -20,6 +20,7 @@ pub(super) const FONT_DONE: [u32; 7] = [0x00A36E68, 0x00A36ECC, 0x00A36EE8, 0x00
 pub(super) struct MenuTop {
     drawn: Option<(u64, usize, u32, f32)>,
     idol_dialog: bool,
+    idol_revealing: bool,
     /// the Idols List page is shown, not one idol's description.
     idols_list: bool,
     controls_more: bool,
@@ -62,15 +63,53 @@ pub(super) struct MenuTop {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum IdolGroup { Counters, Back, Launcher, Dialog }
+enum IdolGroup { Counters, Back, Launcher, Dialog, Fountain, Eggs }
 
 impl IdolGroup {
-    fn contains(self, name: &str) -> bool {
+    /// whether the group draws this mesh node of this model. The counters'
+    /// model `MenColVisionBt0005` also holds the bottom screen's scenery:
+    /// its pedestal goes with the fountain and its rail with the eggs; its
+    /// curtain (`NN_B0002`, `NN_B0000`) and ground (`NN_B0004`) stay off,
+    /// the top's own scene being behind, and with the ground the
+    /// fountain's mist (`MN_B0001`), a band that ends where the bottom
+    /// screen did.
+    fn shows(self, name: &str, node: &str) -> bool {
+        match (self, name) {
+            (Self::Counters, "MenColVisionBt0005") => matches!(node, "BL_B0000" | "coin" | "NN_B00010" | "NN_B0006"),
+            (Self::Counters, "MenColVisionBt0007") => true,
+            (Self::Dialog, "MenCmnWindowBt0000") => true,
+            (Self::Back, "MenColVisionBt9999") => true,
+            (Self::Launcher, "MenColVisionBt0000" | "MenColVisionBt0001" | "MenColVisionBt0002" | "MenColVisionBt0003") => true,
+            (Self::Fountain, "MenColVisionBt0006") => node != "MN_B0001",
+            (Self::Fountain, "MenColVisionBt0005") => node == "NN_B0007",
+            (Self::Eggs, "MenColVisionBt0002") => true,
+            (Self::Eggs, "MenColVisionBt0005") => node == "NN_B0005",
+            _ => false,
+        }
+    }
+
+    /// whether any of this model's nodes are the group's.
+    fn owns(self, name: &str) -> bool {
         match self {
             Self::Counters => matches!(name, "MenColVisionBt0005" | "MenColVisionBt0007"),
-            Self::Dialog => name == "MenCmnWindowBt0000",
-            Self::Back => name == "MenColVisionBt9999",
-            Self::Launcher => matches!(name, "MenColVisionBt0000" | "MenColVisionBt0001" | "MenColVisionBt0003"),
+            _ => self.shows(name, ""),
+        }
+    }
+
+    /// the launcher and the scenery around it keep the game's depth,
+    /// shading and translucent pass, and the scenery takes no touches.
+    fn scenery(self) -> bool {
+        matches!(self, Self::Fountain | Self::Eggs)
+    }
+
+    fn uncut(self) -> bool {
+        !matches!(self, Self::Counters | Self::Dialog)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Counters => "Counters", Self::Back => "Back", Self::Launcher => "Launcher",
+            Self::Dialog => "Dialog", Self::Fountain => "Fountain", Self::Eggs => "Egg queue",
         }
     }
 }
@@ -131,6 +170,9 @@ impl MenuTop {
     }
 
     fn available(&self, part: &Part) -> bool {
+        if self.idol_revealing && matches!(part.idol, Some(IdolGroup::Launcher | IdolGroup::Fountain)) {
+            return false;
+        }
         match part.model {
             Some("MenOptionControlBt0001" | "MenOptionControlBt0002" | "MenOptionControlBt0006") => !self.controls_more,
             Some("MenOptionControlBt0003" | "MenOptionControlBt0004" | "MenOptionControlBt0005" |
@@ -256,6 +298,8 @@ fn draw_order(system: &mut System, bottom: u32, parts: &[Part], replay_details: 
     order.sort_by_key(|&index| {
         let part = &parts[index];
         if part.top { return (if part.model.is_some() { 0 } else { usize::MAX }, 0); }
+        // Idol Toss's scenery is behind its bowl and Controls.
+        if let Some(group) = part.idol { return (1, usize::from(!group.scenery())); }
         // A node layer draws where its model does, in its table's order.
         if let Some(at) = part.model.and_then(|name| layers_below.iter().position(|&(layer, ..)| layer == name)) {
             let owner = layers_below[at].1;
@@ -729,12 +773,10 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
     if !groups.is_empty() && !armory_board(index) { controls = [0.0, 0.0, width, 240.0]; }
     if matches!(kind, Some(LayoutKind::Idol)) {
         let counter_scale = 0.7_f32.min((width - 16.0) / 160.0);
-        let launcher_scale = 0.68_f32.min(width * 0.6 / 280.0);
         for (group, from, to) in [
-            (IdolGroup::Counters, [0.0, 0.0, 160.0, 72.0], [0.0, 14.0, 160.0 * counter_scale, 72.0 * counter_scale]),
+            (IdolGroup::Counters, [0.0, 0.0, IDOL_COUNTERS_WIDTH, 72.0], [0.0, 14.0, IDOL_COUNTERS_WIDTH * counter_scale, 72.0 * counter_scale]),
             (IdolGroup::Back, [0.0, 190.0, 60.0, 50.0], [8.0, 202.0, 36.0, 30.0]),
-            (IdolGroup::Launcher, [40.0, 40.0, 240.0, 110.0],
-                [width - 8.0 - 240.0 * launcher_scale, 62.0, 240.0 * launcher_scale, 110.0 * launcher_scale]),
+            (IdolGroup::Launcher, IDOL_LAUNCHER, idol_toss(width).to_box(IDOL_LAUNCHER)),
         ] {
             parts.push(Part { visible: true, backdrop: false, chapter: false, idol: Some(group), top: false, model: None, place: Placement { from, to } });
         }
@@ -811,6 +853,15 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
     }
     // Last, so adding it kept every other layer's saved index.
     parts.push(Part { visible: true, backdrop: true, chapter: false, idol: None, top: true, model: None, place: native });
+    if matches!(kind, Some(LayoutKind::Idol)) {
+        // After the backdrop, so the earlier layers' saved indices are kept.
+        for (group, place) in [
+            (IdolGroup::Fountain, Placement { from: IDOL_FOUNTAIN, to: idol_toss(width).to_box(IDOL_FOUNTAIN) }),
+            (IdolGroup::Eggs, idol_eggs(width)),
+        ] {
+            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: Some(group), top: false, model: None, place });
+        }
+    }
     // After the backdrop, so Gear's earlier saved indices are kept; back to front.
     for &(layer, ..) in kind.map_or(&[][..], LayoutKind::top_layers) {
         parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some(layer), place: native });
@@ -822,12 +873,54 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
     (native, parts)
 }
 
+/// Idol Toss's bowl, the fountain under it and the egg queue beside it, in
+/// the bottom screen's pixels.
+const IDOL_LAUNCHER: [f32; 4] = [40.0, 40.0, 240.0, 110.0];
+const IDOL_FOUNTAIN: [f32; 4] = [60.0, 60.0, 200.0, 180.0];
+const IDOL_EGGS: [f32; 4] = [262.0, 0.0, 58.0, 240.0];
+
+fn idol_egg_group(system: &mut System, model: u32) -> IdolGroup {
+    let skeleton = read_word(system, model + MODEL_SKELETON);
+    let world = read_word(system, skeleton + SKELETON_WORLD);
+    // Eggs move by their root bone; the native camera shows 32 world units across 320 pixels.
+    let x = 160.0 + 10.0 * f32::from_bits(read_word(system, world + 0xC));
+    if x < IDOL_EGGS[0] { IdolGroup::Launcher } else { IdolGroup::Eggs }
+}
+
+/// source width of Counters normally.
+const IDOL_COUNTERS_WIDTH: f32 = 160.0;
+
+/// source width of Counters while an idol's name bar shows.
+const IDOL_NAME_WIDTH: f32 = 320.0;
+
+fn idol_revealing(system: &mut System, object: u32) -> bool {
+    // Native launch/reveal phases; phase 5 returns control to egg tossing.
+    object != 0 && matches!(read_word(system, object + 0x430) & 0xFF, 2..=4)
+}
+
+/// where the egg queue goes on a top screen this wide: its rail runs the
+/// bottom screen's whole height and ends there, so it keeps its size down
+/// the right edge.
+fn idol_eggs(width: f32) -> Placement {
+    Placement { from: IDOL_EGGS, to: [width - IDOL_EGGS[2], 0.0, IDOL_EGGS[2], IDOL_EGGS[3]] }
+}
+
+/// where the bottom screen left of the egg queue goes: one transform for
+/// the bowl and the fountain, so they stand together as the game drew
+/// them, as far from the queue as there, the bowl's top at 62.
+fn idol_toss(width: f32) -> Placement {
+    let from = [IDOL_LAUNCHER[0], 0.0, IDOL_EGGS[0] - IDOL_LAUNCHER[0], 240.0];
+    let scale = 0.68_f32.min(width * 0.6 / 280.0);
+    Placement { from, to: [idol_eggs(width).to[0] - from[2] * scale, 62.0 - IDOL_LAUNCHER[1] * scale, from[2] * scale, from[3] * scale] }
+}
+
 fn layout_with_dialog(index: usize, width: f32, idol_dialog: bool) -> (Placement, Vec<Part>) {
     let (native, mut parts) = layout(if idol_dialog { 22 } else { index }, width);
     if idol_dialog {
         let place = fitted([0.0, 0.0, 320.0, 240.0], [8.0, 48.0, width - 16.0, 180.0]);
         // before the hint, which precedes the backdrop
-        parts.insert(parts.len() - 2, Part { visible: true, backdrop: false, chapter: false, idol: Some(IdolGroup::Dialog), top: false, model: None, place });
+        let hint = parts.iter().position(|part| part.top && part.model.is_none() && !part.backdrop).unwrap();
+        parts.insert(hint, Part { visible: true, backdrop: false, chapter: false, idol: Some(IdolGroup::Dialog), top: false, model: None, place });
     }
     (native, parts)
 }
@@ -1107,7 +1200,7 @@ impl AimMouse {
             let on_screen = inside(point, [0.0, 0.0, 400.0 * self.widen, 240.0]);
             let idols = self.menu_screen.is_some_and(|(index, ..)| ScreenTransform::scripted(index).id == super::screen_transform::Screen::Idols);
             self.menu_top.candidates = self.menu_top.parts.iter().enumerate().rev().filter_map(|(index, part)| {
-                if !self.menu_top.enabled(part) || part.top
+                if !self.menu_top.enabled(part) || part.top || part.idol == Some(IdolGroup::Fountain)
                     || (self.menu_top.idol_dialog && part.idol != Some(IdolGroup::Dialog))
                     || (idols && !idols_takes_pointer(part.model, self.menu_top.idols_list)) { return None; }
                 let addressable = part.model.and_then(button_hash).is_some();
@@ -1128,7 +1221,13 @@ impl AimMouse {
             return None;
         }
         let over = self.menu_top.candidates.get(self.menu_top.candidate).map(|&(index, _)| index);
-        let Some(index) = self.menu_top.grab.filter(|_| pressed).or(over) else {
+        let grab = self.menu_top.grab.filter(|_| pressed).map(|grab| {
+            // An egg crosses separately placed groups without releasing its native touch.
+            if self.menu_top.parts[grab].idol == Some(IdolGroup::Eggs) {
+                over.filter(|&index| self.menu_top.parts[index].idol == Some(IdolGroup::Launcher)).unwrap_or(grab)
+            } else { grab }
+        });
+        let Some(index) = grab.or(over) else {
             self.menu_part = None;
             self.menu_looked = None;
             return None;
@@ -1242,6 +1341,8 @@ impl AimMouse {
                 CHAPTER_LAYERS.get(index).map_or("controls", |&(name, ..)| name).to_owned()
             } else if self.menu_screen.is_some_and(|(screen, ..)| screen == 11) && !self.menu_top.idol_dialog {
                 match index { 0 => "Dialog", 1 => "No", 2 => "Yes", _ => "hint" }.to_owned()
+            } else if let Some(group) = part.idol {
+                group.name().to_owned()
             } else { part.model.map_or_else(|| if part.top { "hint" } else { "controls" }.to_owned(), str::to_owned) };
             let inactive = if self.menu_top.available(part) { "" } else { " (inactive)" };
             (format!("{name} #{index}{inactive}"), part.place.to)
@@ -1331,6 +1432,11 @@ impl AimMouse {
         }
         self.clear_menus_top_pointer();
         let Some(screen) = screen else { return };
+        // A widened Counters box (idol name bar) is saved at its normal width.
+        let mut to = to;
+        if let Some(part) = self.menu_top.parts.get(index).filter(|part| part.idol == Some(IdolGroup::Counters)) {
+            to[2] *= IDOL_COUNTERS_WIDTH / part.place.from[2];
+        }
         let kept = unseat_override(to, 400.0 * self.widen);
         match self.menu_top.overrides.iter_mut().find(|(kept, part, _)| *kept == screen && *part == index) {
             Some(entry) => entry.2 = kept,
@@ -1516,6 +1622,9 @@ pub(super) fn begin(system: &mut System) -> bool {
     let current = read_word(system, top + 0x40);
     let idol_dialog = matches!(index, 10 | 11) && scene_has_idol(system, current);
     let controls_more = index == 5 && read_word(system, object + 0x11C) & 0x100 != 0;
+    let idol_revealing = index < ScreenTransform::scripted_len()
+        && matches!(ScreenTransform::scripted(index).layout, LayoutKind::Idol)
+        && idol_revealing(system, object);
     let chapters = if index == 1 { chapter_list(system, bottom) } else { Vec::new() };
     let outlined = (index == 1 && object != 0).then(|| read_word(system, object + CHAPTER) + 1);
     log::debug!("menu begin index {index} idol dialog {idol_dialog}");
@@ -1550,6 +1659,14 @@ pub(super) fn begin(system: &mut System) -> bool {
             if let Some(part) = parts.get_mut(part) { part.visible = false; }
         }
     }
+    // The revealed idol's name bar draws with the counters but runs past
+    // their 160-pixel source; widen the box at the same scale meanwhile.
+    if idol_revealing {
+        for part in parts.iter_mut().filter(|part| part.idol == Some(IdolGroup::Counters)) {
+            part.place.to[2] *= IDOL_NAME_WIDTH / part.place.from[2];
+            part.place.from[2] = IDOL_NAME_WIDTH;
+        }
+    }
     let menu_top = &mut mouse.menu_top;
     menu_top.chapter_rows.clear();
     if index == 1 {
@@ -1579,6 +1696,7 @@ pub(super) fn begin(system: &mut System) -> bool {
     let backdrop = parts.iter().find(|part| part.backdrop).map(|part| (part.place.to, part.visible));
     if let Some((to, _)) = backdrop { native.to = to; }
     mouse.menu_top.idol_dialog = idol_dialog;
+    mouse.menu_top.idol_revealing = idol_revealing;
     mouse.menu_top.controls_more = controls_more;
     mouse.menu_top.active = Some((index, object, current, native_touch));
     mouse.menu_top.passthrough = native_touch;
@@ -1835,8 +1953,8 @@ pub(super) fn scissor(system: &mut System) {
     let isolated = if text_clip { !mouse.menu_top.drawing_text && mouse.menu_top.text_parent.as_ref().is_some_and(|saved| !matches!(saved.drawing, Drawing::MenuClip(_))) } else if mouse.menu_top.drawing_text { false } else if row { true } else { match drawing(system) {
         Some(Drawing::MenuTop(step)) => (!mouse.menu_top.file_select()
             || mouse.menu_top.part(step / 8).is_some_and(|part| part.file_book().is_some()))
-            && mouse.menu_top.part(step / 8).is_some_and(|part| part.model.is_some()
-                && !mouse.menu_top.active.is_some_and(|(index, ..)| part_cut(index, part.model))),
+            && mouse.menu_top.part(step / 8).is_some_and(|part| part.idol.is_some_and(IdolGroup::uncut)
+                || part.model.is_some() && !mouse.menu_top.active.is_some_and(|(index, ..)| part_cut(index, part.model))),
         _ => false,
     } };
     let mut rect = if isolated { [0.0, 0.0, 400.0 * widen, 240.0] } else { place.to };
@@ -2041,11 +2159,13 @@ pub(super) fn font(system: &mut System) {
         Some(Drawing::MenuTop(step)) => system.aim_mouse.as_ref().and_then(|mouse| mouse.menu_top.part(step / 8)).and_then(|part| part.idol),
         _ => None,
     };
+    let counters_width = system.aim_mouse.as_ref().and_then(|mouse| mouse.menu_top.parts.iter()
+        .find(|part| part.idol == Some(IdolGroup::Counters)).map(|part| part.place.from[2])).unwrap_or(160.0);
     if let Some(group) = idol_group {
         let at = system.cpu.regs[0] + 0x24;
         let (x, y) = (f32::from_bits(read_word(system, at + 8)), f32::from_bits(read_word(system, at + 12)));
         let keep = match group {
-            IdolGroup::Counters => (0.0..160.0).contains(&x) && (0.0..65.0).contains(&y),
+            IdolGroup::Counters => (0.0..counters_width).contains(&x) && (0.0..65.0).contains(&y),
             IdolGroup::Dialog => (65.0..225.0).contains(&y),
             _ => false,
         };
@@ -2141,11 +2261,13 @@ pub(super) fn font_done(system: &mut System) {
 }
 
 pub(super) fn bottom_translucent(system: &mut System) {
-    if matches!(drawing(system), Some(Drawing::MenuTop(_)))
-        && system.aim_mouse.as_ref().is_some_and(|mouse|
-            mouse.menu_top.active.is_some_and(|(index, _, _, _)| matches!(index, 22 | 25) || mouse.menu_top.idol_dialog)) {
-        // Idol Toss's translucent pass includes the decorative waterfall
-        // and bowl glow. The opaque bowl and all labels remain separate.
+    let Some(Drawing::MenuTop(step)) = drawing(system) else { return };
+    if system.aim_mouse.as_ref().is_some_and(|mouse|
+        mouse.menu_top.active.is_some_and(|(index, _, _, _)| matches!(index, 22 | 25) || mouse.menu_top.idol_dialog)
+            && !mouse.menu_top.part(step / 8).and_then(|part| part.idol).is_some_and(|group| group == IdolGroup::Launcher || group.scenery())) {
+        // Idol Toss's translucent pass shades the bowl and is drawn with
+        // the launcher and the scenery, whose replays hide every other
+        // mesh. The counters, Back and the dialog are drawn without it.
         system.cpu.regs[15] = BOTTOM_TRANSLUCENT + 4;
     }
 }
@@ -2290,7 +2412,7 @@ pub(super) fn draw(system: &mut System) -> bool {
         let from = [-200.0, -120.0, 800.0, 480.0];
         let to = [p.to[0] + (from[0] - p.from[0]) * scale[0], p.to[1] + (from[1] - p.from[1]) * scale[1], from[2] * scale[0], from[3] * scale[1]];
         place_scene(system, top, drawing, Placement { from, to }, true, true, &mut moved);
-    } else if !node_layer && (part.file_book().is_some() || row.is_some() || part.model.is_some() && !part_cut(index, part.model)
+    } else if !node_layer && (part.file_book().is_some() || row.is_some() || part.idol.is_some_and(IdolGroup::uncut) || part.model.is_some() && !part_cut(index, part.model)
         && !system.aim_mouse.as_ref().unwrap().menu_top.file_select()) {
         let widen = system.aim_mouse.as_ref().unwrap().widen;
         let canvas = [400.0 * widen, 240.0];
@@ -2340,10 +2462,9 @@ pub(super) fn draw(system: &mut System) -> bool {
             for at in (start..end).step_by(4) {
                 let model = read_word(system, at);
                 let name = model_name(system, model);
-                let selected = group.contains(&name);
-                if selected && group != IdolGroup::Launcher { foreground_materials(system, model, &mut moved); }
-                show_nodes(system, &mut moved, model, |node| selected && (name != "MenColVisionBt0005"
-                    || matches!(node, "BL_B0000" | "coin" | "NN_B00010" | "NN_B0006")));
+                let egg = (name == "MenColVisionBt0002").then(|| idol_egg_group(system, model));
+                if group != IdolGroup::Launcher && !group.scenery() && group.owns(&name) { foreground_materials(system, model, &mut moved); }
+                show_nodes(system, &mut moved, model, |node| egg.is_none_or(|owner| owner == group) && group.shows(&name, node));
             }
         }
     } else if bottom_layer_part(index, part.model) {
@@ -2587,6 +2708,83 @@ mod tests {
     }
 
     #[test]
+    fn idol_reveal_hides_launcher_and_fountain_until_tossing_returns() {
+        let mut system = System::new(crate::Config::default());
+        let object = 0x14000000;
+        system.memory.map(object, 0x20000000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        for screen in [22, 25] {
+            let mut mouse = shown(screen);
+            for phase in [0_u32, 1, 2, 3, 4, 5, 0] {
+                system.memory.write_bytes(object + 0x430, &phase.to_le_bytes());
+                mouse.menu_top.idol_revealing = idol_revealing(&mut system, object);
+                for part in &mouse.menu_top.parts {
+                    let hidden = (2..=4).contains(&phase)
+                        && matches!(part.idol, Some(IdolGroup::Launcher | IdolGroup::Fountain));
+                    assert_eq!(mouse.menu_top.enabled(part), !hidden);
+                    assert!(part.visible, "native phases must preserve editor visibility");
+                }
+                let bowl = mouse.menu_top.parts[2].place.map_point([160.0, 100.0]);
+                mouse.clear_menus_top_pointer();
+                assert_eq!(mouse.menus_top_touch(11, bowl[0], bowl[1], false).is_some(), !(2..=4).contains(&phase));
+            }
+        }
+    }
+
+    #[test]
+    fn idol_eggs_draw_with_the_launcher_after_leaving_the_queue() {
+        let mut system = System::new(crate::Config::default());
+        let model = 0x14000000;
+        let skeleton = model + 0x400;
+        let world = model + 0x800;
+        system.memory.map(model, 0x20000000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        system.memory.write_bytes(model + MODEL_SKELETON, &skeleton.to_le_bytes());
+        system.memory.write_bytes(skeleton + SKELETON_WORLD, &world.to_le_bytes());
+        for (x, expected) in [(13.5_f32, IdolGroup::Eggs), (0.79, IdolGroup::Launcher)] {
+            system.memory.write_bytes(world + 0xC, &x.to_le_bytes());
+            assert_eq!(idol_egg_group(&mut system, model), expected);
+            assert!(expected.shows("MenColVisionBt0002", "egg3"));
+        }
+    }
+
+    #[test]
+    fn idol_egg_drag_reaches_the_bowl_through_edited_placements() {
+        for screen in [22, 25] {
+            let mut mouse = shown(screen);
+            mouse.set_editor_layer(2, [140.0, 100.0, 168.0, 77.0]);
+            mouse.set_editor_layer(6, [340.0, 0.0, 58.0, 240.0]);
+            let egg = mouse.menu_top.parts[6].place;
+            let bowl = mouse.menu_top.parts[2].place;
+            let start = egg.map_point([290.0, 20.0]);
+            let end = bowl.map_point([160.0, 100.0]);
+            assert_eq!(mouse.menus_top_touch(11, start[0], start[1], true), Some((290.0, 20.0)));
+            assert_eq!(mouse.menus_top_touch(11, end[0], end[1], true), Some((160.0, 100.0)));
+            mouse.menus_top_touch(11, end[0], end[1], false);
+            assert!(!mouse.menus_top_dragging());
+        }
+    }
+
+    #[test]
+    fn idol_mesh_groups_do_not_clip_at_their_placement_boxes() {
+        let mut system = System::new(crate::Config::default());
+        let at = 0x14000000;
+        system.memory.map(at, 0x20000000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        for screen in [22, 25] {
+            for index in [1, 2, 5, 6] {
+                let mut mouse = shown(screen);
+                let part = mouse.menu_top.parts[index].clone();
+                mouse.menu_top.draw_order = vec![index];
+                mouse.menu_top.clip = Some((part.place, part.top));
+                mouse.saved = Some(Saved { regs: [0; 16], cpsr: system.cpu.cpsr, vfp: [0; 32], drawing: Drawing::MenuTop(0), moved: Vec::new() });
+                system.aim_mouse = Some(mouse);
+                system.cpu.regs[2] = at;
+                scissor(&mut system);
+                assert_eq!((0..4).map(|i| read_word(&mut system, at + i * 4)).collect::<Vec<_>>(), vec![0, 0, 240, 400]);
+                scissor_done(&mut system);
+            }
+        }
+    }
+
+    #[test]
     fn idol_corner_controls_and_launcher_share_their_input_transforms() {
         for index in [22, 25] {
             for width in [240.0, 400.0, 240.0 * 16.0 / 9.0, 560.0] {
@@ -2601,7 +2799,17 @@ mod tests {
                 assert_eq!(&counters.to[..2], &[0.0, 14.0]);
                 assert_eq!(back.to[0], 8.0);
                 assert_eq!(back.to[1] + back.to[3], 232.0);
-                assert!((launcher.to[0] + launcher.to[2] - (width - 8.0)).abs() < 0.001);
+                let fountain = parts.iter().find(|part| part.idol == Some(IdolGroup::Fountain)).unwrap().place;
+                let eggs = parts.iter().find(|part| part.idol == Some(IdolGroup::Eggs)).unwrap().place;
+                assert_eq!(eggs.to, [width - 58.0, 0.0, 58.0, 240.0], "the queue keeps its size down the right edge");
+                let scale = launcher.to[2] / launcher.from[2];
+                assert!((launcher.map_point([eggs.from[0], 0.0])[0] - eggs.to[0]).abs() < 0.001, "the bowl is as far from the queue as on the bottom screen");
+                assert!((fountain.to[2] / fountain.from[2] - scale).abs() < 0.001);
+                for axis in 0..2 {
+                    assert!((launcher.map_point([fountain.from[0], fountain.from[1]])[axis] - fountain.to[axis]).abs() < 0.001, "the fountain stands under the bowl");
+                }
+                assert_eq!(parts.iter().position(|part| part.backdrop), Some(4), "the scenery follows the layers saved before it");
+                assert_eq!(mouse.menus_top_touch(11, (eggs.to[0] + 29.0) / mouse.widen, 120.0, false), Some((291.0, 120.0)));
                 for native in [(30.0, 215.0), (160.0, 100.0)] {
                     let top = mouse.menus_top_point(11, native.0, native.1, None).unwrap();
                     assert_eq!(mouse.menus_top_touch(11, top.0, top.1, false), Some(native));

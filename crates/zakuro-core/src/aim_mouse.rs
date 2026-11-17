@@ -3218,6 +3218,41 @@ fn show_parts(system: &mut System, moved: &mut Vec<(u32, Vec<u8>)>, model: u32, 
     }
 }
 
+/// the scene models the menus' bottom drawing has, for the harness: each
+/// layer's models by address and name, with their mesh nodes and whether
+/// each shows.
+pub fn scene_models(system: &mut System) -> Vec<(u32, u32, String, Vec<(String, bool)>)> {
+    let Some(bottom) = system.aim_mouse.as_ref().and_then(|mouse| mouse.bottom_scene) else { return Vec::new() };
+    let scene = read_word(system, bottom + 0x40);
+    if scene == 0 { return Vec::new(); }
+    let layers = read_word(system, scene + SCENE_LAYERS);
+    let mut models = Vec::new();
+    for layer in 0..0x14 {
+        let list = read_word(system, layers + layer * LAYER_SIZE + 4);
+        if list == 0 { continue; }
+        let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
+        if end < start || end - start > 0x1000 { continue; }
+        for at in (start..end).step_by(4) {
+            let model = read_word(system, at);
+            let cmdl = read_word(system, model + 8);
+            let mut nodes = Vec::new();
+            let dictionary = read_word(system, cmdl + 0xD0);
+            if dictionary != 0 {
+                let dictionary = cmdl + 0xD0 + dictionary;
+                let flags = read_word(system, model + MODEL_NODES);
+                let count = read_word(system, dictionary + 8).min(read_word(system, model + MODEL_NODES + 4).wrapping_sub(flags) / 8);
+                for node in 0..count {
+                    let name = dictionary + 0x24 + node * 0x10;
+                    let name = name.wrapping_add(read_word(system, name));
+                    nodes.push((c_string(system, name), read_word(system, flags + node * 8 + 4) & 0xFF != 0));
+                }
+            }
+            models.push((layer, model, model_name(system, model), nodes));
+        }
+    }
+    models
+}
+
 /// the string at at, up to 32 bytes.
 fn c_string(system: &mut System, at: u32) -> String {
     let mut bytes = [0u8; 32];
