@@ -1,9 +1,11 @@
-//! game controllers, any the system knows, read through gilrs.
+//! game controllers, any the system knows, read thru gilrs,
+//! plus the Switch's Pro Controller on macOS read from its reports, see pro_controller
 
-use gilrs::{Axis, Button, EventType, Gilrs};
+use gilrs::{Axis, Button, EventType, Gamepad, Gilrs};
 use zakuro_core::services::hid::{InputState, PadState};
 use zakuro_core::services::prompts::{Direction, Input, Label, Prompts};
 
+use crate::pro_controller::{is_pro_controller, Controllers, Report};
 use crate::settings::PadButtons;
 
 /// how far a stick has to lean before it counts by default, some rest a
@@ -32,7 +34,7 @@ impl Faces {
 }
 
 pub struct Gamepads {
-    /// none when the system could not be asked for controllers.
+    /// none when the system couldn't be asked for controllers
     gilrs: Option<Gilrs>,
     buttons: PadButtons,
     /// the controller pressed or leaned since the last look, see used.
@@ -42,6 +44,10 @@ pub struct Gamepads {
     dpad_axes: [bool; 4],
     /// a controller went away since the last look, see disconnected.
     gone: bool,
+    /// Pro Controllers read from their own reports, on macOS
+    pro: Controllers,
+    /// the buttons they held at the last poll, to tell which got pressed and let go since
+    pro_held: Vec<Button>,
 }
 
 /// how the sticks read: how far one leans before it counts, and how far the
@@ -58,12 +64,17 @@ impl Default for Sticks {
     }
 }
 
+/// is gilrs's reading of a controller left out, a Pro Controller's while one is read from its reports
+fn left_out(pad: &Gamepad, reports: &[Report]) -> bool {
+    !reports.is_empty() && is_pro_controller(pad.vendor_id(), pad.product_id(), pad.name())
+}
+
 impl Gamepads {
     pub fn new(buttons: PadButtons) -> Gamepads {
         let gilrs = Gilrs::new()
             .inspect_err(|error| log::warn!("controllers are not available, {error}"))
             .ok();
-        Gamepads { gilrs, buttons, used: None, dpad_axes: [false; 4], gone: false }
+        Gamepads { gilrs, buttons, used: None, dpad_axes: [false; 4], gone: false, pro: Controllers::new(), pro_held: Vec::new() }
     }
 
     pub fn set_buttons(&mut self, buttons: PadButtons) {
@@ -72,46 +83,58 @@ impl Gamepads {
 
     /// takes in what the controllers did since the last call, and returns
     /// the buttons pressed (true) and let go (false) meanwhile, an axis
-    /// d-pad's as its buttons.
+    /// d-pad's as its buttons, and a Pro Controller's read from its reports.
     pub fn poll(&mut self) -> Vec<(Button, bool)> {
         let mut changed = Vec::new();
-        let Some(gilrs) = &mut self.gilrs else { return changed };
-        while let Some(event) = gilrs.next_event() {
-            match event.event {
-                EventType::ButtonPressed(button, _) => {
-                    changed.push((button, true));
-                    self.used = Some(Faces::of(gilrs.gamepad(event.id).name()));
-                }
-                EventType::ButtonReleased(button, _) => changed.push((button, false)),
-                EventType::AxisChanged(axis @ (Axis::DPadX | Axis::DPadY), value, _) => {
-                    let ways = match axis {
-                        Axis::DPadY => [(0, Button::DPadUp, value > 0.5), (1, Button::DPadDown, value < -0.5)],
-                        _ => [(2, Button::DPadLeft, value < -0.5), (3, Button::DPadRight, value > 0.5)],
-                    };
-                    for (at, button, held) in ways {
-                        if self.dpad_axes[at] != held {
-                            self.dpad_axes[at] = held;
-                            changed.push((button, held));
-                        }
-                    }
-                    if value.abs() > USE_LEAN {
+        let reports = self.pro.reports();
+        if let Some(gilrs) = &mut self.gilrs {
+            while let Some(event) = gilrs.next_event() {
+                // a Pro Controller read from its reports isn't read thru gilrs too
+                let left_out = left_out(&gilrs.gamepad(event.id), &reports);
+                match event.event {
+                    EventType::ButtonPressed(button, _) if !left_out => {
+                        changed.push((button, true));
                         self.used = Some(Faces::of(gilrs.gamepad(event.id).name()));
                     }
+                    EventType::ButtonReleased(button, _) if !left_out => changed.push((button, false)),
+                    EventType::AxisChanged(axis @ (Axis::DPadX | Axis::DPadY), value, _) if !left_out => {
+                        let ways = match axis {
+                            Axis::DPadY => [(0, Button::DPadUp, value > 0.5), (1, Button::DPadDown, value < -0.5)],
+                            _ => [(2, Button::DPadLeft, value < -0.5), (3, Button::DPadRight, value > 0.5)],
+                        };
+                        for (at, button, held) in ways {
+                            if self.dpad_axes[at] != held {
+                                self.dpad_axes[at] = held;
+                                changed.push((button, held));
+                            }
+                        }
+                        if value.abs() > USE_LEAN {
+                            self.used = Some(Faces::of(gilrs.gamepad(event.id).name()));
+                        }
+                    }
+                    EventType::AxisChanged(_, value, _) if !left_out && value.abs() > USE_LEAN => {
+                        self.used = Some(Faces::of(gilrs.gamepad(event.id).name()));
+                    }
+                    EventType::Connected => {
+                        log::info!("controller connected, {}", gilrs.gamepad(event.id).name());
+                    }
+                    EventType::Disconnected => {
+                        log::info!("controller disconnected");
+                        self.gone = true;
+                        self.dpad_axes = [false; 4];
+                    }
+                    _ => {}
                 }
-                EventType::AxisChanged(_, value, _) if value.abs() > USE_LEAN => {
-                    self.used = Some(Faces::of(gilrs.gamepad(event.id).name()));
-                }
-                EventType::Connected => {
-                    log::info!("controller connected, {}", gilrs.gamepad(event.id).name());
-                }
-                EventType::Disconnected => {
-                    log::info!("controller disconnected");
-                    self.gone = true;
-                    self.dpad_axes = [false; 4];
-                }
-                _ => {}
             }
         }
+        // a Pro Controller's buttons pressed and let go since the last poll, as its reports have them
+        let held: Vec<Button> = reports.iter().flat_map(|report| report.buttons.iter().copied()).collect();
+        if held.iter().any(|button| !self.pro_held.contains(button)) {
+            self.used = Some(Faces::Letters);
+        }
+        changed.extend(held.iter().filter(|button| !self.pro_held.contains(button)).map(|&button| (button, true)));
+        changed.extend(self.pro_held.iter().filter(|button| !held.contains(button)).map(|&button| (button, false)));
+        self.pro_held = held;
         changed
     }
 
@@ -157,17 +180,35 @@ impl Gamepads {
         prompts
     }
 
-    /// whether a controller holds button down.
+    /// does a controller hold button down
     pub fn holding(&self, button: Button) -> bool {
-        self.gilrs.as_ref().is_some_and(|gilrs| gilrs.gamepads().any(|(_, pad)| pad.is_pressed(button)))
+        let reports = self.pro.reports();
+        reports.iter().any(|report| report.buttons.contains(&button))
+            || self.gilrs.as_ref().is_some_and(|gilrs| {
+                gilrs.gamepads().any(|(_, pad)| !left_out(&pad, &reports) && pad.is_pressed(button))
+            })
     }
 
     /// what the controllers hold down, over what the keyboard does: their
     /// buttons as the console's unless Action Bindings take them, and the
     /// sticks as the circle pad and C-stick.
     pub fn apply(&self, mut state: InputState, sticks: Sticks, acting: bool) -> InputState {
+        let reports = self.pro.reports();
+        for report in &reports {
+            if !acting {
+                for (button, bound) in self.buttons.map() {
+                    if report.buttons.contains(&bound) {
+                        state.buttons.set(button, true);
+                    }
+                }
+            }
+            lean_sticks(&mut state, report.left, report.right, sticks);
+        }
         let Some(gilrs) = &self.gilrs else { return state };
         for (_, pad) in gilrs.gamepads() {
+            if left_out(&pad, &reports) {
+                continue;
+            }
             if !acting {
                 for (button, bound) in self.buttons.map() {
                     if pad.is_pressed(bound) {
@@ -187,16 +228,9 @@ impl Gamepads {
                     }
                 }
             }
-            // the left stick is the circle pad and the right one the
-            // C-stick, up positive as the console has it
-            let left = (pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY));
-            if let Some((x, y)) = lean(left, sticks.dead_zone, 1.0) {
-                (state.circle_x, state.circle_y) = (x, y);
-            }
-            let right = (pad.value(Axis::RightStickX), pad.value(Axis::RightStickY));
-            if let Some((x, y)) = lean(right, sticks.dead_zone, sticks.right_scale) {
-                (state.c_stick_x, state.c_stick_y) = (x, y);
-            }
+            let left = [pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY)];
+            let right = [pad.value(Axis::RightStickX), pad.value(Axis::RightStickY)];
+            lean_sticks(&mut state, left, right, sticks);
         }
         state
     }
@@ -213,6 +247,17 @@ fn lean((x, y): (f32, f32), dead_zone: f32, scale: f32) -> Option<(f32, f32)> {
     }
     let past = ((length.min(1.0) - dead_zone) / (1.0 - dead_zone)) * scale / length;
     Some(((x * past).clamp(-1.0, 1.0), (y * past).clamp(-1.0, 1.0)))
+}
+
+/// the left stick is the circle pad and the right one the C-stick, up
+/// positive as the console has it, each once it leans past the dead zone
+fn lean_sticks(state: &mut InputState, left: [f32; 2], right: [f32; 2], sticks: Sticks) {
+    if let Some((x, y)) = lean((left[0], left[1]), sticks.dead_zone, 1.0) {
+        (state.circle_x, state.circle_y) = (x, y);
+    }
+    if let Some((x, y)) = lean((right[0], right[1]), sticks.dead_zone, sticks.right_scale) {
+        (state.c_stick_x, state.c_stick_y) = (x, y);
+    }
 }
 
 /// a controller button as a person would call it.
@@ -283,8 +328,7 @@ pub fn label(button: Button, faces: Faces) -> Label {
 mod tests {
     use super::*;
 
-    /// with no controller, or no way to ask for one, the keyboard's input
-    /// goes through as it was.
+    /// w/ no controller, or no way to ask for one, the keyboard's input goes thru as it was
     #[test]
     fn no_controller_leaves_the_keyboard_alone() {
         let gamepads = Gamepads::new(PadButtons::default());

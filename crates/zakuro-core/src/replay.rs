@@ -17,7 +17,7 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// starts a recording of a run whose clock starts at clock.
+    /// starts recording a run whose clock starts at clock
     pub fn create(path: &Path, clock: u64) -> std::io::Result<Recorder> {
         let mut out = BufWriter::new(File::create(path)?);
         writeln!(out, "clock {clock}")?;
@@ -25,7 +25,7 @@ impl Recorder {
         Ok(Recorder { out, last: None, frame: 0 })
     }
 
-    /// takes the input of the frame about to run.
+    /// takes the input of the frame about to run
     pub fn record(&mut self, input: InputState) {
         if self.last != Some(input) {
             let (x, y) = input.touch.map_or((-1, -1), |(x, y)| (x as i32, y as i32));
@@ -40,7 +40,7 @@ impl Recorder {
                 input.c_stick_x,
                 input.c_stick_y
             );
-            // written through at once, the run may end in a crash
+            // written thru at once, the run might end in a crash
             if writeln!(self.out, "{line}").and_then(|()| self.out.flush()).is_err() {
                 log::warn!("could not write to the input recording");
             }
@@ -100,12 +100,12 @@ impl Replay {
         Ok(Replay { clock, changes, next: 0, current: InputState::default() })
     }
 
-    /// the clock the recorded run started at.
+    /// the clock the recorded run started at
     pub fn clock(&self) -> u64 {
         self.clock
     }
 
-    /// the input of a frame, frames asked for in order.
+    /// a frame's input, frames asked for in order
     pub fn input(&mut self, frame: u64) -> InputState {
         while let Some(&(start, input)) = self.changes.get(self.next) {
             if start > frame {
@@ -122,7 +122,7 @@ impl Replay {
 mod tests {
     use super::*;
 
-    /// what a recording writes, a replay of it gives back frame for frame.
+    /// what a recording writes, a replay gives back frame for frame
     #[test]
     fn a_recording_plays_back() {
         let path = std::env::temp_dir().join(format!("zakuro-replay-{}.txt", std::process::id()));
@@ -150,7 +150,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    /// a recording from before tilt was written down plays back untilted.
+    /// a recording from b4 tilt existed plays back untilted
     #[test]
     fn an_old_recording_has_no_tilt() {
         let path = std::env::temp_dir().join(format!("zakuro-replay-old-{}.txt", std::process::id()));

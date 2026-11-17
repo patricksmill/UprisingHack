@@ -1,11 +1,11 @@
-//! writable archives, kept as directories on the host.
+//! writable archives, kept as dirs on the host
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use zakuro_common::result::{errors, ResultCode};
 
-/// how an archive was formatted, which is what GetFormatInfo reports.
+/// how an archive was formatted, what GetFormatInfo reports
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FormatInfo {
     pub total_size: u32,
@@ -35,7 +35,7 @@ impl FormatInfo {
     }
 }
 
-/// one entry of a directory listing.
+/// one entry of a dir listing
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DirectoryEntry {
     pub name: String,
@@ -43,8 +43,7 @@ pub struct DirectoryEntry {
     pub size: u64,
 }
 
-/// a writable archive, a host directory standing in for one of the
-/// console's save filesystems.
+/// a writable archive, a host dir standing in for one of the console's save filesystems
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HostArchive {
     root: PathBuf,
@@ -71,8 +70,7 @@ impl HostArchive {
         HostArchive::at(base.join("savedata").join(format!("{program_id:016X}")))
     }
 
-    /// extra data, which titles keep outside their save, caches, downloaded
-    /// content, data shared between versions of a game.
+    /// extra data, titles keep it outside their save (caches, downloaded content, data shared between versions of a game)
     pub fn ext_data(base: &Path, id: u64, shared: bool) -> HostArchive {
         let dir = if shared { "extdata/shared" } else { "extdata" };
         HostArchive::at(base.join(dir).join(format!("{id:016X}")))
@@ -90,8 +88,7 @@ impl HostArchive {
         self.root.is_dir()
     }
 
-    /// creates the archive empty, discarding anything already in it, both
-    /// how a title makes its save the first time and how it wipes one.
+    /// makes the archive empty, tossing anything already in it, that's how a title makes its save the first time and how it wipes one
     pub fn format(&self, info: FormatInfo) -> Result<(), ResultCode> {
         if self.root.exists() {
             std::fs::remove_dir_all(&self.root).map_err(io_error)?;
@@ -102,7 +99,7 @@ impl HostArchive {
         Ok(())
     }
 
-    /// removes the archive entirely, so it reads as never created.
+    /// removes the archive entirely, so it reads as never created
     pub fn delete(&self) -> Result<(), ResultCode> {
         if !self.exists() {
             return Err(errors::FS_NOT_FOUND_INVALID_STATE);
@@ -112,7 +109,7 @@ impl HostArchive {
         Ok(())
     }
 
-    /// what the archive was formatted with, or None if it never was.
+    /// what the archive was formatted w/, None if it never was
     pub fn format_info(&self) -> Option<FormatInfo> {
         if !self.exists() {
             return None;
@@ -127,8 +124,7 @@ impl HostArchive {
         PathBuf::from(name)
     }
 
-    /// maps a path inside the archive to a host path, refusing anything
-    /// that would step outside it.
+    /// maps a path inside the archive to a host path, refusing anything that'd step outside it
     pub fn resolve(&self, path: &str) -> Result<PathBuf, ResultCode> {
         let mut host = self.root.clone();
         for part in path.split(['/', '\\']) {
@@ -145,8 +141,7 @@ impl HostArchive {
         host.parent().is_some_and(Path::is_dir)
     }
 
-    /// the host file behind path, created empty first if create is set
-    /// and it does not exist yet.
+    /// the host file behind path, created empty first if create is set and it doesn't exist yet
     pub fn open_file(&self, path: &str, create: bool) -> Result<PathBuf, ResultCode> {
         let host = self.resolve(path)?;
         if host.is_file() {
@@ -232,7 +227,7 @@ impl HostArchive {
         std::fs::rename(from, to).map_err(io_error)
     }
 
-    /// lists a directory, sorted by name so the order is stable.
+    /// lists a dir, sorted by name so the order stays stable
     pub fn list(&self, path: &str) -> Result<Vec<DirectoryEntry>, ResultCode> {
         let host = self.resolve(path)?;
         if !host.is_dir() {
@@ -255,8 +250,7 @@ impl HostArchive {
     }
 }
 
-/// reads up to buffer.len() bytes at offset, returning how many were
-/// there to read.
+/// reads up to buffer.len() bytes at offset, returns how many were there to read
 pub fn read_at(path: &Path, offset: u64, buffer: &mut [u8]) -> usize {
     let Ok(mut file) = std::fs::File::open(path) else {
         return 0;
@@ -274,7 +268,7 @@ pub fn read_at(path: &Path, offset: u64, buffer: &mut [u8]) -> usize {
     total
 }
 
-/// writes data at offset, growing the file if needed.
+/// writes data at offset, growing the file if needed
 pub fn write_at(path: &Path, offset: u64, data: &[u8]) -> usize {
     let result = std::fs::OpenOptions::new()
         .write(true)

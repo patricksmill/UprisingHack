@@ -1,5 +1,4 @@
-//! what the user chose, kept between runs in the system's place for
-//! settings.
+//! what the user chose, kept between runs in the system's place for settings
 
 use std::path::{Path, PathBuf};
 
@@ -7,7 +6,7 @@ use gilrs::Button;
 use serde::{Deserialize, Serialize};
 use winit::keyboard::KeyCode;
 use zakuro_core::services::hid::PadState;
-use zakuro_gpu::ScreenLayout;
+use zakuro_gpu::{ScreenLayout, ScreenOrientation};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -111,13 +110,13 @@ impl Screens {
         }
     }
 
-    /// the one after it, going round.
+    /// the one after it, going round
     pub fn next(self) -> Screens {
         let at = Screens::ALL.iter().position(|&layout| layout == self).unwrap_or(0);
         Screens::ALL[(at + 1) % Screens::ALL.len()]
     }
 
-    /// with one screen showing, the other one alone, else the same.
+    /// w/ one screen showing, the other one alone, otherwise the same
     pub fn other_screen(self) -> Screens {
         match self {
             Screens::TopOnly => Screens::BottomOnly,
@@ -127,7 +126,39 @@ impl Screens {
     }
 }
 
-/// how the screens' pixels look scaled up to the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Orientation {
+    #[default]
+    North,
+    East,
+    South,
+    West,
+}
+
+impl Orientation {
+    pub const ALL: [Orientation; 4] = [Orientation::North, Orientation::East, Orientation::South, Orientation::West];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Orientation::North => "0 degree",
+            Orientation::East => "90 degree",
+            Orientation::South => "180 degree",
+            Orientation::West => "270 degree",
+        }
+    }
+
+    pub fn screen_orientation(self) -> ScreenOrientation {
+        match self {
+            Orientation::North => ScreenOrientation::North,
+            Orientation::East => ScreenOrientation::East,
+            Orientation::South => ScreenOrientation::South,
+            Orientation::West => ScreenOrientation::West,
+        }
+    }
+}
+
+/// how the screens' pixels look scaled up to the window
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Filter {
@@ -157,9 +188,10 @@ impl Filter {
     }
 }
 
-/// the top screen's shape. a game draws into 400x240 whatever this is, so
-/// anything but the console's own only looks right with a widescreen code
-/// on, which makes the game draw a wider scene into those pixels.
+/// the top screen's shape
+/// a game draws into 400x240 whatever this is,
+/// so anything but the console's own only looks right w/ a widescreen code on,
+/// which makes the game draw a wider scene into those pixels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TopShape {
@@ -194,11 +226,11 @@ impl TopShape {
     }
 }
 
-/// how the top screen's 3D shows, for games that draw it.
+/// how the top screen's 3D shows, for games that draw it
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stereo3d {
-    /// games draw flat, as with the console's 3D slider down.
+    /// games draw flat, like w/ the console's 3D slider down
     #[default]
     Off,
     Anaglyph,
@@ -219,8 +251,8 @@ impl Stereo3d {
     }
 }
 
-/// the console's system language, which a title reads from cfg:u and picks
-/// its localised text and files by, the codes the console numbers them.
+/// the console's system language, a title reads it from cfg:u and picks its localized text and files by it,
+/// the codes the console numbers them by
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
@@ -272,7 +304,7 @@ impl Language {
         }
     }
 
-    /// the number the console's blocks give the language.
+    /// the number the console's blocks give the language
     pub fn code(self) -> u8 {
         match self {
             Language::Japanese => 0,
@@ -291,15 +323,15 @@ impl Language {
     }
 }
 
-/// what the console's cameras see.
+/// what the console's cameras see
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum CameraSource {
-    /// the computer's camera, on only while a game takes pictures.
+    /// the computer's camera, on only while a game takes pictures
     #[default]
     Webcam,
-    /// a picture from a file, a QR code's say.
+    /// a picture from a file, like a QR code's
     Picture,
-    /// nothing, black.
+    /// nothing, black
     Nothing,
 }
 
@@ -315,7 +347,30 @@ impl CameraSource {
     }
 }
 
-/// the keys the console's buttons, circle pad and C-stick are on.
+/// what the console's microphone hears
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MicrophoneSource {
+    /// the computer's mic, only open while a game listens
+    Computer,
+    /// nothing except the blowing key
+    /// the default, since some games listen all the time (Super Mario 3D Land from its start) and the computer's
+    /// mic would stay open w/ them
+    #[default]
+    Nothing,
+}
+
+impl MicrophoneSource {
+    pub const ALL: [MicrophoneSource; 2] = [MicrophoneSource::Computer, MicrophoneSource::Nothing];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            MicrophoneSource::Computer => "The computer's microphone",
+            MicrophoneSource::Nothing => "Nothing",
+        }
+    }
+}
+
+/// the keys the console's buttons, circle pad and C stick are on
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Keys {
@@ -380,7 +435,7 @@ impl Default for Keys {
 }
 
 impl Keys {
-    /// whether a console button is on key.
+    /// is a console button on key
     pub fn binds(&self, key: KeyCode) -> bool {
         self.clone().all_mut().into_iter().any(|(_, bound)| *bound == key)
     }
@@ -417,9 +472,8 @@ impl Keys {
     }
 }
 
-/// the controller buttons the console's buttons are on, the face buttons
-/// where the 3DS has them rather than by their letters. the circle pad is
-/// the left stick and the C-stick the right one.
+/// the controller buttons the console's buttons are on, the face buttons where the 3DS has them instead of by their letters
+/// the circle pad is the left stick and the C stick the right one
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PadButtons {
@@ -487,7 +541,7 @@ impl PadButtons {
         ]
     }
 
-    /// each of the console's buttons and the controller button it is on.
+    /// each of the console's buttons and the controller button it's on
     pub fn map(&self) -> [(PadState, Button); 14] {
         [
             (PadState::A, self.a),
@@ -508,22 +562,47 @@ impl PadButtons {
     }
 }
 
+/// what a game has of its own over the general settings, each one left out follows them
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameSettings {
+    pub hardware_rasterizer: Option<bool>,
+    pub resolution: Option<u32>,
+    pub texture_packs: Option<bool>,
+    pub frame_interpolation: Option<bool>,
+    pub scale: Option<u32>,
+    #[serde(deserialize_with = "or_default")]
+    pub layout: Option<Screens>,
+    #[serde(deserialize_with = "or_default")]
+    pub orientation: Option<Orientation>,
+    #[serde(deserialize_with = "or_default")]
+    pub filter: Option<Filter>,
+    pub integer_scale: Option<bool>,
+    #[serde(deserialize_with = "or_default")]
+    pub top_shape: Option<TopShape>,
+    #[serde(deserialize_with = "or_default")]
+    pub stereo: Option<Stereo3d>,
+    pub depth_3d: Option<u32>,
+    #[serde(deserialize_with = "or_default")]
+    pub language: Option<Language>,
+    pub recompiled: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// the folder the library lists games from.
+    /// the folder the library lists games from
     pub games: Option<PathBuf>,
-    /// the console's system language, which titles pick their localised
-    /// text and files by.
+    /// the console's system language, titles pick their localized text and files by it
     #[serde(deserialize_with = "or_default")]
     pub language: Language,
     #[serde(deserialize_with = "or_default")]
     pub renderer: Renderer,
-    /// draw the 3D on the GPU rather than in software.
+    /// draw the 3D on the GPU instead of in software
     pub hardware_rasterizer: bool,
-    /// how many times the console's resolution the GPU draws the 3D at.
+    /// how many times the console's res the GPU draws the 3D at
     pub resolution: u32,
-    /// draw the texture packs put in games' mods folders.
+    /// draw the texture packs put in games' mods folders
     pub texture_packs: bool,
     /// a new picture on every refresh of the display, drawn in between the
     /// last two the game made. hidden and always off for now: it slows the
@@ -536,16 +615,18 @@ pub struct Settings {
     /// run a game's recompiled code when it has some, rather than
     /// interpreting everything.
     pub recompiled: bool,
-    /// window size, times the console's.
+    /// window size, times the console's
     pub scale: u32,
     #[serde(deserialize_with = "or_default")]
     pub layout: Screens,
-    /// how the screens' pixels look scaled up.
+    #[serde(deserialize_with = "or_default")]
+    pub orientation: Orientation,
+    /// how the screens' pixels look scaled up
     #[serde(deserialize_with = "or_default")]
     pub filter: Filter,
-    /// scale the screens by whole numbers only, leaving a border.
+    /// only scale the screens by whole numbers, leaving a border
     pub integer_scale: bool,
-    /// how wide the top screen shows.
+    /// how wide the top screen shows
     #[serde(deserialize_with = "or_default")]
     pub top_shape: TopShape,
     /// how the 3D shows. hidden and always off: Kid Icarus's right eye is
@@ -558,28 +639,32 @@ pub struct Settings {
     /// each eye gets the other's picture.
     #[serde(skip)]
     pub swap_eyes: bool,
-    /// 0 to 1.
+    /// 0 to 1
     pub volume: f32,
     pub mute: bool,
     pub show_fps: bool,
-    /// a picture behind the library.
+    /// a picture behind the library
     pub background: Option<PathBuf>,
-    /// how much of it shows, 0 to 1.
+    /// how much of it shows, 0 to 1
     pub background_opacity: f32,
     pub keys: Keys,
     pub pad: PadButtons,
-    /// the enhancements turned on, by name, for each game by its title id.
+    /// the enhancements turned on, by name, for each game by its title id
     pub enhancements: std::collections::BTreeMap<String, Vec<String>>,
-    /// what the console's cameras see, and the picture when it is one.
+    /// what each game has of its own, by its title id
+    pub per_game: std::collections::BTreeMap<String, GameSettings>,
+    /// what the console's cameras see, and the picture when it's one
     #[serde(deserialize_with = "or_default")]
     pub camera: CameraSource,
     pub camera_picture: Option<PathBuf>,
-    /// the name the player goes by in rooms, the console's own too.
+    /// what the console's mic hears
+    #[serde(deserialize_with = "or_default")]
+    pub microphone: MicrophoneSource,
+    /// the name the player goes by in rooms, the console's own too
     pub nickname: String,
-    /// the number that tells this console apart over local wireless, made
-    /// once.
+    /// the number that tells this console apart over local wireless, made once
     pub console_id: u64,
-    /// the room last joined, and the one opened, its name and port.
+    /// the room last joined, and the one opened, its name and port
     pub room_address: String,
     pub room_name: String,
     pub room_port: u16,
@@ -601,6 +686,7 @@ impl Default for Settings {
             recompiled: true,
             scale: 2,
             layout: Screens::Stacked,
+            orientation: Orientation::North,
             filter: Filter::Smooth,
             integer_scale: false,
             top_shape: TopShape::Console,
@@ -615,8 +701,10 @@ impl Default for Settings {
             keys: Keys::default(),
             pad: PadButtons::default(),
             enhancements: std::collections::BTreeMap::new(),
+            per_game: std::collections::BTreeMap::new(),
             camera: CameraSource::Webcam,
             camera_picture: None,
+            microphone: MicrophoneSource::Nothing,
             nickname: String::new(),
             console_id: 0,
             room_address: String::new(),
@@ -627,9 +715,8 @@ impl Default for Settings {
     }
 }
 
-/// a setting's value, or its default when the file holds one this build
-/// does not know, a newer Zakuro's say, so that one value does not lose all
-/// the others.
+/// a setting's value, or its default when the file holds one this build doesn't know (a newer Zakuro's say),
+/// so one value doesn't lose all the others
 fn or_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -639,9 +726,47 @@ where
     Ok(T::deserialize(value).unwrap_or_default())
 }
 
+impl GameSettings {
+    /// the settings w/ these over them
+    fn over(&self, settings: &mut Settings) {
+        settings.hardware_rasterizer = self.hardware_rasterizer.unwrap_or(settings.hardware_rasterizer);
+        settings.resolution = self.resolution.unwrap_or(settings.resolution);
+        settings.texture_packs = self.texture_packs.unwrap_or(settings.texture_packs);
+        // frame_interpolation is kept for files that have it, but High Refresh Mode, which took its place, is never saved
+        settings.scale = self.scale.unwrap_or(settings.scale);
+        settings.layout = self.layout.unwrap_or(settings.layout);
+        settings.orientation = self.orientation.unwrap_or(settings.orientation);
+        settings.filter = self.filter.unwrap_or(settings.filter);
+        settings.integer_scale = self.integer_scale.unwrap_or(settings.integer_scale);
+        settings.top_shape = self.top_shape.unwrap_or(settings.top_shape);
+        settings.stereo = self.stereo.unwrap_or(settings.stereo);
+        settings.depth_3d = self.depth_3d.unwrap_or(settings.depth_3d);
+        settings.language = self.language.unwrap_or(settings.language);
+        settings.recompiled = self.recompiled.unwrap_or(settings.recompiled);
+    }
+}
+
+/// what a game goes by in the settings file, its title id
+pub fn game_key(program_id: u64) -> String {
+    format!("{program_id:016X}")
+}
+
 impl Settings {
-    /// where the console's 3D slider is, down while the 3D is off, so games
-    /// do not draw a picture nobody sees.
+    /// the settings a game plays w/, or the general ones w/o a game
+    pub fn for_game(&self, program_id: Option<u64>) -> Settings {
+        let mut settings = self.clone();
+        if let Some(own) = program_id.and_then(|id| self.per_game.get(&game_key(id))) {
+            own.over(&mut settings);
+        }
+        settings
+    }
+
+    /// does a game have anything of its own
+    pub fn has_own(&self, program_id: u64) -> bool {
+        self.per_game.contains_key(&game_key(program_id))
+    }
+
+    /// where the console's 3D slider is, down while the 3D is off, so games don't draw a picture nobody sees
     pub fn slider_3d(&self) -> f32 {
         if self.stereo == Stereo3d::Off {
             0.0
@@ -650,12 +775,12 @@ impl Settings {
         }
     }
 
-    /// the 3D the presenter shows.
+    /// the 3D the presenter shows
     pub fn stereo(&self) -> zakuro_gpu::Stereo {
         zakuro_gpu::Stereo { mode: self.stereo.mode(), swap: self.swap_eyes }
     }
 
-    /// the saved settings, or the defaults when there are none.
+    /// the saved settings, or the defaults when there are none
     pub fn load() -> Settings {
         let Some(path) = path() else { return Settings::default() };
         match std::fs::read_to_string(&path) {
@@ -710,7 +835,7 @@ fn write(path: &Path, text: &str) -> std::io::Result<()> {
     })
 }
 
-/// the system's place for a program's settings.
+/// the system's place for a program's settings
 fn path() -> Option<PathBuf> {
     let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from);
     let dir = if cfg!(windows) {
@@ -753,6 +878,50 @@ mod tests {
         assert_eq!(settings.keys.b, Keys::default().b);
         assert_eq!(settings.scale, 2);
         assert_eq!(settings.layout, Screens::Stacked);
+    }
+
+    /// a game plays w/ what it has of its own and w/ the general settings in everything else, and no other game gets touched
+    #[test]
+    fn a_game_has_its_own_settings_over_the_general_ones() {
+        let mut settings = Settings { resolution: 2, layout: Screens::SideBySide, ..Settings::default() };
+        settings.per_game.insert(
+            game_key(0x0004_0000_0012_3400),
+            GameSettings { orientation: Some(Orientation::East), resolution: Some(5), recompiled: Some(false), ..GameSettings::default() },
+        );
+        let game = settings.for_game(Some(0x0004_0000_0012_3400));
+        assert_eq!(game.orientation, Orientation::East);
+        assert_eq!(game.resolution, 5);
+        assert!(!game.recompiled);
+        assert_eq!(game.layout, Screens::SideBySide);
+        for other in [Some(0x0004_0000_0012_3500), None] {
+            let general = settings.for_game(other);
+            assert_eq!(general, settings);
+        }
+        assert!(settings.has_own(0x0004_0000_0012_3400));
+        assert!(!settings.has_own(0x0004_0000_0012_3500));
+    }
+
+    #[test]
+    fn a_games_settings_come_back_as_they_were_saved() {
+        let mut settings = Settings::default();
+        settings.per_game.insert(
+            game_key(0x0004_0000_0012_3400),
+            GameSettings { orientation: Some(Orientation::West), language: Some(Language::Japanese), texture_packs: Some(false), ..GameSettings::default() },
+        );
+        let text = toml::to_string_pretty(&settings).unwrap();
+        let own = text.split("[per_game.").nth(1).unwrap();
+        assert!(!own.contains("resolution"), "only what it has of its own is written for a game");
+        assert_eq!(toml::from_str::<Settings>(&text).unwrap(), settings);
+    }
+
+    /// a value from a newer Zakuro leaves the game following the general setting, and takes nothing else w/ it
+    #[test]
+    fn a_value_this_build_does_not_know_follows_the_general_setting() {
+        let text = "[per_game.0004000000123400]\nlayout = \"three_screens\"\nresolution = 4\n";
+        let settings: Settings = toml::from_str(text).unwrap();
+        let own = &settings.per_game[&game_key(0x0004_0000_0012_3400)];
+        assert_eq!(own.layout, None);
+        assert_eq!(own.resolution, Some(4));
     }
 
     #[test]
