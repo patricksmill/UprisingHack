@@ -1742,6 +1742,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
+name = "hidapi"
+version = "2.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "818c0e1d27887aaf76fe737042e27a66b796a7b099e6d2e1a72d106c2dff3fa6"
+dependencies = [
+ "cc",
+ "cfg-if 1.0.5",
+ "libc",
+ "pkg-config",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "home"
 version = "0.5.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4746,7 +4759,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "zakuro"
-version = "0.2.30"
+version = "0.2.32"
 dependencies = [
  "ab_glyph",
  "cpal",
@@ -4756,6 +4769,7 @@ dependencies = [
  "gilrs",
  "glutin",
  "glutin-winit",
+ "hidapi",
  "image",
  "log",
  "nokhwa",
@@ -4776,7 +4790,7 @@ dependencies = [
 
 [[package]]
 name = "zakuro-common"
-version = "0.2.30"
+version = "0.2.32"
 dependencies = [
  "bitflags 2.13.2",
  "log",
@@ -4785,7 +4799,7 @@ dependencies = [
 
 [[package]]
 name = "zakuro-core"
-version = "0.2.30"
+version = "0.2.32"
 dependencies = [
  "ab_glyph",
  "bitflags 2.13.2",
@@ -4809,7 +4823,7 @@ dependencies = [
 
 [[package]]
 name = "zakuro-cpu"
-version = "0.2.30"
+version = "0.2.32"
 dependencies = [
  "log",
  "serde",
@@ -4818,7 +4832,7 @@ dependencies = [
 
 [[package]]
 name = "zakuro-fs"
-version = "0.2.30"
+version = "0.2.32"
 dependencies = [
  "crc32fast",
  "log",
@@ -4829,7 +4843,7 @@ dependencies = [
 
 [[package]]
 name = "zakuro-gpu"
-version = "0.2.30"
+version = "0.2.32"
 dependencies = [
  "ash",
  "ash-window",

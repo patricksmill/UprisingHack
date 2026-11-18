@@ -1,15 +1,18 @@
-//! the shaders the CPU runs compiled to the host's own code, with Cranelift.
-//! a compiled program shades four vertices at a time, each register a row
-//! of lanes per component the way batch keeps eight, and computes exactly
-//! what the interpreter computes, operation for operation. the flow of the
-//! program is followed ahead of time: each instruction is compiled once for
-//! every way of being in the calls, ifs and loops it is reached in. where
-//! the vertices of a batch would go different ways at a branch, it gives
-//! the batch back, and batch shades it, following each way.
+//! the shaders the CPU runs, compiled to the host's own code w/ Cranelift
+//! a compiled program shades four vertices at a time,
+//! each register a row of lanes per component like batch keeps eight,
+//! and computes exactly what the interpreter computes, op for op
+//! the program's flow gets followed ahead of time,
+//! each instruction compiled once for every way of being in the calls, ifs and loops it's reached in,
+//! every such state found first w/ the ways into each, then compiled,
+//! a run of states nothing else leads into making up one block
+//! where a batch's vertices go different ways at a branch, ifs,
+//! calls and jumps ahead over instructions that only work out values run for the lanes going each way under masks,
+//! elsewhere it gives the batch back and batch shades following each way
 
 use std::collections::HashMap;
 use std::mem::offset_of;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
@@ -23,33 +26,42 @@ use super::batch::Triangle;
 use super::isa::OpCode;
 use super::{if_ranges, Op, Operand, Program, ShaderUnit, Vec4, FLOAT_UNIFORMS, INPUT_REGISTERS, OUTPUT_REGISTERS, PROGRAM_SIZE, TEMP_REGISTERS};
 
-/// how many vertices a compiled program shades together, a vector of the
-/// host's each.
+/// how many vertices a compiled program shades together, one host vector each
 const LANES: usize = 4;
 
-/// how many instructions the interpreter runs at most, past which it takes
-/// a program for broken and stops it.
+/// how many instructions the interpreter runs at most, past that it takes a program for broken and stops it
 const BUDGET: i64 = 0x10000;
 
-/// how many ways of reaching its instructions a program compiles at most,
-/// each one at most once between two looks at the budget.
+/// how many ways of reaching its instructions a program compiles at most, each one at most once between two looks at the budget
 const MOST_STATES: usize = 16_384;
 
-/// how deep calls, ifs and loops go, past which a program is left to the
-/// interpreter.
+/// how deep calls, ifs and loops go, past that a program is left to the interpreter
 const DEEPEST: usize = 16;
 
-/// how many programs' code is kept, past which it starts over.
+/// how many programs' code is kept, past that it starts over
 const KEPT: usize = 1024;
 
-/// what a compiled program reads and writes, the registers as rows of lanes.
+/// how hard a program gets compiled
+/// quickly the first time, w/ the register allocator that takes a third of the time for code a fifth slower,
+/// so it runs compiled soon after it's first drawn w/, and again in full once it shaded HOT batches,
+/// the quick code shading meanwhile
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Tier {
+    Quick,
+    Full,
+}
+
+/// how many batches a quickly compiled program shades b4 it gets compiled again in full
+const HOT: u64 = 4096;
+
+/// what a compiled program reads and writes, the registers as rows of lanes
 #[repr(C, align(16))]
 pub(super) struct Context {
     inputs: [[[f32; LANES]; 4]; INPUT_REGISTERS],
     outputs: [[[f32; LANES]; 4]; OUTPUT_REGISTERS],
-    /// what the helpers take and give back.
+    /// what the helpers take and give back
     scratch: [[f32; LANES]; 4],
-    /// what a uniform past the last reads.
+    /// what a uniform past the last reads
     zero: [f32; 4],
     uniforms: *const Vec4,
     bools: u32,
@@ -71,11 +83,9 @@ impl Context {
         }
     }
 
-    /// the inputs the program reads into rows, lanes past the last vertex
-    /// repeating it, so that they branch its way.
+    /// the inputs the program reads into rows, lanes past the last vertex repeating it so they branch its way
     fn fill(&mut self, read: u16, inputs: &[[Vec4; INPUT_REGISTERS]]) {
-        // a whole batch, as nearly all are, reads its lanes without
-        // checking each one against the last
+        // a whole batch (nearly all are) reads its lanes w/o checking each one against the last
         if let Ok(full) = <&[[Vec4; INPUT_REGISTERS]; LANES]>::try_from(inputs) {
             for register in registers(read) {
                 for (component, row) in self.inputs[register].iter_mut().enumerate() {
@@ -92,7 +102,7 @@ impl Context {
         }
     }
 
-    /// the outputs the program writes out of rows, for the vertices there are.
+    /// the outputs the program writes, out of rows, for the vertices there are
     fn drain(&self, written: u16, outputs: &mut [[Vec4; OUTPUT_REGISTERS]]) {
         if let Ok(full) = <&mut [[Vec4; OUTPUT_REGISTERS]; LANES]>::try_from(&mut *outputs) {
             for register in registers(written) {
@@ -110,7 +120,7 @@ impl Context {
     }
 }
 
-/// the registers a mask has, lowest first.
+/// the registers a mask has, lowest first
 fn registers(mut mask: u16) -> impl Iterator<Item = usize> {
     std::iter::from_fn(move || {
         let register = (mask != 0).then(|| mask.trailing_zeros() as usize)?;
@@ -119,8 +129,7 @@ fn registers(mut mask: u16) -> impl Iterator<Item = usize> {
     })
 }
 
-/// what the lanes of a geometry shader emit, the way batch's emitters keep
-/// it for eight.
+/// what the lanes of a geometry shader emit, like batch's emitters keep it for eight
 pub(super) struct Emitted {
     outputs: u16,
     slot: [usize; LANES],
@@ -143,12 +152,10 @@ impl Emitted {
     }
 }
 
-// the operations too rare to be worth compiling, done the interpreter's way
-// on the rows in scratch
+// the ops too rare to be worth compiling, done the interpreter's way on the rows in scratch
 
 extern "C" fn floor(context: *mut Context) {
-    // SAFETY: the compiled program passes its context, which nothing else
-    // touches while it runs
+    // safe bc the compiled program passes its context, nothing else touches it while it runs
     let scratch = unsafe { &mut (*context).scratch };
     for row in scratch.iter_mut() {
         *row = row.map(f32::floor);
@@ -156,20 +163,20 @@ extern "C" fn floor(context: *mut Context) {
 }
 
 extern "C" fn exp2(context: *mut Context) {
-    // SAFETY: as in floor
+    // safe, same as in floor
     let scratch = unsafe { &mut (*context).scratch };
     scratch[0] = scratch[0].map(f32::exp2);
 }
 
 extern "C" fn log2(context: *mut Context) {
-    // SAFETY: as in floor
+    // safe, same as in floor
     let scratch = unsafe { &mut (*context).scratch };
     scratch[0] = scratch[0].map(f32::log2);
 }
 
-/// litp's x, y and w.
+/// litp's x, y and w
 extern "C" fn lit(context: *mut Context) {
-    // SAFETY: as in floor
+    // safe, same as in floor
     let scratch = unsafe { &mut (*context).scratch };
     scratch[0] = scratch[0].map(|x| x.max(0.0));
     scratch[1] = scratch[1].map(|y| y.clamp(-127.9961, 127.9961));
@@ -179,8 +186,7 @@ extern "C" fn lit(context: *mut Context) {
 /// completes holds setemit's primitive bit in bit 0 and its winding bit in
 /// bit 1.
 extern "C" fn set_emit(context: *mut Context, slot: u32, completes: u32) {
-    // SAFETY: as in floor, and emitted is the caller's for as long as the
-    // program runs, or none
+    // safe, same as in floor, and emitted is the caller's for as long as the program runs, or none
     let Some(emitted) = (unsafe { (*context).emitted.as_mut() }) else { return };
     emitted.slot = [slot as usize; LANES];
     emitted.completes = [completes & 1 != 0; LANES];
@@ -188,7 +194,7 @@ extern "C" fn set_emit(context: *mut Context, slot: u32, completes: u32) {
 }
 
 extern "C" fn emit(context: *mut Context) {
-    // SAFETY: as in set_emit
+    // safe, same as in set_emit
     let (outputs, emitted) = unsafe { (&(*context).outputs, (*context).emitted.as_mut()) };
     let Some(emitted) = emitted else { return };
     let (written, winding) = (emitted.outputs, emitted.winding);
@@ -203,60 +209,60 @@ extern "C" fn emit(context: *mut Context) {
     }
 }
 
-/// a program compiled for one entry point.
+/// a program compiled for one entry point
 pub(super) struct Compiled {
     module: Option<JITModule>,
     function: unsafe extern "C" fn(*mut Context) -> u32,
-    /// the batches it ran and gave back, it gives up on a program whose
-    /// vertices part ways often, which batch shades better.
-    runs: AtomicU32,
-    returned: AtomicU32,
-    /// the batches given back where the lanes parted ways, for the tests.
-    parted: AtomicU32,
+    tier: Tier,
+    /// is it being compiled again in full
+    upgrading: AtomicBool,
+    /// the batches it ran and gave back, it gives up on a program whose vertices part ways often (batch shades
+    /// those better), wide enough not to wrap in a long session
+    runs: AtomicU64,
+    returned: AtomicU64,
+    /// the batches given back where the lanes parted ways, for the tests
+    parted: AtomicU64,
     given_up: AtomicBool,
 }
 
-// SAFETY: the code is finished and never written again, and the module that
-// holds it is only touched again to free it, once no one has it
+// safe bc the code is finished and never written again, and the module holding it only gets touched again to free it, once nobody has it
 unsafe impl Send for Compiled {}
 unsafe impl Sync for Compiled {}
 
 impl Drop for Compiled {
     fn drop(&mut self) {
         if let Some(module) = self.module.take() {
-            // SAFETY: no one has the function any more, whoever ran it held
-            // the program
+            // safe bc nobody has the function anymore, whoever ran it held the program
             unsafe { module.free_memory() };
         }
     }
 }
 
 impl Compiled {
-    /// runs it over up to LANES vertices filled in, false when it gave the
-    /// batch back.
+    /// runs it over up to LANES vertices filled in, false when it gave the batch back
     fn run(&self, context: &mut Context) -> bool {
-        // SAFETY: the function was compiled for a context laid out like this
-        // one, which outlives the call
-        match unsafe { (self.function)(context) } {
-            0 => true,
-            1 => {
-                self.parted.fetch_add(1, Ordering::Relaxed);
-                false
-            }
-            _ => false,
+        // safe bc the function was compiled for a context laid out like this one, which outlives the call
+        let ran = unsafe { (self.function)(context) } == 0;
+        if !ran {
+            self.parted.fetch_add(1, Ordering::Relaxed);
         }
+        ran
     }
 
-    /// how many batches it gave back where their lanes parted ways, for the
-    /// tests.
+    /// how many batches it gave back where their lanes parted ways, for the tests
     #[cfg(test)]
-    pub(super) fn parted(&self) -> u32 {
+    pub(super) fn parted(&self) -> u64 {
         self.parted.load(Ordering::Relaxed)
     }
 
-    /// counts batches run and given back, giving up once a quarter of them
-    /// came back.
-    fn counted(&self, runs: u32, returned: u32) {
+    /// how many batches it gave back for any reason, for the tests
+    #[cfg(test)]
+    pub(super) fn returned(&self) -> u64 {
+        self.returned.load(Ordering::Relaxed)
+    }
+
+    /// counts batches run and given back, giving up once a quarter of them came back
+    fn counted(&self, runs: u64, returned: u64) {
         let runs = self.runs.fetch_add(runs, Ordering::Relaxed) + runs;
         let returned = self.returned.fetch_add(returned, Ordering::Relaxed) + returned;
         if runs >= 64 && returned * 4 > runs && !self.given_up.swap(true, Ordering::Relaxed) {
@@ -265,31 +271,29 @@ impl Compiled {
     }
 }
 
-/// whether compiling is on, ZAKURO_SHADER_JIT=0 turns it off.
+/// is compiling on, ZAKURO_SHADER_JIT=0 turns it off
 fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("ZAKURO_SHADER_JIT").map_or(true, |value| value != "0"))
 }
 
-/// a program's code for an entry point, on its way or there.
+/// a program's code for an entry point, on its way or there
 enum Slot {
     Compiling,
-    /// none where it can't be compiled.
+    /// none where it can't be compiled
     Done(Option<Arc<Compiled>>),
 }
 
-/// each program's code by its fingerprint and entry point, kept apart from
-/// the few programs a unit keeps decoded, which titles go through faster
-/// than they would want to compile them again.
+/// each program's code by its fingerprint and entry point, kept apart from the few programs a unit keeps decoded,
+/// titles go thru those faster than they'd want to compile them again
 fn codes() -> std::sync::MutexGuard<'static, HashMap<(u64, u32), Slot>> {
     static KEPT: OnceLock<Mutex<HashMap<(u64, u32), Slot>>> = OnceLock::new();
     KEPT.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// the unit's program compiled for its entry point, none while it compiles,
-/// where it can't be, or where it gave up. the first time it is asked for
-/// it starts compiling on a thread of its own, a big program takes long
-/// enough to hitch a frame, and the interpreter shades meanwhile.
+/// the unit's program compiled for its entry point, none while it compiles, where it can't be, or where it gave up
+/// the first time it's asked for it starts compiling on a thread of its own (a big program takes long enough to
+/// hitch a frame) and the interpreter shades meanwhile
 pub(super) fn compiled(unit: &ShaderUnit, program: &Arc<Program>) -> Option<Arc<Compiled>> {
     if !enabled() {
         return None;
@@ -297,7 +301,14 @@ pub(super) fn compiled(unit: &ShaderUnit, program: &Arc<Program>) -> Option<Arc<
     let key = (program.fingerprint, unit.entry_point);
     let mut kept = codes();
     match kept.get(&key) {
-        Some(Slot::Done(found)) => return found.clone().filter(|compiled| !compiled.given_up.load(Ordering::Relaxed)),
+        Some(Slot::Done(found)) => {
+            let found = found.clone().filter(|compiled| !compiled.given_up.load(Ordering::Relaxed))?;
+            if found.tier == Tier::Quick && found.runs.load(Ordering::Relaxed) >= HOT && !found.upgrading.swap(true, Ordering::Relaxed) {
+                drop(kept);
+                upgrade(program.clone(), key, found.clone());
+            }
+            return Some(found);
+        }
         Some(Slot::Compiling) => return None,
         None => {}
     }
@@ -306,7 +317,7 @@ pub(super) fn compiled(unit: &ShaderUnit, program: &Arc<Program>) -> Option<Arc<
     }
     // the tests look at what the compiled code gives from the first run
     if cfg!(test) {
-        let found = compile_logged(program, key.1);
+        let found = compile_logged(program, key.1, Tier::Full);
         kept.insert(key, Slot::Done(found.clone()));
         return found;
     }
@@ -314,7 +325,7 @@ pub(super) fn compiled(unit: &ShaderUnit, program: &Arc<Program>) -> Option<Arc<
     drop(kept);
     let program = program.clone();
     let spawned = std::thread::Builder::new().name("shader jit".to_owned()).spawn(move || {
-        let found = compile_logged(&program, key.1);
+        let found = compile_logged(&program, key.1, Tier::Quick);
         codes().insert(key, Slot::Done(found));
     });
     if let Err(error) = spawned {
@@ -324,10 +335,27 @@ pub(super) fn compiled(unit: &ShaderUnit, program: &Arc<Program>) -> Option<Arc<
     None
 }
 
-/// compiles the program for an entry point, saying why not when it can't.
-fn compile_logged(program: &Program, entry: u32) -> Option<Arc<Compiled>> {
+/// compiles a program in full on a thread of its own, its quick code shading meanwhile,
+/// and puts it in the quick code's place unless that's gone since
+fn upgrade(program: Arc<Program>, key: (u64, u32), quick: Arc<Compiled>) {
+    let spawned = std::thread::Builder::new().name("shader jit".to_owned()).spawn(move || {
+        let Some(full) = compile_logged(&program, key.1, Tier::Full) else { return };
+        let mut kept = codes();
+        // a program that gave up while it compiled stays given up
+        let given_up = quick.given_up.load(Ordering::Relaxed);
+        if !given_up && matches!(kept.get(&key), Some(Slot::Done(Some(current))) if Arc::ptr_eq(current, &quick)) {
+            kept.insert(key, Slot::Done(Some(full)));
+        }
+    });
+    if let Err(error) = spawned {
+        log::warn!("could not start compiling a shader in full, {error}");
+    }
+}
+
+/// compiles the program for an entry point, saying why not when it can't
+fn compile_logged(program: &Program, entry: u32, tier: Tier) -> Option<Arc<Compiled>> {
     let start = std::time::Instant::now();
-    let found = match compile(program, entry) {
+    let found = match compile(program, entry, tier) {
         Ok(compiled) => Some(Arc::new(compiled)),
         Err(error) => {
             log::debug!(target: "zakuro_gpu::shader::jit", "the program {:016X} at {entry} is not compiled, {error}", program.fingerprint);
@@ -336,7 +364,7 @@ fn compile_logged(program: &Program, entry: u32) -> Option<Arc<Compiled>> {
     };
     log::trace!(
         target: "zakuro_gpu::shader::jit",
-        "the program {:016X} at {entry} took {:?}, {} instructions",
+        "the program {:016X} at {entry} took {:?} {tier:?}, {} instructions",
         program.fingerprint,
         start.elapsed(),
         program.ops.iter().filter(|op| op.opcode != OpCode::Nop && op.instruction.0 != 0).count()
@@ -344,8 +372,7 @@ fn compile_logged(program: &Program, entry: u32) -> Option<Arc<Compiled>> {
     found
 }
 
-/// shades the vertices, LANES at a time, giving the batches the program
-/// gives back to fallback.
+/// shades the vertices LANES at a time, giving the batches the program gives back to fallback
 pub(super) fn run_vertices(
     compiled: &Compiled,
     unit: &ShaderUnit,
@@ -369,9 +396,8 @@ pub(super) fn run_vertices(
     compiled.counted(runs, returned);
 }
 
-/// runs the geometry shader over the primitives' inputs, LANES at a time,
-/// giving each one's triangles, the batches the program gives back going to
-/// fallback.
+/// runs the geometry shader over the primitives' inputs LANES at a time, giving each one's triangles,
+/// the batches the program gives back going to fallback
 pub(super) fn run_geometry(
     compiled: &Compiled,
     unit: &ShaderUnit,
@@ -399,21 +425,235 @@ pub(super) fn run_geometry(
     compiled.counted(runs, returned);
 }
 
-/// a call, if or loop the program is in, as the interpreter's blocks keep
-/// it. a loop's repeats left are counted where the code runs, by depth.
+/// a call, if or loop the program's in, like the interpreter's blocks keep it,
+/// a loop's repeats left get counted where the code runs, by depth
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Frame {
     end: u32,
     return_address: u32,
     start: u32,
-    /// the integer uniform a loop steps aL by, none for anything else.
+    /// the integer uniform a loop steps aL by, none for anything else
     integer: Option<u32>,
 }
 
-/// where the program is, an instruction and the frames it is in.
+/// where the program is, an instruction and the frames it's in
 type State = (u32, Vec<Frame>);
 
-/// the helpers compiled code calls.
+/// what compiling a state does, and the states it goes on to by their number in the graph
+#[derive(Clone, Copy)]
+enum Step {
+    /// the program ends
+    Finish,
+    /// blocks ending there get left, w/o running anything
+    Leave(usize),
+    /// an iteration of a loop ends, aL steps, and it goes again or on
+    Iterate { integer: u32, level: usize, again: usize, done: usize },
+    /// an instruction that goes on to one state, a loop it starts at depth included, or a call or break, which always go
+    Run { pc: u32, depth: usize, next: usize },
+    /// a branch on a boolean uniform, taken or not
+    Uniform { pc: u32, taken: usize, other: usize },
+    /// a branch on the conditions, taken or not, and how the lanes going each way run under masks where they part, then on together
+    Conditional { pc: u32, taken: usize, other: usize, parted: Option<(Parted, usize)> },
+}
+
+/// how the lanes of a batch that part at a conditional branch each run their own way under masks, see Program::maskable
+#[derive(Clone, Copy)]
+enum Parted {
+    /// an if's bodies, the lanes taking it running the first and the others the second, or a call's routine and nothing
+    Bodies([(u32, u32); 2]),
+    /// a jump ahead, the lanes not taking it running on from the next instruction and the others from where it lands, to the end
+    Ahead { lands: u32, end: u32 },
+}
+
+impl Step {
+    /// the states it goes on to
+    fn onward(&self) -> impl Iterator<Item = usize> {
+        let (first, second, third) = match *self {
+            Step::Finish => (None, None, None),
+            Step::Leave(next) | Step::Run { next, .. } => (Some(next), None, None),
+            Step::Iterate { again, done, .. } => (Some(again), Some(done), None),
+            Step::Uniform { taken, other, .. } => (Some(taken), Some(other), None),
+            Step::Conditional { taken, other, parted, .. } => (Some(taken), Some(other), parted.map(|(_, next)| next)),
+        };
+        first.into_iter().chain(second).chain(third)
+    }
+}
+
+/// every state a program reaches from an entry point, found b4 any gets compiled,
+/// so a state nothing else leads into is compiled in the block of the one b4 it,
+/// and a block gets sealed once everything that goes into it is there
+struct Graph {
+    steps: Vec<Step>,
+    /// how many jumps and branches go into each state (the first one's from the function's start counted), and if any is a branch
+    into: Vec<u32>,
+    branched: Vec<bool>,
+    /// the states each ahead of the ones it leads to, except by going back
+    order: Vec<usize>,
+}
+
+impl Graph {
+    /// the states from the entry point on, none when there are too many or they go too deep
+    fn explore(program: &Program, entry: u32) -> Option<Graph> {
+        let first: State = (entry, Vec::new());
+        let mut index = HashMap::from([(first.clone(), 0)]);
+        let mut states = vec![first];
+        let mut steps = vec![None];
+        let (mut into, mut branched) = (vec![1], vec![false]);
+        let mut unplanned = vec![0];
+        let mut masked = 0;
+        while let Some(at) = unplanned.pop() {
+            let state = states[at].clone();
+            let mut reach = |state: State, branch: bool| -> Option<usize> {
+                let found = match index.get(&state) {
+                    Some(&found) => found,
+                    None => {
+                        if states.len() > MOST_STATES {
+                            return None;
+                        }
+                        let found = states.len();
+                        index.insert(state.clone(), found);
+                        states.push(state);
+                        steps.push(None);
+                        into.push(0);
+                        branched.push(false);
+                        unplanned.push(found);
+                        found
+                    }
+                };
+                into[found] += 1;
+                branched[found] |= branch;
+                Some(found)
+            };
+            let step = plan(program, &state, &mut masked, &mut reach)?;
+            steps[at] = Some(step);
+        }
+        let steps: Vec<Step> = steps.into_iter().map(|step| step.expect("every state planned")).collect();
+        // depth first, each state after all it leads to, then the other way
+        let mut seen = vec![false; steps.len()];
+        let mut order = Vec::with_capacity(steps.len());
+        let mut walk = vec![(0, steps[0].onward())];
+        seen[0] = true;
+        while let Some((at, onward)) = walk.last_mut() {
+            match onward.find(|&next| !seen[next]) {
+                Some(next) => {
+                    seen[next] = true;
+                    walk.push((next, steps[next].onward()));
+                }
+                None => {
+                    order.push(*at);
+                    walk.pop();
+                }
+            }
+        }
+        order.reverse();
+        Some(Graph { steps, into, branched, order })
+    }
+}
+
+/// what a state does, the states it goes on to found or added by reach, w/ if it branches to them, none where it goes too deep
+/// masked counts the instructions compiled under masks so far, see parted
+fn plan(program: &Program, (pc, frames): &State, masked: &mut usize, reach: &mut impl FnMut(State, bool) -> Option<usize>) -> Option<Step> {
+    let (mut pc, mut frames) = (*pc, frames.clone());
+    let depth = frames.len();
+    // the blocks ending there, like the interpreter leaves them
+    while let Some(top) = frames.last().copied() {
+        if pc != top.end {
+            break;
+        }
+        if let Some(integer) = top.integer {
+            let level = frames.len() - 1;
+            let again = reach((top.start, frames.clone()), false)?;
+            frames.pop();
+            let done = reach((top.return_address, frames), true)?;
+            return Some(Step::Iterate { integer, level, again, done });
+        }
+        pc = top.return_address;
+        frames.pop();
+    }
+    if frames.len() != depth {
+        return Some(Step::Leave(reach((pc, frames), false)?));
+    }
+    if pc as usize >= PROGRAM_SIZE {
+        return Some(Step::Finish);
+    }
+    let op = &program.ops[pc as usize];
+    let next = pc + 1;
+    match op.opcode {
+        OpCode::End => Some(Step::Finish),
+        OpCode::Loop => {
+            if depth >= DEEPEST {
+                return None;
+            }
+            let integer = op.instruction.integer_index() & 3;
+            let (last, _) = op.instruction.flow_target();
+            frames.push(Frame { end: last + 1, return_address: last + 1, start: next, integer: Some(integer) });
+            Some(Step::Run { pc, depth, next: reach((next, frames), false)? })
+        }
+        OpCode::Call
+        | OpCode::CallU
+        | OpCode::CallC
+        | OpCode::JmpC
+        | OpCode::JmpU
+        | OpCode::IfC
+        | OpCode::IfU
+        | OpCode::Break
+        | OpCode::BreakC => {
+            let taken = branch(op, pc, true, &frames);
+            if taken.1.len() > DEEPEST {
+                return None;
+            }
+            let other = branch(op, pc, false, &frames);
+            match op.opcode {
+                OpCode::Call | OpCode::Break => Some(Step::Run { pc, depth, next: reach(taken, false)? }),
+                OpCode::CallU | OpCode::IfU | OpCode::JmpU => {
+                    Some(Step::Uniform { pc, taken: reach(taken, true)?, other: reach(other, true)? })
+                }
+                _ => {
+                    let (taken, other) = (reach(taken, true)?, reach(other, true)?);
+                    let parted = match parted(program, op, pc, &frames, masked) {
+                        Some((parted, next)) => Some((parted, reach((next, frames), false)?)),
+                        None => None,
+                    };
+                    Some(Step::Conditional { pc, taken, other, parted })
+                }
+            }
+        }
+        _ => Some(Step::Run { pc, depth, next: reach((next, frames), false)? }),
+    }
+}
+
+/// how the lanes of a batch run their own ways where they part at a conditional branch (an if,
+/// a call or a jump ahead over instructions that only work out values) and where all of them go on from,
+/// like they would going each way
+/// jumps ahead overlapping one another each compile what the others jumped over,
+/// so past MOST_STATES instructions compiled under masks (counted in masked) the batch goes back instead
+fn parted(program: &Program, op: &Op, pc: u32, frames: &[Frame], masked: &mut usize) -> Option<(Parted, u32)> {
+    let (destination, count) = op.instruction.flow_target();
+    let parted = match op.opcode {
+        OpCode::IfC => {
+            let (then, otherwise, next) = if_ranges(pc, destination, count);
+            (program.maskable(then, 0, &[]) && program.maskable(otherwise, 0, &[])).then_some((Parted::Bodies([then, otherwise]), next))
+        }
+        OpCode::CallC => {
+            let routine = (destination, destination + count);
+            program.maskable(routine, 0, &[]).then_some((Parted::Bodies([routine, (pc + 1, pc + 1)]), pc + 1))
+        }
+        // the lanes not jumping must not leave a block on the way to where all of them meet
+        OpCode::JmpC if destination > pc => {
+            let end = program.ahead(pc, destination)?;
+            frames.last().is_none_or(|top| !(pc + 1..end).contains(&top.end)).then_some((Parted::Ahead { lands: destination, end }, end))
+        }
+        _ => None,
+    }?;
+    let size = match parted.0 {
+        Parted::Bodies([first, second]) => (first.1 - first.0 + second.1 - second.0) as usize,
+        Parted::Ahead { end, .. } => (end - pc - 1) as usize,
+    };
+    *masked += size;
+    (*masked <= MOST_STATES).then_some(parted)
+}
+
+/// the helpers compiled code calls
 struct Helpers {
     floor: FuncRef,
     exp2: FuncRef,
@@ -423,14 +663,25 @@ struct Helpers {
     emit: FuncRef,
 }
 
-/// compiles the program for an entry point, why not when the host has no
-/// backend or the program goes too many ways.
-pub(super) fn compile(program: &Program, entry: u32) -> Result<Compiled, String> {
+/// compiles the program for an entry point, why not when the host has no backend or the program goes too many ways
+pub(super) fn compile(program: &Program, entry: u32, tier: Tier) -> Result<Compiled, String> {
     let mut flags = settings::builder();
-    // the verifier looks the code over for Cranelift's own sake, a quarter
-    // of the time compiling took, the tests have it
+    // the verifier looks the code over for Cranelift's own sake (a quarter of the compile time), the tests have it
     let verify = if cfg!(debug_assertions) { "true" } else { "false" };
-    for (name, value) in [("opt_level", "speed"), ("use_colocated_libcalls", "false"), ("is_pic", "false"), ("enable_verifier", verify)] {
+    let allocator = match tier {
+        Tier::Quick => "single_pass",
+        Tier::Full => "backtracking",
+    };
+    let flagged = [
+        ("opt_level", "speed"),
+        ("use_colocated_libcalls", "false"),
+        ("is_pic", "false"),
+        ("enable_verifier", verify),
+        ("regalloc_algorithm", allocator),
+        ("enable_probestack", "true"),
+        ("probestack_strategy", "inline"),
+    ];
+    for (name, value) in flagged {
         flags.set(name, value).map_err(|error| format!("{name}, {error}"))?;
     }
     let isa = cranelift_native::builder()?.finish(settings::Flags::new(flags)).map_err(|error| error.to_string())?;
@@ -474,13 +725,13 @@ pub(super) fn compile(program: &Program, entry: u32) -> Result<Compiled, String>
     let [floor, exp2, log2, lit, set_emit, emit] = ids.map(|id| module.declare_func_in_func(id, builder.func));
     let helpers = Helpers { floor, exp2, log2, lit, set_emit, emit };
 
-    // given up halfway, the function is left unfinished
+    // none when its states go too many ways or too deep, found b4 anything gets built
     Compiler::build(&mut builder, program, entry, helpers).ok_or("it goes too many ways or too deep")?;
     builder.seal_all_blocks();
     builder.finalize(module.target_config());
 
     let id = module.declare_function("shader", Linkage::Export, &context.func.signature).map_err(|error| error.to_string())?;
-    // ZAKURO_SHADER_JIT_DUMP=1 prints the host's code each program became
+    // ZAKURO_SHADER_JIT_DUMP=1 prints the host code each program became
     let dump = std::env::var_os("ZAKURO_SHADER_JIT_DUMP").is_some();
     context.set_disasm(dump);
     module.define_function(id, &mut context).map_err(|error| format!("{error:?}"))?;
@@ -490,20 +741,21 @@ pub(super) fn compile(program: &Program, entry: u32) -> Result<Compiled, String>
     module.clear_context(&mut context);
     module.finalize_definitions().map_err(|error| error.to_string())?;
     let code = module.get_finalized_function(id);
-    // SAFETY: the function takes a pointer to a context and gives back a
-    // 32-bit word, as its signature says
+    // safe bc the function takes a ptr to a context and gives back a 32 bit word, like its signature says
     let function = unsafe { std::mem::transmute::<*const u8, unsafe extern "C" fn(*mut Context) -> u32>(code) };
     Ok(Compiled {
         module: Some(module),
         function,
-        runs: AtomicU32::new(0),
-        returned: AtomicU32::new(0),
-        parted: AtomicU32::new(0),
+        tier,
+        upgrading: AtomicBool::new(false),
+        runs: AtomicU64::new(0),
+        returned: AtomicU64::new(0),
+        parted: AtomicU64::new(0),
         given_up: AtomicBool::new(false),
     })
 }
 
-/// the memory the code reads that nothing writes while it runs.
+/// the memory the code reads that nothing writes while it runs
 fn constant() -> MemFlagsData {
     MemFlagsData::trusted().with_readonly()
 }
@@ -516,42 +768,43 @@ struct Compiler<'a, 'b, 'c> {
     uniforms: Value,
     temps: [[Variable; 4]; TEMP_REGISTERS],
     outputs: [[Variable; 4]; OUTPUT_REGISTERS],
-    /// a0 and a1, a lane each.
+    /// a0 and a1, a lane each
     address: [Variable; 2],
     loop_counter: Variable,
-    /// the condition registers, a lane each, all ones for true.
+    /// the condition registers, a lane each, all ones for true
     conditions: [Variable; 2],
-    /// each depth's loop's repeats left.
+    /// each depth's loop's repeats left
     repeats: [Variable; DEEPEST],
-    /// the instructions the interpreter would still run, counted only in a
-    /// program that can come back to an instruction it ran, see may_loop.
+    /// the instructions the interpreter would still run,
+    /// only counted in a program that can come back to an instruction it ran, see may_loop
     budget: Variable,
     counted: bool,
-    states: HashMap<State, Block>,
-    pending: Vec<(State, Block)>,
-    /// jumps to a state compiled before, which may close a loop, and so
-    /// look at the budget first.
-    checks: Vec<(Block, Block)>,
-    /// gives the batch back, where its lanes parted ways.
+    graph: Graph,
+    /// each state's block, made when something first jumps or branches to it, none for a state compiled in the block of the one b4
+    blocks: Vec<Option<Block>>,
+    /// is each state's code there
+    done: Vec<bool>,
+    /// the jumps and branches still to come into each state's block, it gets sealed once there are none,
+    /// so the variables read in it get looked up right away instead of all left open to the end
+    awaited: Vec<u32>,
+    /// the states the jump or branch being made goes to, see to
+    landing: Vec<usize>,
+    /// jumps back to a state compiled b4, which may close a loop and so look at the budget first, the block that looks and the state
+    checks: Vec<(Block, usize)>,
+    /// gives the batch back, where its lanes parted ways
     give_back: Block,
-    /// gives the batch back, where a lane came out NaN, which the shader's
-    /// multiply may have made zero, the interpreter's arithmetic works it
-    /// out. it is rare, a hundredth of the batches of Ocarina of Time 3D at
-    /// most, and the code without the careful way kept in it goes faster.
-    give_back_nan: Block,
-    /// the lanes the code being compiled runs for, all of them when none,
-    /// the others keeping what they had, inside a branch the vertices
-    /// parted at.
+    /// the lanes the code being compiled runs for, all of them when none, the others keeping what they had,
+    /// inside a branch the vertices parted at
     mask: Option<Value>,
 }
 
 impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     fn build(builder: &'a mut FunctionBuilder<'b>, program: &'c Program, entry: u32, helpers: Helpers) -> Option<()> {
+        let graph = Graph::explore(program, entry)?;
         // the first block filled in is the one the function starts at
         let start = builder.create_block();
         builder.append_block_params_for_function_params(start);
         let give_back = builder.create_block();
-        let give_back_nan = builder.create_block();
         builder.switch_to_block(start);
         let context = builder.block_params(start)[0];
         let uniforms = builder.ins().load(types::I64, constant(), context, offset_of!(Context, uniforms) as i32);
@@ -591,38 +844,37 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
             repeats,
             budget,
             counted: program.may_loop(),
-            states: HashMap::new(),
-            pending: Vec::new(),
+            blocks: vec![None; graph.steps.len()],
+            done: vec![false; graph.steps.len()],
+            awaited: graph.into.clone(),
+            landing: Vec::new(),
+            graph,
             checks: Vec::new(),
             give_back,
-            give_back_nan,
             mask: None,
         };
-        let first = compiler.edge(entry, Vec::new());
-        compiler.builder.ins().jump(first, &[]);
-        while let Some((state, block)) = compiler.pending.pop() {
-            if compiler.states.len() > MOST_STATES {
-                return None;
+        compiler.builder.seal_block(start);
+        // the first state, in the start's block unless something goes back to it, then the rest,
+        // each w/ its block ahead of the states it leads to except by going back
+        compiler.onward(0);
+        compiler.check_budget();
+        for at in 0..compiler.graph.order.len() {
+            let state = compiler.graph.order[at];
+            if compiler.done[state] {
+                continue;
             }
+            let block = compiler.block(state);
             compiler.builder.switch_to_block(block);
-            compiler.state(state)?;
-            while let Some((check, target)) = compiler.checks.pop() {
-                compiler.builder.switch_to_block(check);
-                let budget = compiler.builder.use_var(compiler.budget);
-                let low = compiler.builder.ins().icmp_imm_s(IntCC::SignedLessThan, budget, MOST_STATES as i64);
-                compiler.builder.ins().brif(low, compiler.give_back, &[], target, &[]);
-            }
+            compiler.emit(state);
+            compiler.check_budget();
         }
         compiler.builder.switch_to_block(give_back);
         let returned = compiler.builder.ins().iconst(types::I32, 1);
         compiler.builder.ins().return_(&[returned]);
-        compiler.builder.switch_to_block(give_back_nan);
-        let returned = compiler.builder.ins().iconst(types::I32, 2);
-        compiler.builder.ins().return_(&[returned]);
         Some(())
     }
 
-    /// an instruction run, counted against the budget where it is kept.
+    /// an instruction run, counted against the budget where it's kept
     fn spend(&mut self) {
         if self.counted {
             let budget = self.builder.use_var(self.budget);
@@ -631,218 +883,247 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
         }
     }
 
-    /// the block a jump to a state goes to, the state's own when it is new,
-    /// one that looks at the budget first when it was there before and the
-    /// budget is kept.
-    fn edge(&mut self, pc: u32, frames: Vec<Frame>) -> Block {
-        let state = (pc, frames);
-        if let Some(&block) = self.states.get(&state) {
-            if !self.counted {
-                return block;
-            }
+    /// fills in the blocks that look at the budget b4 going back to a state, the batch going back once the interpreter would have stopped
+    fn check_budget(&mut self) {
+        while let Some((check, state)) = self.checks.pop() {
+            self.builder.seal_block(check);
+            self.builder.switch_to_block(check);
+            let budget = self.builder.use_var(self.budget);
+            let low = self.builder.ins().icmp_imm_s(IntCC::SignedLessThan, budget, MOST_STATES as i64);
+            let target = self.block(state);
+            self.landing.push(state);
+            self.builder.ins().brif(low, self.give_back, &[], target, &[]);
+            self.landed();
+        }
+    }
+
+    /// a state's block, made the first time it's asked for
+    fn block(&mut self, state: usize) -> Block {
+        *self.blocks[state].get_or_insert_with(|| self.builder.create_block())
+    }
+
+    /// the block a jump or branch to a state goes to, the state's own or,
+    /// going back to one compiled b4 in a program that keeps the budget, one that looks at the budget first
+    /// the state gets counted in once the jump or branch is there, see landed
+    fn to(&mut self, state: usize) -> Block {
+        if self.counted && self.done[state] {
             let check = self.builder.create_block();
-            self.checks.push((check, block));
+            self.checks.push((check, state));
             return check;
         }
-        let block = self.builder.create_block();
-        self.states.insert(state.clone(), block);
-        self.pending.push((state, block));
-        block
+        self.landing.push(state);
+        self.block(state)
     }
 
-    fn jump(&mut self, pc: u32, frames: Vec<Frame>) {
-        let target = self.edge(pc, frames);
+    /// counts in the jump or branch just made to the states to gave, sealing each block nothing more goes into
+    fn landed(&mut self) {
+        while let Some(state) = self.landing.pop() {
+            self.awaited[state] -= 1;
+            if self.awaited[state] == 0 {
+                let block = self.block(state);
+                self.builder.seal_block(block);
+            }
+        }
+    }
+
+    /// is a state compiled where the one jumping to it is, nothing else leading into it
+    fn inline(&self, state: usize) -> bool {
+        self.graph.into[state] == 1 && !self.graph.branched[state]
+    }
+
+    /// goes on to a state w/ a jump, compiling it right there when nothing else leads into it
+    fn onward(&mut self, state: usize) {
+        if self.inline(state) {
+            self.emit(state);
+            return;
+        }
+        let target = self.to(state);
         self.builder.ins().jump(target, &[]);
+        self.landed();
     }
 
-    /// compiles one state: the blocks ending there as the interpreter leaves
-    /// them, then its instruction.
-    fn state(&mut self, (mut pc, mut frames): State) -> Option<()> {
-        let depth = frames.len();
-        while let Some(top) = frames.last().copied() {
-            if pc != top.end {
-                break;
+    /// compiles a state, and on into the states only it leads to
+    fn emit(&mut self, mut state: usize) {
+        loop {
+            self.done[state] = true;
+            let next = match self.graph.steps[state] {
+                Step::Finish => {
+                    self.finish();
+                    return;
+                }
+                Step::Leave(next) => next,
+                Step::Iterate { integer, level, again, done } => {
+                    // an iteration of a loop ends, aL steps, and it goes again while it has repeats left
+                    let at = offset_of!(Context, ints) as u32 + integer * 4 + 2;
+                    let increment = self.builder.ins().sload8(types::I32, constant(), self.context, at as i32);
+                    let counter = self.builder.use_var(self.loop_counter);
+                    let stepped = self.builder.ins().iadd(counter, increment);
+                    self.builder.def_var(self.loop_counter, stepped);
+                    let repeats = self.builder.use_var(self.repeats[level]);
+                    let more = self.builder.create_block();
+                    let done = self.to(done);
+                    self.builder.ins().brif(repeats, more, &[], done, &[]);
+                    self.landed();
+                    self.builder.seal_block(more);
+                    self.builder.switch_to_block(more);
+                    let fewer = self.builder.ins().iadd_imm_s(repeats, -1);
+                    self.builder.def_var(self.repeats[level], fewer);
+                    again
+                }
+                Step::Run { pc, depth, next } => {
+                    self.spend();
+                    self.instruction(pc, depth);
+                    next
+                }
+                Step::Uniform { pc, taken, other } => {
+                    self.spend();
+                    self.uniform(pc, taken, other);
+                    return;
+                }
+                Step::Conditional { pc, taken, other, parted } => {
+                    self.spend();
+                    match self.conditional(pc, taken, other, parted) {
+                        Some(next) => next,
+                        None => return,
+                    }
+                }
+            };
+            if !self.inline(next) {
+                let target = self.to(next);
+                self.builder.ins().jump(target, &[]);
+                self.landed();
+                return;
             }
-            if let Some(integer) = top.integer {
-                // an iteration of a loop ends, aL steps, and it goes again
-                // while it has repeats left
-                let at = offset_of!(Context, ints) as u32 + integer * 4 + 2;
-                let increment = self.builder.ins().sload8(types::I32, constant(), self.context, at as i32);
-                let counter = self.builder.use_var(self.loop_counter);
-                let stepped = self.builder.ins().iadd(counter, increment);
-                self.builder.def_var(self.loop_counter, stepped);
-                let level = frames.len() - 1;
-                let repeats = self.builder.use_var(self.repeats[level]);
-                let again = self.builder.create_block();
-                let mut left = frames.clone();
-                left.pop();
-                let done = self.edge(top.return_address, left);
-                self.builder.ins().brif(repeats, again, &[], done, &[]);
-                self.builder.switch_to_block(again);
-                let fewer = self.builder.ins().iadd_imm_s(repeats, -1);
-                self.builder.def_var(self.repeats[level], fewer);
-                self.jump(top.start, frames);
-                return Some(());
-            }
-            pc = top.return_address;
-            frames.pop();
+            state = next;
         }
-        if frames.len() != depth {
-            // the state the blocks that ended leave it in, compiled once
-            self.jump(pc, frames);
-            return Some(());
-        }
-        if pc as usize >= PROGRAM_SIZE {
-            self.finish();
-            return Some(());
-        }
-        self.spend();
+    }
 
+    /// an instruction that goes on to the next state
+    fn instruction(&mut self, pc: u32, depth: usize) {
         let op = self.program.ops[pc as usize];
         let instruction = op.instruction;
-        let next = pc + 1;
         match op.opcode {
-            OpCode::End => self.finish(),
             OpCode::SetEmit => {
                 let slot = self.builder.ins().iconst(types::I32, instruction.emit_vertex().min(2) as i64);
                 let completes = instruction.emit_primitive() as i64 | (instruction.emit_winding() as i64) << 1;
                 let completes = self.builder.ins().iconst(types::I32, completes);
                 self.builder.ins().call(self.helpers.set_emit, &[self.context, slot, completes]);
-                self.jump(next, frames);
             }
             OpCode::Emit => {
                 self.store_outputs();
                 self.builder.ins().call(self.helpers.emit, &[self.context]);
-                self.jump(next, frames);
             }
             OpCode::Loop => {
-                if frames.len() >= DEEPEST {
-                    return None;
-                }
                 let integer = instruction.integer_index() & 3;
                 let at = offset_of!(Context, ints) as u32 + integer * 4;
                 let repeats = self.builder.ins().uload8(types::I32, constant(), self.context, at as i32);
                 let first = self.builder.ins().uload8(types::I32, constant(), self.context, (at + 1) as i32);
                 self.builder.def_var(self.loop_counter, first);
-                self.builder.def_var(self.repeats[frames.len()], repeats);
-                let (last, _) = instruction.flow_target();
-                frames.push(Frame { end: last + 1, return_address: last + 1, start: next, integer: Some(integer) });
-                self.jump(next, frames);
+                self.builder.def_var(self.repeats[depth], repeats);
             }
-            OpCode::Call
-            | OpCode::CallU
-            | OpCode::CallC
-            | OpCode::JmpC
-            | OpCode::JmpU
-            | OpCode::IfC
-            | OpCode::IfU
-            | OpCode::Break
-            | OpCode::BreakC => self.flow(&op, pc, frames)?,
-            OpCode::Nop => self.jump(next, frames),
-            _ => {
-                self.arithmetic(&op);
-                self.jump(next, frames);
-            }
+            // calls and breaks are where they go
+            OpCode::Nop | OpCode::Call | OpCode::Break => {}
+            _ => self.arithmetic(&op),
         }
-        Some(())
     }
 
-    /// a flow instruction, which goes one way or the other, every lane the
-    /// same way or else the batch goes back.
-    fn flow(&mut self, op: &Op, pc: u32, frames: Vec<Frame>) -> Option<()> {
+    /// a branch on a boolean uniform, every lane the same way
+    fn uniform(&mut self, pc: u32, taken: usize, other: usize) {
+        let op = self.program.ops[pc as usize];
         let instruction = op.instruction;
-        let (taken_pc, taken_frames) = branch(op, pc, true, &frames);
-        let (other_pc, other_frames) = branch(op, pc, false, &frames);
-        if taken_frames.len() > DEEPEST {
-            return None;
+        let bools = self.builder.ins().load(types::I32, constant(), self.context, offset_of!(Context, bools) as i32);
+        let set = self.builder.ins().band_imm_u(bools, 1i64 << instruction.bool_index());
+        // jmpu can test for either value, the low bit of its count flips it
+        let inverted = op.opcode == OpCode::JmpU && instruction.flow_target().1 & 1 != 0;
+        let (taken, other) = (self.to(taken), self.to(other));
+        if inverted {
+            self.builder.ins().brif(set, other, &[], taken, &[]);
+        } else {
+            self.builder.ins().brif(set, taken, &[], other, &[]);
         }
-        let bool_set = |compiler: &mut Self| {
-            let bools = compiler.builder.ins().load(types::I32, constant(), compiler.context, offset_of!(Context, bools) as i32);
-            compiler.builder.ins().band_imm_u(bools, 1i64 << instruction.bool_index())
-        };
-        match op.opcode {
-            OpCode::Call | OpCode::Break => self.jump(taken_pc, taken_frames),
-            OpCode::CallU | OpCode::IfU | OpCode::JmpU => {
-                let set = bool_set(self);
-                // jmpu can test for either value, the low bit of its count
-                // inverts it
-                let inverted = op.opcode == OpCode::JmpU && instruction.flow_target().1 & 1 != 0;
-                let taken = self.edge(taken_pc, taken_frames);
-                let other = self.edge(other_pc, other_frames);
-                if inverted {
-                    self.builder.ins().brif(set, other, &[], taken, &[]);
-                } else {
-                    self.builder.ins().brif(set, taken, &[], other, &[]);
-                }
-            }
-            _ => {
-                let lanes = self.condition(instruction);
-                let taken = self.edge(taken_pc, taken_frames);
-                let other = self.edge(other_pc, other_frames);
-                let all = self.builder.ins().vall_true(lanes);
-                let none_check = self.builder.create_block();
-                self.builder.ins().brif(all, taken, &[], none_check, &[]);
-                self.builder.switch_to_block(none_check);
-                let any = self.builder.ins().vany_true(lanes);
-                // where the lanes part, an if or a call that only works out
-                // values runs for the lanes going each way, the others
-                // keeping theirs, as they would have going the other way
-                let (destination, count) = instruction.flow_target();
-                let parted = match op.opcode {
-                    OpCode::IfC => {
-                        let (then, otherwise, next) = if_ranges(pc, destination, count);
-                        (self.program.plain(then, 0) && self.program.plain(otherwise, 0)).then_some(([then, otherwise], next))
-                    }
-                    OpCode::CallC => {
-                        let routine = (destination, destination + count);
-                        self.program.plain(routine, 0).then_some(([routine, (pc + 1, pc + 1)], pc + 1))
-                    }
-                    _ => None,
-                };
-                let Some(([first, second], next)) = parted else {
-                    self.builder.ins().brif(any, self.give_back, &[], other, &[]);
-                    return Some(());
-                };
-                let both = self.builder.create_block();
-                self.builder.ins().brif(any, both, &[], other, &[]);
-                self.builder.switch_to_block(both);
-                let rest = self.builder.ins().bnot(lanes);
-                self.predicated(first, lanes);
-                self.predicated(second, rest);
-                self.jump(next, frames);
-            }
-        }
-        Some(())
+        self.landed();
     }
 
-    /// compiles the instructions of a range Program::plain allows for the
-    /// lanes in mask, ifs inside narrowing it further.
-    fn predicated(&mut self, (start, end): (u32, u32), mask: Value) {
+    /// a branch on the conditions, every lane the same way,
+    /// or where they part each running its own way under masks, otherwise the batch goes back
+    /// the state they go on to together comes back
+    fn conditional(&mut self, pc: u32, taken: usize, other: usize, parted: Option<(Parted, usize)>) -> Option<usize> {
+        let lanes = self.condition(self.program.ops[pc as usize].instruction);
+        let all = self.builder.ins().vall_true(lanes);
+        let none_check = self.builder.create_block();
+        let taken = self.to(taken);
+        self.builder.ins().brif(all, taken, &[], none_check, &[]);
+        self.landed();
+        self.builder.seal_block(none_check);
+        self.builder.switch_to_block(none_check);
+        let any = self.builder.ins().vany_true(lanes);
+        let other = self.to(other);
+        let Some((parted, next)) = parted else {
+            self.builder.ins().brif(any, self.give_back, &[], other, &[]);
+            self.landed();
+            return None;
+        };
+        // where the lanes part, an if, a call or a jump ahead over what only works out values runs for the lanes
+        // going each way, the others keeping theirs, like they would going the other way
+        let both = self.builder.create_block();
+        self.builder.ins().brif(any, both, &[], other, &[]);
+        self.landed();
+        self.builder.seal_block(both);
+        self.builder.switch_to_block(both);
+        let rest = self.builder.ins().bnot(lanes);
+        match parted {
+            Parted::Bodies([first, second]) => {
+                self.predicated(first, lanes, Vec::new());
+                self.predicated(second, rest, Vec::new());
+            }
+            Parted::Ahead { lands, end } => self.predicated((pc + 1, end), rest, vec![(lands, lanes)]),
+        }
+        Some(next)
+    }
+
+    /// compiles a range Program::maskable allows for the lanes in mask, ifs inside narrowing it,
+    /// jumps ahead taking their lanes to where they land
+    /// lands are lanes that jumps from b4 it land later in it
+    fn predicated(&mut self, (start, end): (u32, u32), mask: Value, mut lands: Vec<(u32, Value)>) {
+        let mut flowing = mask;
         let mut pc = start;
         while pc < end {
+            // the lanes landing here run on with those already here
+            for at in (0..lands.len()).rev() {
+                if lands[at].0 == pc {
+                    let (_, landed) = lands.swap_remove(at);
+                    flowing = self.builder.ins().bor(flowing, landed);
+                }
+            }
             let op = self.program.ops[pc as usize];
             self.spend();
+            let (destination, count) = op.instruction.flow_target();
             match op.opcode {
                 OpCode::IfC | OpCode::IfU => {
-                    let lanes = if op.opcode == OpCode::IfC {
-                        self.condition(op.instruction)
-                    } else {
-                        let bools = self.builder.ins().load(types::I32, constant(), self.context, offset_of!(Context, bools) as i32);
-                        let set = self.builder.ins().band_imm_u(bools, 1i64 << op.instruction.bool_index());
-                        let set = self.builder.ins().icmp_imm_u(IntCC::NotEqual, set, 0);
-                        let set = self.builder.ins().bmask(types::I32, set);
-                        self.builder.ins().splat(types::I32X4, set)
+                    let lanes = match op.opcode {
+                        OpCode::IfC => self.condition(op.instruction),
+                        _ => self.uniform_lanes(op.instruction.bool_index(), false),
                     };
-                    let (destination, count) = op.instruction.flow_target();
                     let (then, otherwise, next) = if_ranges(pc, destination, count);
-                    let taken = self.builder.ins().band(mask, lanes);
-                    let others = self.builder.ins().band_not(mask, lanes);
-                    self.predicated(then, taken);
-                    self.predicated(otherwise, others);
+                    let taken = self.builder.ins().band(flowing, lanes);
+                    let others = self.builder.ins().band_not(flowing, lanes);
+                    self.predicated(then, taken, Vec::new());
+                    self.predicated(otherwise, others, Vec::new());
                     pc = next;
                 }
+                OpCode::JmpC | OpCode::JmpU => {
+                    // jmpu can test for either value, the low bit of its count flips it
+                    let lanes = match op.opcode {
+                        OpCode::JmpC => self.condition(op.instruction),
+                        _ => self.uniform_lanes(op.instruction.bool_index(), count & 1 != 0),
+                    };
+                    let jumping = self.builder.ins().band(flowing, lanes);
+                    lands.push((destination, jumping));
+                    flowing = self.builder.ins().band_not(flowing, lanes);
+                    pc += 1;
+                }
                 _ => {
-                    let outer = self.mask.replace(mask);
+                    let outer = self.mask.replace(flowing);
                     self.arithmetic(&op);
                     self.mask = outer;
                     pc += 1;
@@ -851,8 +1132,17 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
         }
     }
 
-    /// sets a variable to a value, in the lanes being compiled for, the
-    /// others keeping what they had.
+    /// a boolean uniform in every lane, all ones where it's set, or where it isn't when inverted
+    fn uniform_lanes(&mut self, index: u32, inverted: bool) -> Value {
+        let bools = self.builder.ins().load(types::I32, constant(), self.context, offset_of!(Context, bools) as i32);
+        let set = self.builder.ins().band_imm_u(bools, 1i64 << index);
+        let test = if inverted { IntCC::Equal } else { IntCC::NotEqual };
+        let set = self.builder.ins().icmp_imm_u(test, set, 0);
+        let set = self.builder.ins().bmask(types::I32, set);
+        self.builder.ins().splat(types::I32X4, set)
+    }
+
+    /// sets a variable to a value in the lanes being compiled for, the others keeping what they had
     fn assign(&mut self, variable: Variable, value: Value) {
         let value = match self.mask {
             Some(mask) => {
@@ -866,7 +1156,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
         self.builder.def_var(variable, value);
     }
 
-    /// the lanes a conditional flow instruction goes its way in, all ones.
+    /// the lanes a conditional flow instruction goes its way in, all ones
     fn condition(&mut self, instruction: super::isa::Instruction) -> Value {
         let reference = instruction.condition_reference();
         let [x, y] = [0, 1].map(|component| {
@@ -902,12 +1192,12 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
         self.builder.ins().splat(types::F32X4, scalar)
     }
 
-    /// a mask's lanes as floats, to pick between floats with.
+    /// a mask's lanes as floats, to pick between floats with
     fn floats(&mut self, mask: Value) -> Value {
         self.builder.ins().bitcast(types::F32X4, MemFlagsData::new(), mask)
     }
 
-    /// the four components of a uniform at a pointer, the same in every lane.
+    /// the four components of a uniform at a ptr, the same in every lane
     fn uniform_at(&mut self, pointer: Value, flags: MemFlagsData) -> [Value; 4] {
         std::array::from_fn(|component| {
             let scalar = self.builder.ins().load(types::F32, flags, pointer, (component * 4) as i32);
@@ -915,8 +1205,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
         })
     }
 
-    /// where uniform index is, or what reads as zero when it is past the
-    /// last one.
+    /// where uniform index is, or what reads as zero when it's past the last one
     fn uniform_pointer(&mut self, index: Value) -> Value {
         let inside = self.builder.ins().icmp_imm_u(IntCC::UnsignedLessThan, index, FLOAT_UNIFORMS as i64);
         let wide = self.builder.ins().uextend(types::I64, index);
@@ -926,7 +1215,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
         self.builder.ins().select(inside, at, zero)
     }
 
-    /// a source's components, swizzled and negated as its descriptor says.
+    /// a source's components, swizzled and negated like its descriptor says
     fn source(&mut self, operand: &Operand) -> [Value; 4] {
         let flags = constant();
         let register = operand.register as usize;
@@ -950,7 +1239,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
                         self.uniform_at(pointer, flags)
                     }
                     index => {
-                        // each lane's own uniform, an address register apart
+                        // each lane's own uniform, an addr register apart
                         let offsets = self.builder.use_var(self.address[index as usize - 1]);
                         let mut rows = [self.splat(0.0); 4];
                         for lane in 0..LANES as u8 {
@@ -980,7 +1269,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
             0x10..=0x1F => self.temps[register - 0x10],
             _ => return,
         };
-        // the mask's most significant bit selects x
+        // the mask's most significant bit picks x
         for (component, variable) in row.into_iter().enumerate() {
             if op.mask & (0b1000 >> component) != 0 {
                 self.assign(variable, value[component]);
@@ -988,50 +1277,34 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
         }
     }
 
-    /// whether any lane of any of the values is NaN.
-    fn any_nan(&mut self, values: &[Value]) -> Value {
-        let masks: Vec<Value> = values.iter().map(|&value| self.builder.ins().fcmp(FloatCC::Unordered, value, value)).collect();
-        let mask = masks.into_iter().reduce(|a, b| self.builder.ins().bor(a, b)).expect("a value");
-        self.builder.ins().vany_true(mask)
+    /// the shader's multiply, zero instead of NaN for zero times infinity,
+    /// a NaN product of two numbers zeroed in each lane like the interpreter does, w/o a branch
+    fn multiply(&mut self, a: Value, b: Value) -> Value {
+        let product = self.builder.ins().fmul(a, b);
+        let nan = self.builder.ins().fcmp(FloatCC::Unordered, product, product);
+        let numbers = self.builder.ins().fcmp(FloatCC::Ordered, a, b);
+        let zeroed = self.builder.ins().band(nan, numbers);
+        let zeroed = self.floats(zeroed);
+        // the bits of +0.0 are none, one and not on x86
+        self.builder.ins().band_not(product, zeroed)
     }
 
-    /// carries on with the components of an instruction's value worked out
-    /// the quick way, the batch going back where a lane of the ones written
-    /// is NaN.
-    fn checked(&mut self, op: &Op, quick: Vec<Value>) -> Vec<Value> {
-        // a dot product writes the one value it has to every component
-        let written: Vec<Value> = if quick.len() == 1 {
-            quick.clone()
-        } else {
-            quick.iter().enumerate().filter(|(component, _)| op.mask & (0b1000 >> component) != 0).map(|(_, &value)| value).collect()
-        };
-        if written.is_empty() {
-            return quick;
-        }
-        let nan = self.any_nan(&written);
-        let on = self.builder.create_block();
-        self.builder.ins().brif(nan, self.give_back_nan, &[], on, &[]);
-        self.builder.switch_to_block(on);
-        quick
-    }
-
-    /// a dot product of an instruction's two sources over the first count
-    /// components, which adds up exactly the way the interpreter's does, its
-    /// fourth source's w added after for dph.
-    fn dot(&mut self, op: &Op, a: &[Value; 4], b: &[Value; 4], count: usize, w: bool) -> Value {
+    /// a dot product of an instruction's two sources over the first count components,
+    /// adding up exactly like the interpreter's does, its fourth source's w added after for dph
+    fn dot(&mut self, a: &[Value; 4], b: &[Value; 4], count: usize, w: bool) -> Value {
         let start = std::iter::empty::<f32>().sum::<f32>();
         let mut sum = self.splat(start);
         for component in 0..count {
-            let product = self.builder.ins().fmul(a[component], b[component]);
+            let product = self.multiply(a[component], b[component]);
             sum = self.builder.ins().fadd(sum, product);
         }
         if w {
             sum = self.builder.ins().fadd(sum, b[3]);
         }
-        self.checked(op, vec![sum])[0]
+        sum
     }
 
-    /// floats through a helper, the rows in scratch and back.
+    /// floats thru a helper, the rows in scratch and back
     fn helped(&mut self, helper: FuncRef, rows: &[Value]) -> Vec<Value> {
         let at = |row: usize| (offset_of!(Context, scratch) + row * 16) as i32;
         for (row, &value) in rows.iter().enumerate() {
@@ -1041,7 +1314,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
         (0..rows.len()).map(|row| self.builder.ins().load(types::F32X4, MemFlagsData::trusted(), self.context, at(row))).collect()
     }
 
-    /// true or false in every lane, as one and zero.
+    /// true or false in every lane, as one and zero
     fn ones(&mut self, mask: Value) -> Value {
         let one = self.splat(1.0);
         let one = self.builder.ins().bitcast(types::I32X4, MemFlagsData::new(), one);
@@ -1062,23 +1335,15 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
         };
         let result: [Value; 4] = match op.opcode {
             OpCode::Add => pairs(self, |c, x, y| c.builder.ins().fadd(x, y)),
-            OpCode::Mul => {
-                let quick: Vec<Value> = (0..4).map(|component| self.builder.ins().fmul(a[component], b[component])).collect();
-                let fixed = self.checked(op, quick);
-                std::array::from_fn(|component| fixed[component])
-            }
+            OpCode::Mul => pairs(self, |c, x, y| c.multiply(x, y)),
             OpCode::Mad | OpCode::MadI => {
                 let c = values[2];
-                let quick: Vec<Value> = (0..4)
-                    .map(|component| {
-                        let product = self.builder.ins().fmul(a[component], b[component]);
-                        self.builder.ins().fadd(product, c[component])
-                    })
-                    .collect();
-                let fixed = self.checked(op, quick);
-                std::array::from_fn(|component| fixed[component])
+                std::array::from_fn(|component| {
+                    let product = self.multiply(a[component], b[component]);
+                    self.builder.ins().fadd(product, c[component])
+                })
             }
-            // x when it is greater, else y, which is how NaN behaves on hardware
+            // x when it's greater, else y, that's how NaN acts on hardware
             OpCode::Max => pairs(self, |c, x, y| {
                 let greater = c.builder.ins().fcmp(FloatCC::GreaterThan, x, y);
                 let greater = c.floats(greater);
@@ -1089,9 +1354,9 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
                 let less = c.floats(less);
                 c.builder.ins().bitselect(less, x, y)
             }),
-            OpCode::Dp3 => [self.dot(op, &a, &b, 3, false); 4],
-            OpCode::Dp4 => [self.dot(op, &a, &b, 4, false); 4],
-            OpCode::Dph | OpCode::DphI => [self.dot(op, &a, &b, 3, true); 4],
+            OpCode::Dp3 => [self.dot(&a, &b, 3, false); 4],
+            OpCode::Dp4 => [self.dot(&a, &b, 4, false); 4],
+            OpCode::Dph | OpCode::DphI => [self.dot(&a, &b, 3, true); 4],
             OpCode::Mov => a,
             OpCode::Flr => {
                 let floored = self.helped(self.helpers.floor, &a);
@@ -1118,9 +1383,8 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
             }),
             OpCode::Dst | OpCode::DstI => {
                 let one = self.splat(1.0);
-                let product = self.builder.ins().fmul(a[1], b[1]);
-                let checked = self.checked(op, vec![one, product, a[2], b[3]]);
-                [checked[0], checked[1], checked[2], checked[3]]
+                let product = self.multiply(a[1], b[1]);
+                [one, product, a[2], b[3]]
             }
             OpCode::LitP => {
                 let zero = self.splat(0.0);
@@ -1171,19 +1435,21 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
 }
 
-/// how deep ifs inside a branch the lanes parted at are compiled for both.
+/// how deep ifs inside a branch the lanes parted at get compiled for both
 const DEEPEST_PARTED: usize = 8;
 
 impl Program {
-    /// whether the program can come back to an instruction it ran, by a
-    /// loop, a jump back, or an if whose blocks come back to before it. one
-    /// that can't runs each of its ways of reaching an instruction at most
-    /// once, far fewer instructions than the interpreter stops a program at.
+    /// can the program come back to an instruction it ran, by a loop, a jump back,
+    /// an if whose blocks come back to b4 it, or a break,
+    /// which out of any loop leaves every block and goes on after itself,
+    /// b4 the call that may have brought it there
+    /// one that can't runs each of its ways of reaching an instruction at most once,
+    /// way fewer instructions than the interpreter stops a program at
     fn may_loop(&self) -> bool {
         self.ops.iter().zip(0u32..).any(|(op, pc)| {
             let (destination, count) = op.instruction.flow_target();
             match op.opcode {
-                OpCode::Loop => true,
+                OpCode::Loop | OpCode::Break | OpCode::BreakC => true,
                 OpCode::JmpC | OpCode::JmpU => destination <= pc,
                 OpCode::IfC | OpCode::IfU => destination + count <= pc,
                 _ => false,
@@ -1191,24 +1457,33 @@ impl Program {
         })
     }
 
-    /// whether a range of instructions only works out values, with ifs
-    /// inside that come back within it, which compiles for the lanes going
-    /// either way of a branch.
-    fn plain(&self, (start, end): (u32, u32), depth: usize) -> bool {
-        if depth > DEEPEST_PARTED || end as usize > PROGRAM_SIZE {
+    /// does a range of instructions only work out values,
+    /// w/ ifs inside that come back within it and jumps ahead that land in it, no deeper in ifs than they are,
+    /// which compiles for the lanes going either way of a branch under masks
+    /// lands are where jumps from b4 the range land in it, those have to be at its own depth too
+    fn maskable(&self, (start, end): (u32, u32), depth: usize, lands: &[u32]) -> bool {
+        if depth > DEEPEST_PARTED || start > end || end as usize > PROGRAM_SIZE {
             return false;
         }
+        // the instructions at this depth, where a jump may land
+        let mut level = Vec::new();
+        let mut landing = lands.to_vec();
         let mut pc = start;
         while pc < end {
+            level.push(pc);
             let op = &self.ops[pc as usize];
+            let (destination, count) = op.instruction.flow_target();
             match op.opcode {
                 OpCode::IfC | OpCode::IfU => {
-                    let (destination, count) = op.instruction.flow_target();
                     let (then, otherwise, next) = if_ranges(pc, destination, count);
-                    if next <= pc || next > end || !self.plain(then, depth + 1) || !self.plain(otherwise, depth + 1) {
+                    if next <= pc || next > end || !self.maskable(then, depth + 1, &[]) || !self.maskable(otherwise, depth + 1, &[]) {
                         return false;
                     }
                     pc = next;
+                }
+                OpCode::JmpC | OpCode::JmpU if pc < destination && destination <= end => {
+                    landing.push(destination);
+                    pc += 1;
                 }
                 OpCode::Call
                 | OpCode::CallC
@@ -1224,12 +1499,36 @@ impl Program {
                 _ => pc += 1,
             }
         }
-        true
+        landing.iter().all(|&at| at == end || level.binary_search(&at).is_ok())
+    }
+
+    /// where the lanes that part at a jump ahead from pc to destination all run on together again,
+    /// the furthest the jumps between land, when what they run apart is maskable
+    fn ahead(&self, pc: u32, destination: u32) -> Option<u32> {
+        let mut end = destination;
+        let mut at = pc + 1;
+        while at < end && (at as usize) < PROGRAM_SIZE {
+            let op = &self.ops[at as usize];
+            let (target, count) = op.instruction.flow_target();
+            match op.opcode {
+                OpCode::JmpC | OpCode::JmpU if target > at => end = end.max(target),
+                OpCode::IfC | OpCode::IfU => {
+                    let (_, _, next) = if_ranges(at, target, count);
+                    if next > at {
+                        end = end.max(next);
+                        at = next;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            at += 1;
+        }
+        self.maskable((pc + 1, end), 0, &[destination]).then_some(end)
     }
 }
 
-/// where a flow instruction goes, taken or not, and the frames it is in
-/// then, as the interpreter's blocks would be.
+/// where a flow instruction goes, taken or not, and the frames it's in then, like the interpreter's blocks would be
 fn branch(op: &Op, pc: u32, taken: bool, frames: &[Frame]) -> State {
     let (destination, count) = op.instruction.flow_target();
     let mut frames = frames.to_vec();
@@ -1256,4 +1555,31 @@ fn branch(op: &Op, pc: u32, taken: bool, frames: &[Frame]) -> State {
         _ => pc + 1,
     };
     (next, frames)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// quick code asked for once it shaded HOT batches comes back as is while the program compiles in full, which then takes its place
+    #[test]
+    fn hot_quick_code_is_compiled_again_in_full() {
+        let mut unit = ShaderUnit::new();
+        // mov o5, c77, which no other test runs
+        unit.program[0] = (0x13 << 26) | (0x05 << 21) | ((0x20 + 77) << 12);
+        unit.program[1] = 0x22 << 26;
+        unit.prepare();
+        let program = unit.decoded.clone().expect("prepared");
+        let key = (program.fingerprint, unit.entry_point);
+        let quick = Arc::new(compile(&program, unit.entry_point, Tier::Quick).expect("compiled"));
+        quick.runs.store(HOT, Ordering::Relaxed);
+        codes().insert(key, Slot::Done(Some(quick.clone())));
+        let found = compiled(&unit, &program).expect("the quick code");
+        assert!(Arc::ptr_eq(&found, &quick));
+        let start = std::time::Instant::now();
+        while !matches!(codes().get(&key), Some(Slot::Done(Some(current))) if current.tier == Tier::Full) {
+            assert!(start.elapsed().as_secs() < 60, "never compiled in full");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
 }
