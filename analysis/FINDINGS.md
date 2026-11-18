@@ -870,6 +870,26 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   `+0x163D4` (vertical), Land stop `+0x163C8`, Air speed `+0x163D8` and stop
   `+0x163CC`, each -1..1. 0x00B12218 applies the inversion bits after the
   aim delta each frame; written as soon as the Row is touched.
+- Idol Toss bottom-screen node ownership (your slot 4 of 16 Nov, harness
+  `models`, each node drawn alone). `MenColVisionBt0005` holds the
+  counters and the scenery: `BL_B0000` the Play Coin box, `coin`,
+  `NN_B00010`, `NN_B0006` the NEW bar (Counters); `NN_B0007` the gold
+  pedestal (Fountain); `NN_B0005` the egg rail with its black right edge
+  (Egg queue); `NN_B0002` the curtain, `NN_B0000` a hanging piece and
+  `NN_B0004` the black ground, left off. `MenColVisionBt0006`: `MN_B0000`
+  the water (Fountain), `MN_B0001` the mist, a band 20..304 across that
+  ends at the screen's bottom, left off with the ground it lay on.
+  `MenColVisionBt0002`, five of it: the queued eggs. `Bt0000` the bowl,
+  `Bt0001` its egg and arrow, `Bt0007` the NEW tag. All of them draw in
+  the opaque pass; the translucent pass (0x007C90F8) adds the bowl's
+  orange shading, and is now drawn with the Launcher, the Fountain and
+  the Egg queue only. The rail and the water end at the bottom screen's
+  edges in the meshes themselves, not at a viewport. Node flags poked on
+  the native bottom screen are rewritten each frame; hide nodes inside a
+  replay instead. Windows release rebuilt as `dist/zakuro-kiu-mouse.exe`,
+  SHA-256
+  `bcd4ec2605adfb9eb3a68833c66a2c6670363710d02280c14635b06e3b071f98`; the
+  previous build is `dist/zakuro-kiu-mouse-before-toss-scenery.exe`.
 - Gear top-screen node ownership: `MenEquipUp0000` nodes `NN_U0000` and
   `NN_U0001` are Paper background, `NN_U0027` Silhouette, `NN_U0002` Crest,
   and its remaining nodes Ornaments. `MenEquipUp0001` nodes `NN_U0000`
@@ -2096,3 +2116,84 @@ OPTION_CONTROL_BUTTON 20, Music Gallery 38, Vault Idols/Puzzle/Gift 46–48.
 agrees with the MENUID, then takes the MENUID's Screen, and guesses from
 model names only for MENUIDs with no single Screen. Harness `menuid`
 prints both.
+
+## Idol Toss clipping and egg dragging (16 November)
+
+Restyle Launcher, Fountain and Egg queue on Idol Toss: meshes cut at their
+Placement rectangles → complete meshes drawn through the shown screen.
+Rebind Egg queue on Idol Toss: no pointer input → held Synthetic Touch from
+the queue into the bowl. Acceptance: the Windows GPU replay from slot 4
+moves the first egg into the bowl, changes NEW to 86.4%, and keeps that egg
+inside the bowl after moving and resizing Launcher.
+
+`menu_top.rs` treated the node-isolated Idol groups as cropped Boards: both
+the viewport/projection and the scissor could cut a moving bowl at its hit
+box. Back, Launcher, Fountain and Eggs now use the same full-screen placed
+projection and scissor as other isolated meshes. Counters and Dialog keep
+their text cuts. Eggs remains behind Launcher in draw order, but now takes
+pointer input; a held drag transfers from its Placement to Launcher's when
+it enters that Control, without releasing the native touch. Fountain still
+takes no touches.
+
+A loaded egg remains `MenColVisionBt0002`, the same model as each queued
+egg, so assigning that entire model name to the queue misplaced the loaded
+egg even when the touch succeeded. Its root bone's world matrix (model
+`+0x22C`, skeleton `+0x40`, translation `+0xC`) moves from x=13.5 in the
+queue to about x=0.79 in the bowl. The native orthographic camera maps x to
+`160 + 10*x`; the queue's source Placement starts at x=262. Each egg draws
+only with the group containing its root: Eggs while on that rail, Launcher
+once it leaves. The existing node visibility and native depth ordering
+remain authoritative.
+
+Artifacts: `build/toss-fix/`. The new drag and scissor regressions were
+observed failing before the fix. The final Idol checks pass 9/9; the mouse
+suite passes 97/97 with the pre-existing
+`placed_scripted_text_omits_the_same_colour_offset_copy` failure excluded
+(its test and `font` implementation are unchanged from HEAD). Linux and
+Windows interpreter GPU replays and the Windows installed-library GPU
+replay all consume the first queue egg and show it inside the bowl; image
+assertions detect zero pale egg pixels in the vacated slot and over 1,100
+inside the bowl. Windows uses the frontend's shared-device GPU path. The
+edited Launcher replay also keeps its egg aligned. Physical mouse input
+has not been exercised.
+
+The Windows release was rebuilt and replaced at
+`dist/zakuro-kiu-mouse.exe`; build and distribution SHA-256 both equal
+`74b95da2f84ebbb78f80b8c27788f0042eb45e78846b3e12540ed38f02b467d0`.
+The distributed executable completed its five-frame Windows startup smoke.
+The release link succeeded outside the sandbox after two sandboxed build
+processes were terminated; no delivery blocker remains.
+
+## Hide Idol Toss Launcher and Fountain during the reveal (16 November)
+
+Hide Launcher and Fountain on Idol Toss: both cover the revealed idol →
+both disappear during the top-screen launch/reveal and return to their
+existing placements when egg tossing resumes. Acceptance: saved-state
+replays show both parts while tossing, neither over the revealed idol,
+and both again after dismissing the reveal.
+
+The native state byte at the Idol Toss object `+0x430` drives the timing:
+0 idle, 1 pending launch, 2 launch, 3 waiting for the launch animation,
+4 idol reveal, 5 returning to tossing. `0x0021546C` advances the launch
+states; `0x002155F4` sets phase 5 and restores the tossing input flag.
+Do not use `+0x35 & 0x40`: that means a newly obtained idol, so it would
+miss duplicate idols. Slot 4's object is `0x140439D0`; a native pull and
+release followed by 120 frames reaches phase 4, and A followed by 80
+frames returns to phase 0.
+
+The Idol layout strategy samples phases 2–4 once in `menu_top::begin`.
+`MenuTop::available` excludes only Launcher and Fountain from drawing and
+hit-testing during those phases. Saved editor geometry and visibility
+are preserved. Other groups and Screens keep their existing behavior.
+Artifacts and validation logs are in `build/toss-reveal/`.
+
+Validation: 10 targeted Idol checks pass. The Windows shared-device GPU
+replay with the installed game library passes idle → reveal → returned:
+orange/yellow pixels in the bowl and pedestal probe rectangles are
+[1480, 428] → [0, 0] → [1604, 428]. The distributed Windows executable
+completed its five-frame startup check. Windows release and distribution
+SHA-256 both equal
+`6f6a794042b0727ecdf4de58ebc17410c4efabe39bb2d205944d1d8162419534`.
+Physical mouse testing remains unperformed. The Linux interpreter replay
+captured the corrected reveal but was terminated before its return capture;
+Windows completed all three captures.

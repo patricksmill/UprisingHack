@@ -684,6 +684,13 @@ keep the parent backdrop/layout and replay the dialog separately; its own
 buttons take input while the parent controls are blocked. Physical mouse
 checks cover opening the confirmation and cancelling it with No.
 
+Idol Toss scenery (16 November): the egg queue with its rail, the fountain's
+water and its gold pedestal are back as two decorative layers, Egg queue
+and Fountain, and the bowl has its translucent shading again. The mist and
+the black ground stay off: both end in a straight line where the bottom
+screen did. The pre-existing failure of
+`placed_scripted_text_omits_the_same_colour_offset_copy` is unrelated.
+
 ### Chapter select layout
 
 Chapter select now keeps the top backdrop full-screen and places proportional

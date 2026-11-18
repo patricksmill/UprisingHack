@@ -41,6 +41,7 @@
 //!   mhover <x> <y>                hover over the top screen, in its 400 by 240 pixels
 //!   mfrom <x> <y> [button hash]   hover there using an original bottom-screen point
 //!   mdrag <x0> <y0> <x1> <y1> <frames> drag those native points through the top-screen mapping
+//!   models                        list the menu scene's models by layer, with their mesh nodes and which are off
 //!   layer <index> <x> <y> <w> <h> move/resize a Scripted Menu layer through the editor
 //!   visible <index> <0|1>         hide/show a Scripted Menu editor item, without changing its geometry
 //!   pausevisible <span|center|left|right|corner> <0|1>  hide/show one Pause rule group
@@ -471,6 +472,12 @@ fn main() {
                     if descriptor == 0 || !system.memory.is_readable(descriptor, 0x100) { continue; }
                     let words: Vec<_> = (0..64).map(|i| format!("{:08X}", read32(&mut system, descriptor + i * 4))).collect();
                     println!("  kind {kind:08X} descriptor {descriptor:08X}: {}", words.join(" "));
+                }
+            }
+            "models" => {
+                for (layer, model, name, nodes) in zakuro_core::aim_mouse::scene_models(&mut system) {
+                    let nodes: Vec<String> = nodes.iter().map(|(node, shown)| format!("{node}{}", if *shown { "" } else { "(off)" })).collect();
+                    println!("  layer {layer:#X} {model:08X} {name}: {}", nodes.join(" "));
                 }
             }
             "layers" => {
