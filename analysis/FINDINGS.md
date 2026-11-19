@@ -1563,8 +1563,27 @@ Open questions recorded before any new native Control is built:
   a battle starts, changes nothing. With the face buttons chosen, a held
   Circle Pad moved Pit 0 units in 30 frames (9.9 before) and A, B and Y
   moved him 33: the Action Bindings' Move, Attack (L) and Change View (X)
-  no longer do what they say. State `lp_buttons` in the session's scratch
-  holds it.
+  no longer do what they say.
+- How the scheme is applied, and the port's hold on it (19 Nov):
+  `0x002EEF10(controls)` reads the save's two choices and table and writes
+  the live mapping into the controls object (the global `*0x0029BCAC` =
+  `0x00D636E4`, holding `0x00EF9ED0`; mapping at `+0x3208..+0x35D8`). Both
+  pages' OK call it, as does `0x002BD154` (File Select's, probably at a
+  book's load; not seen headless, the load stalls). Pit takes the mapping
+  at a battle's start or a resume from Pause, not mid-battle. Step 1 in
+  Pause is Options page 3, its card the Pause cursor `+0x67C` (1 Circle
+  Pad, 2 face buttons); Step 2 is page 4 and the button layout page 5. The
+  main menu's Step 1 picks with `0x0021C86C(page, card)`, the card at page
+  `+0x7B`. With the Circle Pad, Step 2 offers Touch Screen, +Control Pad
+  and the face buttons for the reticle. The port (`circle_pad_only`) makes
+  the save the Circle Pad's and the touch screen's at `0x002EEF10`'s
+  entry, puts the Pause cursor back to 1 on page 3, picks card 0 at
+  `0x0021C86C`, and in a battle has the input fold `0x00A4245C` call
+  `0x002EEF10` once for a save still on another scheme (effective from the
+  next resume). Checked in the 0.2.30 probe: two taps or Right on the face
+  buttons card leave Step 1 on the Circle Pad in both pages; face buttons
+  chosen with the hold off and OK pressed with it on gives a Circle Pad
+  that moves Pit 9.9 units; a face buttons battle moves after a resume.
 - The `????` scheme label: a glyph missing from the stand-in font or the
   game's own text. Darkshade's patch extends this page (Step 1 movement,
   Step 2 aim source) and ships RomFS assets for it.
