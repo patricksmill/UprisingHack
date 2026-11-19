@@ -30,8 +30,8 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 138] = [
-    SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2,
+pub const PLACES: [u32; 141] = [
+    SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2, APPLY_CONTROLS, INPUT_FRAME, MOVE_CHOICE_PICK,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
     0x002A3374, 0x002A3470, 0x002A34C8, 0x002A3378, 0x002A3474, 0x002A34CC,
@@ -1271,6 +1271,32 @@ const PAUSE_KEY: u32 = 0x0060DD04;
 /// whether that began now in r6, the pixel in r7 and s16. the touch picks
 /// the option under it, and only one that began now uses it.
 const PAUSE_TOUCH: u32 = 0x0060DD10;
+/// applies Control Configuration's scheme, from the save's choices, to the
+/// controls (0x002EEF10(controls)): at the page's OK and when a save loads.
+/// the save singleton is *0x00D636C4; +0x163EC bit 0 is Step 1, set for
+/// the Circle Pad and clear for the face buttons, and +0x163E8 bits 21-23
+/// Step 2, 0 for the touch screen.
+const APPLY_CONTROLS: u32 = 0x002EEF10;
+const SAVE: u32 = 0x00D636C4;
+const MOVE_WITH: u32 = 0x163EC;
+const MOVE_WITH_CIRCLE_PAD: u8 = 1;
+const AIM_WITH: u32 = 0x163E8;
+const AIM_WITH_BITS: u32 = 0x00E0_0000;
+/// the page of Options that is Control Configuration's Step 1, "Choose how
+/// to move Pit": option 1 the Circle Pad, 2 the face buttons, the right
+/// half of the page.
+const MOVE_CHOICE_PAGE: u32 = 3;
+const FACE_BUTTONS_CHOICE: u32 = 2;
+const FACE_BUTTONS_FROM_X: i32 = 160;
+/// the main menu's Control Configuration picks a Step 1 card, a key or a
+/// touch, with 0x0021C86C(page, card, ...): card 0 the Circle Pad, 1 the
+/// face buttons, kept at page +0x7B.
+const MOVE_CHOICE_PICK: u32 = 0x0021C86C;
+/// the input manager folding the frame's samples (0x00A4245C(manager)),
+/// once a frame, where the game is made to apply its controls again. the
+/// controls object is in the global at *0x0029BCAC.
+const INPUT_FRAME: u32 = 0x00A4245C;
+const CONTROLS: u32 = 0x0029BCAC;
 /// and where it goes on, after both.
 const PAUSE_INPUT_DONE: u32 = 0x0060DD28;
 /// where the main page's touches, 0x00A0867C, and an Options page's,
@@ -1412,6 +1438,14 @@ pub struct AimMouse {
     /// on a PC, without using it, and over none lights none. keys bring the
     /// game's own cursor back until the mouse moves again.
     pub menu_hover: bool,
+    /// the Action Bindings are made for Control Configuration's Circle Pad
+    /// scheme: Pit moved with the Circle Pad, the reticle with the touch
+    /// screen. while set, the game applies that scheme whatever the save
+    /// says, and Step 1's face buttons card cannot be chosen.
+    pub circle_pad_only: bool,
+    /// r0 and lr of the frame's input fold, kept while the game applies its
+    /// controls from there, see reapply_circle_pad.
+    controls_call: Option<[u32; 2]>,
     /// Scripted menus also draw their controls on the top screen.
     pub menus_on_top: bool,
     menu_top: MenuTop,
@@ -1510,6 +1544,8 @@ impl Default for AimMouse {
             vehicle_available: None,
             vehicle_requested: None,
             menu_hover: false,
+            circle_pad_only: true,
+            controls_call: None,
             menus_on_top: true,
             menu_top: MenuTop::default(),
             idol_view: idol_view::IdolView::default(),
@@ -1996,7 +2032,17 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
             power_command(system);
         }
         PAUSE_KEY => pause_key(system),
-        PAUSE_TOUCH => hover_pause(system),
+        PAUSE_TOUCH => {
+            keep_circle_pad_choice(system);
+            hover_pause(system);
+        }
+        APPLY_CONTROLS => apply_circle_pad(system),
+        INPUT_FRAME => reapply_circle_pad(system),
+        MOVE_CHOICE_PICK => {
+            if system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.circle_pad_only) && system.cpu.regs[1] == 1 {
+                system.cpu.regs[1] = 0;
+            }
+        }
         PAUSE_INPUT_DONE => hovered_pause(system),
         PAUSE_TOUCHES | OPTIONS_TOUCHES | PAUSE_OPTION_FOUND | OPTIONS_OPTION_FOUND => {
             if let Some(hovering) = system.aim_mouse.as_mut().and_then(|aim_mouse| aim_mouse.hovering.as_mut()) {
@@ -2296,6 +2342,78 @@ fn pause_key(system: &mut System) {
     }
 }
 
+/// Control Configuration's scheme as the Action Bindings need it, in the
+/// save before the game applies it: an older save's face buttons, or any
+/// chosen since, become the Circle Pad and the touch screen.
+fn apply_circle_pad(system: &mut System) {
+    if !system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.circle_pad_only) {
+        return;
+    }
+    let save = read_word(system, SAVE);
+    if save == 0 || !system.memory.is_writable(save + MOVE_WITH, 1) {
+        return;
+    }
+    let mut moving = [0u8];
+    system.memory.read_bytes(save + MOVE_WITH, &mut moving);
+    system.memory.write_bytes(save + MOVE_WITH, &[moving[0] | MOVE_WITH_CIRCLE_PAD]);
+    let aiming = read_word(system, save + AIM_WITH) & !AIM_WITH_BITS;
+    system.memory.write_bytes(save + AIM_WITH, &aiming.to_le_bytes());
+}
+
+/// a save that already moves Pit with the face buttons, or aims some other
+/// way than the touch screen, has its controls applied again in a battle:
+/// the frame's input fold first calls 0x002EEF10(controls), which comes
+/// back here, where the fold's own r0 and lr are put back. apply_circle_pad
+/// turns the save's choice into the Circle Pad's as it starts, so this
+/// happens once.
+fn reapply_circle_pad(system: &mut System) {
+    let frame = system.frames;
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
+    if let Some([r0, lr]) = aim_mouse.controls_call.take() {
+        (system.cpu.regs[0], system.cpu.regs[14]) = (r0, lr);
+        return;
+    }
+    if !aim_mouse.circle_pad_only || !aim_mouse.in_battle(frame) {
+        return;
+    }
+    let save = read_word(system, SAVE);
+    if save == 0 || !system.memory.is_readable(save + MOVE_WITH, 1) {
+        return;
+    }
+    let mut moving = [0u8];
+    system.memory.read_bytes(save + MOVE_WITH, &mut moving);
+    let circle_pad = moving[0] & MOVE_WITH_CIRCLE_PAD != 0 && read_word(system, save + AIM_WITH) & AIM_WITH_BITS == 0;
+    let global = read_word(system, CONTROLS);
+    let controls = if global == 0 { 0 } else { read_word(system, global) };
+    if circle_pad || controls == 0 {
+        return;
+    }
+    // the save made the Circle Pad's here, a hook on the call's first
+    // instruction not running for a pc a hook set
+    apply_circle_pad(system);
+    let regs = &mut system.cpu.regs;
+    if let Some(aim_mouse) = &mut system.aim_mouse {
+        aim_mouse.controls_call = Some([regs[0], regs[14]]);
+    }
+    regs[0] = controls;
+    regs[14] = INPUT_FRAME;
+    regs[15] = APPLY_CONTROLS;
+}
+
+/// on Step 1 of the pause screen's Control Configuration, the face buttons
+/// card is not picked: keys or a touch that pick it find the Circle Pad
+/// picked again before the page next looks, so it is never used.
+fn keep_circle_pad_choice(system: &mut System) {
+    if !system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.circle_pad_only) {
+        return;
+    }
+    let pause = system.cpu.regs[9];
+    let (state, page, next) = (read_word(system, pause + PAUSE_STATE), read_word(system, pause + OPTIONS_PAGE), read_word(system, pause + OPTIONS_PAGE_NEXT));
+    if state == 7 && page == MOVE_CHOICE_PAGE && next == page && read_word(system, pause + PAUSE_CURSOR) == FACE_BUTTONS_CHOICE {
+        system.memory.write_bytes(pause + PAUSE_CURSOR, &1u32.to_le_bytes());
+    }
+}
+
 /// gives the pause screen's main page or a page of Options the mouse over
 /// it as a touch that is held there, not one that began now, which lights
 /// the option under it without using it. off the menu, nothing is lit. a
@@ -2313,6 +2431,7 @@ fn hover_pause(system: &mut System) {
     let pointer = aim_mouse.pointer.map(|(x, y)| (x as i32, y as i32));
     let pointer = match pointer {
         Some((_, y)) if options && page == CAMERA_PAGE && y < CAMERA_SLIDERS_BELOW => None,
+        Some((x, _)) if options && page == MOVE_CHOICE_PAGE && aim_mouse.circle_pad_only && x >= FACE_BUTTONS_FROM_X => None,
         Some((x, y)) if options && page == VOLUME_PAGE && VOLUME_SLIDERS.contains(&x) => Some((VOLUME_SLIDERS.start() - 1, y)),
         pointer => pointer,
     };
@@ -4069,6 +4188,91 @@ mod tests {
             let delta = [read_word(&mut system, stack + 8), read_word(&mut system, stack + 12)].map(f32::from_bits);
             assert_eq!(delta, expected, "ground flag {ground}");
         }
+    }
+
+    /// whatever the save says, the game applies the Circle Pad scheme, and
+    /// leaves the rest of those words as they were; with circle_pad_only off
+    /// it applies the save's own.
+    #[test]
+    fn controls_apply_the_circle_pad_scheme() {
+        let mut system = armory_test_system();
+        system.memory.map(0x1410_0000, 0x2010_0000, 0x20000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        system.memory.map(0x00D6_3000, 0x2030_0000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        let save: u32 = 0x1410_0000;
+        system.memory.write_bytes(SAVE, &save.to_le_bytes());
+        for (circle_pad_only, moving, aiming) in [(true, 0x41u8, 0x5201_1801u32), (false, 0x40, 0x5241_1801)] {
+            system.aim_mouse = Some(AimMouse { circle_pad_only, ..AimMouse::default() });
+            system.memory.write_bytes(save + MOVE_WITH, &[0x40]);
+            system.memory.write_bytes(save + AIM_WITH, &0x5241_1801u32.to_le_bytes());
+            apply(&mut system, APPLY_CONTROLS);
+            let mut byte = [0u8];
+            system.memory.read_bytes(save + MOVE_WITH, &mut byte);
+            assert_eq!((byte[0], read_word(&mut system, save + AIM_WITH)), (moving, aiming), "circle_pad_only {circle_pad_only}");
+        }
+    }
+
+    /// the main menu's Step 1 picks the Circle Pad for the face buttons card.
+    #[test]
+    fn the_main_menus_step_one_picks_the_circle_pad() {
+        let mut system = armory_test_system();
+        system.aim_mouse = Some(AimMouse::default());
+        for (card, picked) in [(0, 0), (1, 0)] {
+            system.cpu.regs[1] = card;
+            apply(&mut system, MOVE_CHOICE_PICK);
+            assert_eq!(system.cpu.regs[1], picked);
+        }
+        system.aim_mouse = Some(AimMouse { circle_pad_only: false, ..AimMouse::default() });
+        system.cpu.regs[1] = 1;
+        apply(&mut system, MOVE_CHOICE_PICK);
+        assert_eq!(system.cpu.regs[1], 1);
+    }
+
+    /// on Step 1 the face buttons card picked by keys or a touch is put
+    /// back to the Circle Pad; on other pages the cursor is left alone.
+    #[test]
+    fn step_one_keeps_the_circle_pad_picked() {
+        let mut system = armory_test_system();
+        let pause = 0x1400_0000;
+        system.aim_mouse = Some(AimMouse::default());
+        system.cpu.regs[9] = pause;
+        for (page, expected) in [(MOVE_CHOICE_PAGE, 1u32), (4, FACE_BUTTONS_CHOICE)] {
+            system.memory.write_bytes(pause + PAUSE_STATE, &7u32.to_le_bytes());
+            system.memory.write_bytes(pause + OPTIONS_PAGE, &page.to_le_bytes());
+            system.memory.write_bytes(pause + OPTIONS_PAGE_NEXT, &page.to_le_bytes());
+            system.memory.write_bytes(pause + PAUSE_CURSOR, &FACE_BUTTONS_CHOICE.to_le_bytes());
+            keep_circle_pad_choice(&mut system);
+            assert_eq!(read_word(&mut system, pause + PAUSE_CURSOR), expected, "page {page}");
+        }
+    }
+
+    /// in a battle, a save on the face buttons has the game apply its
+    /// controls from the frame's input fold, the save made the Circle
+    /// Pad's first, and the fold goes on with its own r0 and lr after.
+    #[test]
+    fn a_face_buttons_save_is_applied_again_in_a_battle() {
+        let mut system = armory_test_system();
+        system.memory.map(0x1410_0000, 0x2010_0000, 0x20000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        system.memory.map(0x00D6_3000, 0x2030_0000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        system.memory.map(0x0029_B000, 0x2031_0000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        let (save, global, controls): (u32, u32, u32) = (0x1410_0000, 0x1400_0100, 0x1400_0200);
+        system.memory.write_bytes(SAVE, &save.to_le_bytes());
+        system.memory.write_bytes(CONTROLS, &global.to_le_bytes());
+        system.memory.write_bytes(global, &controls.to_le_bytes());
+        system.memory.write_bytes(save + MOVE_WITH, &[0x40]);
+        system.aim_mouse = Some(AimMouse { battle_drawn: Some(0), ..AimMouse::default() });
+        system.frames = 1;
+        (system.cpu.regs[0], system.cpu.regs[14], system.cpu.regs[15]) = (0x1400_0300, 0x0012_3456, INPUT_FRAME);
+        apply(&mut system, INPUT_FRAME);
+        assert_eq!((system.cpu.regs[0], system.cpu.regs[14], system.cpu.regs[15]), (controls, INPUT_FRAME, APPLY_CONTROLS));
+        let mut byte = [0u8];
+        system.memory.read_bytes(save + MOVE_WITH, &mut byte);
+        assert_eq!(byte[0], 0x41, "the save is the Circle Pad's before the game reads it");
+        // back from the call: the fold's own registers, and no second call
+        system.cpu.regs[15] = INPUT_FRAME;
+        apply(&mut system, INPUT_FRAME);
+        assert_eq!((system.cpu.regs[0], system.cpu.regs[14], system.cpu.regs[15]), (0x1400_0300, 0x0012_3456, INPUT_FRAME));
+        apply(&mut system, INPUT_FRAME);
+        assert_eq!(system.cpu.regs[15], INPUT_FRAME, "a Circle Pad save is left alone");
     }
 
     fn panel_quad(bounds: UiBox) -> Vec<u8> {
