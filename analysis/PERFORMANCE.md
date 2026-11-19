@@ -508,3 +508,71 @@ High Refresh Mode presents pictures at the host monitor refresh rate (120/144/24
 - **Stereo 3D**: Both eyes share identical `PictureKind` and $t$ decisions with zero tearing between eyes.
 - **Input & Menus**: Screen Transform and menu hit-testing operate strictly on real frames; In-Game and Scripted Menu clicks land on nominal controls. Per-screen 60 cap mechanism in place.
 - **Settings migration**: Old `frame_interpolation = true` migrates to `high_refresh_mode = true` cleanly.
+
+## File Select replay cost, 19 November 2026
+
+Reported: File Select ran at about half speed. Your slot-1 state
+(`%APPDATA%\zakuro\states\0004000000030100\1.state`, the only state saved by
+Zakuro 0.2.32) at 6×, with your saved File Select layout applied in the harness
+(`layer`/`visible`), 300-frame blocks, alternating builds:
+
+| Build | Best | Median (8 blocks) | Interpreted / 300 frames |
+| --- | --- | --- | --- |
+| before | 8.05 ms | 24.8 ms | 22.2M |
+| after | 4.15 ms | 13.4 ms | 5.2M |
+| menus on top off | 2.9 ms | 6.4 ms | 1.8M |
+
+The laptop's timing swung up to 3× between blocks during the session, so compare
+the builds within this table only. The cost is not resolution-bound: replays
+added about 14 ms at both 1× and 6×.
+
+- File Select replays its scene once per editor layer, 16 a frame (15 with
+  HOME hidden). Hiding layer groups with `visible` showed about 0.7 ms per
+  replay, whatever the replay drew.
+- The text loop 0x00A35638 (lines at 0x00A35750) ran interpreted on every
+  screen. The Cauldron hint's stop (`HINT_CAMERA`, 0x00A35AF4/0x00A35BBC) was
+  inside it, and it was about 56% of the interpreted steps on File Select. The
+  stop is now on the camera call it wraps. At 0x0090A5B4's entry, a
+  `HINT_CAMERA` return address in lr places the projection. At 0x0090A5C8,
+  after 0x0090A56C has copied r1's matrix, it is put back. The loop runs
+  compiled now; `the_text_loop_stays_compiled` checks that no stop returns to it.
+- File Select's eight backdrop mesh groups (editor 8..15) each ran the Board's
+  whole top text pass, which the Board's own replay draws. They now skip
+  `TOP_TEXT`, as split-layer artwork already did.
+- Captures match the old build exactly: File Select (static, a moved layer,
+  hidden layers, a book turning), Solo Hub, Chapter Select, the chapter intro,
+  and the Fiend's Cauldron with the Hint shown and hidden (hiding it changes
+  13,827 pixels, so the moved stop is live).
+- What is left: about 2× the replay-off time. The font function 0x00A36AF8
+  (`FONT_CALL`) is the next-largest interpreted cost (15%). The six bottom
+  Control replays each still run the bottom text pass.
+- Top-only layout: the bottom screen is still drawn natively (target
+  `0x18000000`, dimensions `0x0113F0F0`, the right eye's VRAM at 240×320) and
+  fetched by the presenter. With the fix on File Select (6×, 8 blocks, steady
+  machine): 5.33 ms median as built; 6.28 ms dropping bottom draws as an unseen
+  target; 5.12 ms not fetching the bottom picture; 6.38 ms both. Neither is
+  worth a top-only switch; dropping the draws is slower.
+- Right eye in menu replays: the top's 3D (0x00727C24) draws each layer for
+  the left eye, then turns to target 2 (0x00727E88), draws it again with the
+  camera's +0x74 and flushes a command list, then turns back to 0 at
+  0x00727ED0. With mouse aiming on (the same condition that drops right-eye
+  GPU draws), the game now jumps from 0x00727E88 to 0x00727ED0. fp and r4 are
+  reloaded before their next use; r5, the manager, is still set.
+  Per 300 File Select frames: 6.2M fewer recompiled instructions (2%), GPU
+  command lists 21,000 → 15,000, SVC 0x32 44,537 → 32,537. Best block 4.87 →
+  4.46 ms; medians were lost in machine noise. Captures are identical, except
+  Chapter Select's pulsing Outline cursor and laurel shimmer, which are at most
+  7/255 apart at 1× and 3×, steady from frame 0 to 570: a time-based colour
+  sampled slightly earlier in a shorter frame, not a slower animation.
+- Font stop: every `FONT_CALL` in 0x00A36AF8 (which draws the menus' words)
+  calls 0x005CB24C(text, ...). That function copies the text's 0x64 bytes (size
+  and place at +0x24) to the stack, draws from the copy, writes back
+  +0x2C/+0x30, and returns at 0x005CB2A8. The stop is now at its entry: with a
+  `FONT_DONE` return address in lr, `font` runs as at the call, and a skipped
+  call returns to lr at once. The size is put back at 0x005CB2A8, where it was
+  put back at `FONT_DONE` before. 0x00A36AF8 runs compiled.
+  Interpreted per 300 File Select frames: 5.20M → 3.43M; replay off 1.42M.
+  Times were within the machine's noise (best 5.09 vs 5.20 ms, medians
+  9.29 vs 7.47 ms). Captures are identical on File Select, Solo Hub (heart
+  count), Arms Altar, Gear, Idol Toss, Chapter Select, the chapter intro and
+  the Fiend's Cauldron.
