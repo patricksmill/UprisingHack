@@ -1542,7 +1542,9 @@ impl Menus {
         if let Some((device, title, grid)) = device {
             egui::Grid::new(grid).num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
                 for action in Act::ALL.into_iter().filter(|action| action.on(device)) {
-                    ui.label(action.name());
+                    // held, Walk runs when the keys walk by themselves
+                    let reversed = action == Act::Walk && settings.pc.movement.walk_by_default;
+                    ui.label(if reversed { "Run (hold)" } else { action.name() });
                     for slot in 0..2 {
                         let bound = settings.pc.bindings.sources(device, action).get(slot).copied();
                         let text = match (self.rebinding_action == Some((action, device, slot)), bound) {
@@ -1571,7 +1573,9 @@ impl Menus {
                         .text("Walk speed")
                         .custom_formatter(|lean, _| format!("{:.0}%", lean * 100.0)),
                 )
-                .on_hover_text("How far the movement keys push the stick while Walk is held. Higher is faster; Pit never dashes while walking.");
+                .on_hover_text("How far the movement keys push the stick while walking. Higher is faster; Pit never dashes while walking.");
+                ui.checkbox(&mut settings.pc.movement.walk_by_default, "Walk by default")
+                    .on_hover_text("The movement keys walk by themselves, and holding Run makes Pit run, dash and sprint.");
             }
             let category = if device == Device::KeyboardMouse { Category::KeyboardMouse } else { Category::Controller };
             self.reset_button(ui, settings, category, &format!("Default {}", title.to_lowercase()));

@@ -87,11 +87,14 @@ pub struct Movement {
     /// of standing, dashes and then sprints, which a key's instant full
     /// lean always does. Walk to full lean runs without dashing.
     pub walk_lean: f32,
+    /// the movement keys walk by themselves, and Walk held gives them the
+    /// full lean, so it runs.
+    pub walk_by_default: bool,
 }
 
 impl Default for Movement {
     fn default() -> Self {
-        Movement { walk_lean: 0.5 }
+        Movement { walk_lean: 0.5, walk_by_default: false }
     }
 }
 
@@ -187,6 +190,7 @@ mod tests {
         };
         settings.pc.presentation.hud_scale = 0.9;
         settings.pc.movement.walk_lean = 0.7;
+        settings.pc.movement.walk_by_default = true;
         settings
     }
 
@@ -230,12 +234,15 @@ mod tests {
     fn walk_speed_is_kept_and_bounded() {
         let settings = Settings::parse("volume = 0.4\n").unwrap();
         assert_eq!(settings.pc.movement.walk_lean(), 0.5);
+        assert!(!settings.pc.movement.walk_by_default);
         let mut changed = settings.clone();
         changed.pc.movement.walk_lean = 0.65;
+        changed.pc.movement.walk_by_default = true;
         let back = Settings::parse(&toml::to_string_pretty(&changed).unwrap()).unwrap();
         assert_eq!(back.pc.movement.walk_lean(), 0.65);
+        assert!(back.pc.movement.walk_by_default);
         for (saved, given) in [(1.0, 0.8), (0.0, 0.3)] {
-            assert_eq!(Movement { walk_lean: saved }.walk_lean(), given);
+            assert_eq!(Movement { walk_lean: saved, ..Movement::default() }.walk_lean(), given);
         }
     }
 

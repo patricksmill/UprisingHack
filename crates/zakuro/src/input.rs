@@ -27,8 +27,10 @@ pub struct Keyboard {
     bindings: Option<ActionBindings>,
     actions: Inputs,
     context: Context,
-    /// how far the movement keys lean while Walk is held.
+    /// how far the movement keys lean while walking.
     walk_lean: f32,
+    /// the movement keys walk unless Walk is held, which then runs.
+    walk_by_default: bool,
 }
 
 impl Keyboard {
@@ -59,9 +61,11 @@ impl Keyboard {
         self.context = context;
     }
 
-    /// how far the movement keys lean the circle pad while Walk is held.
-    pub fn set_walk_lean(&mut self, lean: f32) {
+    /// how far the movement keys lean the circle pad while walking, and
+    /// whether they walk by themselves, Walk held then running.
+    pub fn set_walk(&mut self, lean: f32, by_default: bool) {
         self.walk_lean = lean;
+        self.walk_by_default = by_default;
     }
 
     /// lets go of everything, when the game stops seeing the keyboard.
@@ -167,7 +171,9 @@ impl Keyboard {
         if let Some(bindings) = &self.bindings {
             let held = self.actions.held(bindings, self.context);
             state.buttons = held.buttons;
-            [state.circle_x, state.circle_y] = match held.walk {
+            // a Screen's movement is never shortened
+            let walking = self.context == Context::Gameplay && held.walk != self.walk_by_default;
+            [state.circle_x, state.circle_y] = match walking {
                 true => crate::bindings::walk(held.circle, self.walk_lean),
                 false => held.circle,
             };
@@ -272,12 +278,30 @@ mod tests {
         let mut keyboard = Keyboard::new(Keys::default());
         keyboard.set_bindings(Some(ActionBindings::default()));
         keyboard.set_context(Context::Gameplay);
-        keyboard.set_walk_lean(0.6);
+        keyboard.set_walk(0.6, false);
         keyboard.key(PhysicalKey::Code(KeyCode::KeyW), true);
         keyboard.key(PhysicalKey::Code(KeyCode::ShiftLeft), true);
         let state = keyboard.state();
         assert_eq!((state.circle_x, state.circle_y), (0.0, 0.6));
         keyboard.key(PhysicalKey::Code(KeyCode::ShiftLeft), false);
+        assert_eq!(keyboard.state().circle_y, 1.0);
+    }
+
+    /// walking by default, the movement keys walk by themselves and Walk
+    /// held runs; a Screen's movement is never shortened.
+    #[test]
+    fn walking_by_default_reverses_walk() {
+        let mut keyboard = Keyboard::new(Keys::default());
+        keyboard.set_bindings(Some(ActionBindings::default()));
+        keyboard.set_context(Context::Gameplay);
+        keyboard.set_walk(0.6, true);
+        keyboard.key(PhysicalKey::Code(KeyCode::KeyW), true);
+        assert_eq!(keyboard.state().circle_y, 0.6);
+        keyboard.key(PhysicalKey::Code(KeyCode::ShiftLeft), true);
+        assert_eq!(keyboard.state().circle_y, 1.0);
+        keyboard.release();
+        keyboard.set_context(Context::Screens);
+        keyboard.key(PhysicalKey::Code(KeyCode::KeyW), true);
         assert_eq!(keyboard.state().circle_y, 1.0);
     }
 
