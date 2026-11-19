@@ -670,6 +670,8 @@ pub struct Settings {
     pub room_port: u16,
     /// Kid Icarus: Uprising's PC Preferences, shown in its own Options.
     pub pc: crate::preferences::PcPreferences,
+    /// the UprisingHack Window's sections folded shut, as device/section.
+    pub folded_sections: Vec<String>,
 }
 
 impl Default for Settings {
@@ -711,6 +713,7 @@ impl Default for Settings {
             room_name: String::new(),
             room_port: zakuro_core::room::DEFAULT_PORT,
             pc: crate::preferences::PcPreferences::default(),
+            folded_sections: Vec::new(),
         }
     }
 }

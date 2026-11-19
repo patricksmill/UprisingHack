@@ -154,9 +154,27 @@ impl Action {
         self.contexts().contains(&context)
     }
 
-    /// whether a device can hold the action: Walk is the keyboard's alone.
+    /// whether a device can hold the action: Walk is the keyboard's alone,
+    /// Gyro Aim the controller's, whose gyroscope it turns on.
     pub fn on(self, device: Device) -> bool {
-        self != Action::Walk || device == Device::KeyboardMouse
+        match self {
+            Action::Walk => device == Device::KeyboardMouse,
+            Action::GyroAim => device == Device::Controller,
+            _ => true,
+        }
+    }
+
+    /// the part of the UprisingHack Window the action is listed in.
+    pub fn section(self) -> Section {
+        use Action::*;
+        match self {
+            MoveUp | MoveDown | MoveLeft | MoveRight | Walk => Section::Movement,
+            AimUp | AimDown | AimLeft | AimRight | GyroAim => Section::Aim,
+            Attack | UsePower | PowerUp | PowerDown | PowerLeft | PowerRight | ChangeView | Pause => Section::Combat,
+            VehicleAbility | ExitVehicle => Section::Vehicles,
+            NavigateUp | NavigateDown | NavigateLeft | NavigateRight | Confirm | Back | Skip => Section::Screens,
+            PreviousIdol | NextIdol | ZoomIn | ZoomOut => Section::Idols,
+        }
     }
 
     /// whether two actions can be wanted at the same time, so cannot share
@@ -191,6 +209,37 @@ impl Action {
     fn required(self) -> bool {
         use Action::*;
         matches!(self, NavigateUp | NavigateDown | NavigateLeft | NavigateRight | Confirm | Back | Pause)
+    }
+}
+
+/// the groups the UprisingHack Window lists the actions in, in its order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Movement,
+    Aim,
+    Combat,
+    Vehicles,
+    Screens,
+    Idols,
+}
+
+impl Section {
+    pub const ALL: [Section; 6] = [Section::Movement, Section::Aim, Section::Combat, Section::Vehicles, Section::Screens, Section::Idols];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Section::Movement => "Movement",
+            Section::Aim => "Aim",
+            Section::Combat => "Combat",
+            Section::Vehicles => "Vehicles",
+            Section::Screens => "Screens",
+            Section::Idols => "Idols",
+        }
+    }
+
+    /// the section's actions a device can hold, in Action::ALL's order.
+    pub fn actions(self, device: Device) -> impl Iterator<Item = Action> {
+        Action::ALL.into_iter().filter(move |action| action.section() == self && action.on(device))
     }
 }
 
@@ -278,6 +327,10 @@ impl From<StoredBindings> for ActionBindings {
     /// action wanted at the same time already uses.
     fn from(stored: StoredBindings) -> Self {
         let mut bindings = ActionBindings { keyboard_mouse: stored.keyboard_mouse, controller: stored.controller };
+        // an input saved for an action its device no longer holds
+        for device in [Device::KeyboardMouse, Device::Controller] {
+            bindings.map_mut(device).retain(|action, _| action.on(device));
+        }
         let defaults = ActionBindings::default();
         for device in [Device::KeyboardMouse, Device::Controller] {
             for (&action, sources) in defaults.map(device) {
@@ -766,6 +819,36 @@ mod tests {
         let saved = "[keyboard_mouse]\nmove_up = [{ Key = \"KeyW\" }]\n";
         let bindings: ActionBindings = toml::from_str(saved).unwrap();
         assert_eq!(bindings.sources(Device::KeyboardMouse, Action::Walk), &[key(KeyCode::ShiftLeft)]);
+    }
+
+    /// Gyro Aim is the controller's: a key cannot hold it, and one an older
+    /// file saved for it is dropped.
+    #[test]
+    fn gyro_aim_is_controller_only() {
+        let mut bindings = ActionBindings::default();
+        assert_eq!(
+            bindings.assign(Action::GyroAim, 0, key(KeyCode::KeyG), Resolve::Replace),
+            Err(BindError::NotOnDevice(Action::GyroAim))
+        );
+        let saved = "[keyboard_mouse]\ngyro_aim = [{ Key = \"KeyC\" }]\n";
+        let bindings: ActionBindings = toml::from_str(saved).unwrap();
+        assert_eq!(bindings.sources(Device::KeyboardMouse, Action::GyroAim), &[]);
+        assert_eq!(bindings.sources(Device::Controller, Action::GyroAim), &[Source::Pad(Button::LeftTrigger2)]);
+    }
+
+    /// every action is listed once, in its section, on each device that
+    /// holds it.
+    #[test]
+    fn sections_list_every_action_once() {
+        for device in [Device::KeyboardMouse, Device::Controller] {
+            let listed: Vec<Action> = Section::ALL.into_iter().flat_map(|section| section.actions(device)).collect();
+            let expected: Vec<Action> = Action::ALL.into_iter().filter(|action| action.on(device)).collect();
+            assert_eq!(listed.len(), expected.len());
+            assert!(expected.iter().all(|action| listed.contains(action)));
+        }
+        let combat: Vec<Action> = Section::Combat.actions(Device::Controller).collect();
+        assert_eq!(combat.last(), Some(&Action::Pause), "Pause ends Combat");
+        assert_eq!(Section::Aim.actions(Device::KeyboardMouse).count(), 4, "no Gyro Aim on the keyboard");
     }
 
     /// an input used in the same context is a conflict; one used only in

@@ -342,15 +342,13 @@ enum UprisingTab {
     #[default]
     KeyboardMouse,
     Controller,
-    Aiming,
     Presentation,
 }
 
 impl UprisingTab {
-    const ALL: [(Self, &'static str); 4] = [
+    const ALL: [(Self, &'static str); 3] = [
         (Self::KeyboardMouse, "Keyboard and mouse"),
         (Self::Controller, "Controller"),
-        (Self::Aiming, "Aiming and gyro"),
         (Self::Presentation, "Presentation"),
     ];
 }
@@ -1489,8 +1487,8 @@ impl Menus {
 
     /// Kid Icarus's PC Preferences, shown in the UprisingHack window.
     fn kid_icarus(&mut self, ui: &mut egui::Ui, settings: &mut Settings) {
-        use crate::bindings::{Action as Act, Device, Resolve};
-        use crate::preferences::{Category, GyroMode, Movement, Presentation};
+        use crate::bindings::{Device, Resolve, Section};
+        use crate::preferences::{Category, Presentation};
         ui.heading("Kid Icarus: Uprising");
         ui.label(RichText::new("The PC Preferences UprisingHack adds. Escape cancels a binding.").weak());
         if !settings.pc.review.is_empty() {
@@ -1535,38 +1533,85 @@ impl Menus {
         ui.separator();
         let tab = self.uprising_tab;
         let device = match tab {
-            UprisingTab::KeyboardMouse => Some((Device::KeyboardMouse, "Keyboard and mouse", "kiu_keys")),
-            UprisingTab::Controller => Some((Device::Controller, "Controller", "kiu_pad")),
-            _ => None,
+            UprisingTab::KeyboardMouse => Some((Device::KeyboardMouse, "Keyboard and mouse", "keyboard_mouse")),
+            UprisingTab::Controller => Some((Device::Controller, "Controller", "controller")),
+            UprisingTab::Presentation => None,
         };
-        if let Some((device, title, grid)) = device {
-            egui::Grid::new(grid).num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
-                for action in Act::ALL.into_iter().filter(|action| action.on(device)) {
-                    // held, Walk runs when the keys walk by themselves
-                    let reversed = action == Act::Walk && settings.pc.movement.walk_by_default;
-                    ui.label(if reversed { "Run (hold)" } else { action.name() });
-                    for slot in 0..2 {
-                        let bound = settings.pc.bindings.sources(device, action).get(slot).copied();
-                        let text = match (self.rebinding_action == Some((action, device, slot)), bound) {
-                            (true, _) => "press…".to_owned(),
-                            (false, Some(source)) => source.name(),
-                            (false, None) => "—".to_owned(),
-                        };
-                        let button = ui.add_sized([120.0, 20.0], egui::Button::new(text));
-                        if button.clicked() {
-                            self.rebinding_action = Some((action, device, slot));
-                            self.binding_conflict = None;
-                        }
-                        if button.secondary_clicked() && bound.is_some() {
-                            if let Err(error) = settings.pc.bindings.clear(device, action, slot) {
-                                self.message = Some(binding_refused(error));
-                            }
+        if let Some((device, title, key)) = device {
+            for section in Section::ALL {
+                let id = format!("{key}/{}", section.name().to_lowercase());
+                let folded = settings.folded_sections.contains(&id);
+                let response = egui::CollapsingHeader::new(RichText::new(section.name()).strong())
+                    .id_salt(&id)
+                    .open(Some(!folded))
+                    .show(ui, |ui| {
+                        self.binding_rows(ui, settings, device, section, &id);
+                        self.section_settings(ui, settings, device, section);
+                    });
+                // the folds are kept with the settings, across runs
+                if response.header_response.clicked() {
+                    if folded {
+                        settings.folded_sections.retain(|shut| shut != &id);
+                    } else {
+                        settings.folded_sections.push(id);
+                    }
+                }
+            }
+            ui.separator();
+            let category = if device == Device::KeyboardMouse { Category::KeyboardMouse } else { Category::Controller };
+            self.reset_button(ui, settings, category, &format!("Default {}", title.to_lowercase()));
+            ui.label(RichText::new("Right-click a binding to clear it.").weak());
+        }
+        if tab == UprisingTab::Presentation {
+        let shown = &mut settings.pc.presentation;
+        ui.add(egui::Slider::new(&mut shown.hud_scale, Presentation::HUD.0..=Presentation::HUD.1).text("HUD and reticle size"));
+        ui.add(egui::Slider::new(&mut shown.portrait_scale, Presentation::PORTRAIT.0..=Presentation::PORTRAIT.1).text("Portrait size"));
+        self.reset_button(ui, settings, Category::Presentation, "Default presentation");
+        }
+    }
+
+    /// one section's actions on a device: the name, then the primary and
+    /// secondary input, each a button to rebind and right-click to clear.
+    fn binding_rows(&mut self, ui: &mut egui::Ui, settings: &mut Settings, device: crate::bindings::Device, section: crate::bindings::Section, id: &str) {
+        use crate::bindings::Action as Act;
+        // every section's columns as wide, so the inputs line up
+        egui::Grid::new(id).num_columns(3).spacing([12.0, 4.0]).min_col_width(120.0).show(ui, |ui| {
+            for action in section.actions(device) {
+                // held, Walk runs when the keys walk by themselves
+                let reversed = action == Act::Walk && settings.pc.movement.walk_by_default;
+                ui.label(if reversed { "Run (hold)" } else { action.name() });
+                for slot in 0..2 {
+                    let bound = settings.pc.bindings.sources(device, action).get(slot).copied();
+                    let text = match (self.rebinding_action == Some((action, device, slot)), bound) {
+                        (true, _) => "press…".to_owned(),
+                        (false, Some(source)) => source.name(),
+                        (false, None) => "—".to_owned(),
+                    };
+                    let button = ui.add_sized([120.0, 20.0], egui::Button::new(text));
+                    if button.clicked() {
+                        self.rebinding_action = Some((action, device, slot));
+                        self.binding_conflict = None;
+                    }
+                    if button.secondary_clicked() && bound.is_some() {
+                        if let Err(error) = settings.pc.bindings.clear(device, action, slot) {
+                            self.message = Some(binding_refused(error));
                         }
                     }
-                    ui.end_row();
                 }
-            });
-            if device == Device::KeyboardMouse {
+                ui.end_row();
+            }
+        });
+    }
+
+    /// the choices a section has on a device besides its bindings: Walk's
+    /// on the keyboard's Movement, each device's aim feel in its Aim, the
+    /// Idol View's orbit in the keyboard's Idols.
+    fn section_settings(&mut self, ui: &mut egui::Ui, settings: &mut Settings, device: crate::bindings::Device, section: crate::bindings::Section) {
+        use crate::bindings::{Device, Section};
+        use crate::preferences::{GyroMode, Movement};
+        let aim = &mut settings.pc.aim;
+        match (device, section) {
+            (Device::KeyboardMouse, Section::Movement) => {
                 let (low, high) = Movement::WALK_LEAN;
                 ui.add(
                     egui::Slider::new(&mut settings.pc.movement.walk_lean, low..=high)
@@ -1577,39 +1622,33 @@ impl Menus {
                 ui.checkbox(&mut settings.pc.movement.walk_by_default, "Walk by default")
                     .on_hover_text("The movement keys walk by themselves, and holding Run makes Pit run, dash and sprint.");
             }
-            let category = if device == Device::KeyboardMouse { Category::KeyboardMouse } else { Category::Controller };
-            self.reset_button(ui, settings, category, &format!("Default {}", title.to_lowercase()));
-            ui.label(RichText::new("Right-click a binding to clear it.").weak());
-        }
-        if tab == UprisingTab::Aiming {
-            let aim = &mut settings.pc.aim;
-        ui.add(egui::Slider::new(&mut aim.air_mouse_sensitivity, 0.1..=3.0).text("Air Battle mouse sensitivity"));
-        ui.add(egui::Slider::new(&mut aim.land_mouse_sensitivity, 0.1..=3.0).text("Land Battle mouse sensitivity"));
-        ui.add(egui::Slider::new(&mut aim.idol_view_sensitivity, 0.25..=3.0).text("Idol View orbit sensitivity"));
-        ui.add(egui::Slider::new(&mut aim.stick_sensitivity, 0.25..=3.0).text("Right stick sensitivity"));
-        ui.add(egui::Slider::new(&mut aim.dead_zone, 0.0..=0.5).text("Stick dead zone"));
-        ui.horizontal(|ui| {
-            ui.label("Gyro aim");
-            for (mode, name) in [(GyroMode::Off, "Off"), (GyroMode::Always, "Always on"), (GyroMode::Hold, "Hold to aim")] {
-                ui.radio_value(&mut aim.gyro, mode, name);
+            (Device::KeyboardMouse, Section::Aim) => {
+                ui.add(egui::Slider::new(&mut aim.air_mouse_sensitivity, 0.1..=3.0).text("Air Battle mouse sensitivity"));
+                ui.add(egui::Slider::new(&mut aim.land_mouse_sensitivity, 0.1..=3.0).text("Land Battle mouse sensitivity"));
             }
-        });
-        ui.add_enabled(aim.gyro != GyroMode::Off, egui::Slider::new(&mut aim.gyro_sensitivity, 0.25..=4.0).text("Gyro sensitivity"));
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut aim.gyro_invert_x, "Invert gyro horizontally");
-            ui.checkbox(&mut aim.gyro_invert_y, "Invert gyro vertically");
-            if ui.button("Calibrate").on_hover_text("Lay the controller still for a second").clicked() {
-                self.calibrate_gyro = true;
+            (Device::KeyboardMouse, Section::Idols) => {
+                ui.add(egui::Slider::new(&mut aim.idol_view_sensitivity, 0.25..=3.0).text("Idol View orbit sensitivity"));
             }
-        });
-        ui.label(RichText::new(&self.gyro_status).weak());
-        self.reset_button(ui, settings, Category::ReticleCamera, "Default aiming and gyro");
-        }
-        if tab == UprisingTab::Presentation {
-        let shown = &mut settings.pc.presentation;
-        ui.add(egui::Slider::new(&mut shown.hud_scale, Presentation::HUD.0..=Presentation::HUD.1).text("HUD and reticle size"));
-        ui.add(egui::Slider::new(&mut shown.portrait_scale, Presentation::PORTRAIT.0..=Presentation::PORTRAIT.1).text("Portrait size"));
-        self.reset_button(ui, settings, Category::Presentation, "Default presentation");
+            (Device::Controller, Section::Aim) => {
+                ui.add(egui::Slider::new(&mut aim.stick_sensitivity, 0.25..=3.0).text("Right stick sensitivity"));
+                ui.add(egui::Slider::new(&mut aim.dead_zone, 0.0..=0.5).text("Stick dead zone"));
+                ui.horizontal(|ui| {
+                    ui.label("Gyro aim");
+                    for (mode, name) in [(GyroMode::Off, "Off"), (GyroMode::Always, "Always on"), (GyroMode::Hold, "Hold to aim")] {
+                        ui.radio_value(&mut aim.gyro, mode, name);
+                    }
+                });
+                ui.add_enabled(aim.gyro != GyroMode::Off, egui::Slider::new(&mut aim.gyro_sensitivity, 0.25..=4.0).text("Gyro sensitivity"));
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut aim.gyro_invert_x, "Invert gyro horizontally");
+                    ui.checkbox(&mut aim.gyro_invert_y, "Invert gyro vertically");
+                    if ui.button("Calibrate").on_hover_text("Lay the controller still for a second").clicked() {
+                        self.calibrate_gyro = true;
+                    }
+                });
+                ui.label(RichText::new(&self.gyro_status).weak());
+            }
+            _ => {}
         }
     }
 

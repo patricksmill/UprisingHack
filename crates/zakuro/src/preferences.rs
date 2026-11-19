@@ -182,9 +182,10 @@ pub struct PcPreferences {
 /// the Screen that shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
+    /// the keyboard's bindings, the mouse's sensitivities and Walk.
     KeyboardMouse,
+    /// the controller's bindings, its sticks and the gyro.
     Controller,
-    ReticleCamera,
     Presentation,
 }
 
@@ -204,19 +205,12 @@ impl Category {
             }
             Category::Controller => {
                 settings.pc.bindings.controller = defaults.pc.bindings.controller;
-                let (aim, fresh) = (&mut settings.pc.aim, &defaults.pc.aim);
-                aim.stick_sensitivity = fresh.stick_sensitivity;
-                aim.dead_zone = fresh.dead_zone;
-            }
-            Category::ReticleCamera => {
                 let (aim, fresh) = (&mut settings.pc.aim, defaults.pc.aim);
-                // the mouse's and sticks' own choices are on their Screens
+                // the mouse's own choices are the keyboard's
                 *aim = Aim {
                     air_mouse_sensitivity: aim.air_mouse_sensitivity,
                     land_mouse_sensitivity: aim.land_mouse_sensitivity,
                     idol_view_sensitivity: aim.idol_view_sensitivity,
-                    stick_sensitivity: aim.stick_sensitivity,
-                    dead_zone: aim.dead_zone,
                     ..fresh
                 };
             }
@@ -242,6 +236,7 @@ mod tests {
         settings.pc.aim = Aim {
             air_mouse_sensitivity: 2.0,
             land_mouse_sensitivity: 1.5,
+            idol_view_sensitivity: 2.5,
             stick_sensitivity: 1.5,
             dead_zone: 0.3,
             gyro: GyroMode::Hold,
@@ -275,8 +270,10 @@ mod tests {
         assert_eq!(settings.pc.aim.air_mouse_sensitivity, 0.5);
         assert_eq!(settings.pc.aim.land_mouse_sensitivity, 0.5);
         assert_eq!(settings.pc.movement, Movement::default(), "Walk speed is the keyboard's");
+        assert_eq!(settings.pc.aim.idol_view_sensitivity, 1.0);
         assert_eq!(attack(&settings, Device::Controller), Source::Pad(gilrs::Button::West));
         assert_eq!(settings.pc.aim.dead_zone, 0.3);
+        assert_eq!(settings.pc.aim.gyro, GyroMode::Hold, "the gyro is the controller's");
         assert_eq!(settings.keys.a, KeyCode::KeyK, "other titles' console keys are not the PC Preferences");
 
         let mut settings = customised();
@@ -286,8 +283,25 @@ mod tests {
         assert_eq!(attack(&settings, Device::KeyboardMouse), Source::Key(KeyCode::KeyK));
         assert_eq!(settings.pc.aim.air_mouse_sensitivity, 2.0);
         assert_eq!(settings.pc.aim.land_mouse_sensitivity, 1.5);
-        assert_eq!(settings.pc.aim.gyro, GyroMode::Hold, "the gyro is Reticle/Camera's");
+        assert_eq!(settings.pc.aim.gyro, GyroMode::Off, "the gyro is the controller's");
+        assert_eq!(settings.pc.aim.gyro_sensitivity, 1.0);
+        assert_eq!(settings.pc.aim.idol_view_sensitivity, 2.5, "the Idol View's orbit is the mouse's");
         assert_eq!(settings.pc.movement.walk_lean, 0.7);
+        assert_eq!(settings.volume, 0.3);
+    }
+
+    /// the UprisingHack Window's folded sections are kept between runs,
+    /// none folded in a file from before, and no Default button opens them.
+    #[test]
+    fn folded_sections_are_kept() {
+        assert!(Settings::parse("volume = 0.4\n").unwrap().folded_sections.is_empty());
+        let mut settings = customised();
+        settings.folded_sections = vec!["keyboard_mouse/idols".to_owned()];
+        let back = Settings::parse(&toml::to_string_pretty(&settings).unwrap()).unwrap();
+        assert_eq!(back.folded_sections, settings.folded_sections);
+        let mut reset = back.clone();
+        Category::KeyboardMouse.restore_defaults(&mut reset);
+        assert_eq!(reset.folded_sections, settings.folded_sections);
     }
 
     /// an older file's one mouse sensitivity goes to both kinds of battle,
@@ -323,19 +337,6 @@ mod tests {
         for (saved, given) in [(1.0, 0.8), (0.0, 0.3)] {
             assert_eq!(Movement { walk_lean: saved, ..Movement::default() }.walk_lean(), given);
         }
-    }
-
-    /// Reticle/Camera resets the gyro, not the mouse's or sticks' feel.
-    #[test]
-    fn restoring_reticle_camera_resets_the_gyro_only() {
-        let mut settings = customised();
-        Category::ReticleCamera.restore_defaults(&mut settings);
-        assert_eq!(settings.pc.aim.gyro, GyroMode::Off);
-        assert_eq!(settings.pc.aim.gyro_sensitivity, 1.0);
-        assert_eq!(settings.pc.aim.air_mouse_sensitivity, 2.0);
-        assert_eq!(settings.pc.aim.land_mouse_sensitivity, 1.5);
-        assert_eq!(settings.pc.aim.stick_sensitivity, 1.5);
-        assert_eq!(settings.volume, 0.3);
     }
 
     /// a settings file from before the PC Preferences keeps its choices,
