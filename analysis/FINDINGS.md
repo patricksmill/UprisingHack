@@ -126,6 +126,28 @@ pixels being 9.8° of a 45° view. The port widens both limits by 10° while
 the mouse aims on the ground (`PITCH_LIMITS`, `CAPTURED_PITCH_REACH`).
 `0x0034C210` is clamp(s0, s1, s2); `0x0034C248` wraps an angle.
 
+Pit's ground movement (`trace/s8.state`, measured 19 November by stepping
+the Circle Pad and reading Pit's position each frame): his position is the
+vec3 at `0x141FBEA0` (x, y, z; many matrix copies nearby). The game's input
+manager reads the stick through the SDK pad reader (`0x0012D150`: clamp 40
+to 145, then -100..100 and floats ×0.01), so host lean is not the game's.
+Speeds below are units a frame, host lean as Zakuro sends it (×150 raw):
+
+| Stick | Settles at |
+| --- | --- |
+| 0.3 / 0.5 / 0.6 / 0.7 / 0.8 / 0.85 held from rest | 0.19 / 0.34 / 0.42 / 0.49 / 0.78 / 0.87, gaining 0.05 a frame |
+| 1.0 reached in 6 frames or more | 1.00 (run) |
+| 0.88 or more reached within 5 frames of rest | dash: 2.72, easing to a 1.60 sprint held at full lean |
+| from a held 0.5 or 0.7 straight to 1.0 | 1.00 (run), no dash |
+
+A movement key's instant full lean always dashes; diagonals lean per
+axis, so 0.6/0.6 (length 0.85) behaves as 0.85. The Walk action
+shortens the keys' vector to the Walk speed preference
+(`Movement::walk_lean`, default 0.5, kept within 0.3..0.8 so Pit moves past
+the dead zone and stays short of a dash).
+`trace/` states are Zakuro 0.2.30 and do not load in 0.2.32; these runs
+used a probe built against the 0.2.30 tree.
+
 ## Still to find
 
 - the lens virtual that fills the projection (camera+4, vtable+8)

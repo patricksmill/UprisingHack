@@ -96,6 +96,10 @@ _Avoid_: Flight mouse, absolute look, air cursor
 Delta mouse look with camera box containment collapsed for third-person ground combat.
 _Avoid_: Ground aiming, relative mouse, ground turn
 
+**Walk**:
+A held keyboard Action Binding that leans the Circle Pad only part way while the movement keys are down, so Pit walks in a battle instead of dashing and sprinting. Controllers have none; the stick leans as far as it is pushed.
+_Avoid_: Sneak, slow mode, sprint toggle
+
 **Synthetic Touch**:
 Stylus touch state synthesized from the host pointer and mouse buttons (touching, began, x, y).
 _Avoid_: Virtual touch, mouse emulation, fake stylus
