@@ -1490,7 +1490,7 @@ impl Menus {
     /// Kid Icarus's PC Preferences, shown in the UprisingHack window.
     fn kid_icarus(&mut self, ui: &mut egui::Ui, settings: &mut Settings) {
         use crate::bindings::{Action as Act, Device, Resolve};
-        use crate::preferences::{Category, GyroMode, Presentation};
+        use crate::preferences::{Category, GyroMode, Movement, Presentation};
         ui.heading("Kid Icarus: Uprising");
         ui.label(RichText::new("The PC Preferences UprisingHack adds. Escape cancels a binding.").weak());
         if !settings.pc.review.is_empty() {
@@ -1541,7 +1541,7 @@ impl Menus {
         };
         if let Some((device, title, grid)) = device {
             egui::Grid::new(grid).num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
-                for action in Act::ALL {
+                for action in Act::ALL.into_iter().filter(|action| action.on(device)) {
                     ui.label(action.name());
                     for slot in 0..2 {
                         let bound = settings.pc.bindings.sources(device, action).get(slot).copied();
@@ -1564,6 +1564,15 @@ impl Menus {
                     ui.end_row();
                 }
             });
+            if device == Device::KeyboardMouse {
+                let (low, high) = Movement::WALK_LEAN;
+                ui.add(
+                    egui::Slider::new(&mut settings.pc.movement.walk_lean, low..=high)
+                        .text("Walk speed")
+                        .custom_formatter(|lean, _| format!("{:.0}%", lean * 100.0)),
+                )
+                .on_hover_text("How far the movement keys push the stick while Walk is held. Higher is faster; Pit never dashes while walking.");
+            }
             let category = if device == Device::KeyboardMouse { Category::KeyboardMouse } else { Category::Controller };
             self.reset_button(ui, settings, category, &format!("Default {}", title.to_lowercase()));
             ui.label(RichText::new("Right-click a binding to clear it.").weak());
@@ -1625,6 +1634,7 @@ impl Menus {
 fn binding_refused(error: crate::bindings::BindError) -> String {
     match error {
         crate::bindings::BindError::Required(action) => format!("{} must keep an input on each device.", action.name()),
+        crate::bindings::BindError::NotOnDevice(action) => format!("{} takes keyboard and mouse inputs only.", action.name()),
         crate::bindings::BindError::NoSuchSlot => "There are two inputs an action.".to_owned(),
     }
 }

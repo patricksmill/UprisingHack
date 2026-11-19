@@ -77,11 +77,41 @@ impl Presentation {
     pub const PORTRAIT: (f32, f32) = (0.0, 1.0);
 }
 
+/// moving Pit with the keyboard.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Movement {
+    /// how far the movement keys lean the circle pad while Walk is held.
+    /// Pit, measured on a ground battle: 0.5 settles at about a third of
+    /// his running speed; about 0.86 or more, reached within five frames
+    /// of standing, dashes and then sprints, which a key's instant full
+    /// lean always does. Walk to full lean runs without dashing.
+    pub walk_lean: f32,
+}
+
+impl Default for Movement {
+    fn default() -> Self {
+        Movement { walk_lean: 0.5 }
+    }
+}
+
+impl Movement {
+    /// below 0.3 the console's dead zone keeps Pit still; above 0.8 he
+    /// comes near dashing.
+    pub const WALK_LEAN: (f32, f32) = (0.3, 0.8);
+
+    /// the lean Walk gives, within WALK_LEAN whatever the file says.
+    pub fn walk_lean(&self) -> f32 {
+        self.walk_lean.clamp(Self::WALK_LEAN.0, Self::WALK_LEAN.1)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PcPreferences {
     pub aim: Aim,
     pub presentation: Presentation,
+    pub movement: Movement,
     pub bindings: ActionBindings,
     /// the console buttons an older settings file changed that have no
     /// single action, kept until the player has seen them.
@@ -109,6 +139,7 @@ impl Category {
                 let aim = &mut settings.pc.aim;
                 aim.mouse_sensitivity = defaults.pc.aim.mouse_sensitivity;
                 aim.idol_view_sensitivity = defaults.pc.aim.idol_view_sensitivity;
+                settings.pc.movement = defaults.pc.movement;
             }
             Category::Controller => {
                 settings.pc.bindings.controller = defaults.pc.bindings.controller;
@@ -155,6 +186,7 @@ mod tests {
             ..Aim::default()
         };
         settings.pc.presentation.hud_scale = 0.9;
+        settings.pc.movement.walk_lean = 0.7;
         settings
     }
 
@@ -177,6 +209,7 @@ mod tests {
         Category::KeyboardMouse.restore_defaults(&mut settings);
         assert_eq!(attack(&settings, Device::KeyboardMouse), Source::Mouse(winit::event::MouseButton::Left));
         assert_eq!(settings.pc.aim.mouse_sensitivity, 0.5);
+        assert_eq!(settings.pc.movement, Movement::default(), "Walk speed is the keyboard's");
         assert_eq!(attack(&settings, Device::Controller), Source::Pad(gilrs::Button::West));
         assert_eq!(settings.pc.aim.dead_zone, 0.3);
         assert_eq!(settings.keys.a, KeyCode::KeyK, "other titles' console keys are not the PC Preferences");
@@ -188,6 +221,22 @@ mod tests {
         assert_eq!(attack(&settings, Device::KeyboardMouse), Source::Key(KeyCode::KeyK));
         assert_eq!(settings.pc.aim.mouse_sensitivity, 2.0);
         assert_eq!(settings.pc.aim.gyro, GyroMode::Hold, "the gyro is Reticle/Camera's");
+        assert_eq!(settings.pc.movement.walk_lean, 0.7);
+    }
+
+    /// Walk's lean is kept, comes as half from a file without it, and stays
+    /// short of a dash and past the dead zone whatever a file says.
+    #[test]
+    fn walk_speed_is_kept_and_bounded() {
+        let settings = Settings::parse("volume = 0.4\n").unwrap();
+        assert_eq!(settings.pc.movement.walk_lean(), 0.5);
+        let mut changed = settings.clone();
+        changed.pc.movement.walk_lean = 0.65;
+        let back = Settings::parse(&toml::to_string_pretty(&changed).unwrap()).unwrap();
+        assert_eq!(back.pc.movement.walk_lean(), 0.65);
+        for (saved, given) in [(1.0, 0.8), (0.0, 0.3)] {
+            assert_eq!(Movement { walk_lean: saved }.walk_lean(), given);
+        }
     }
 
     /// Reticle/Camera resets the gyro, not the mouse's or sticks' feel.

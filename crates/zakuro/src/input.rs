@@ -27,6 +27,8 @@ pub struct Keyboard {
     bindings: Option<ActionBindings>,
     actions: Inputs,
     context: Context,
+    /// how far the movement keys lean while Walk is held.
+    walk_lean: f32,
 }
 
 impl Keyboard {
@@ -55,6 +57,11 @@ impl Keyboard {
     /// inputs pressed from now on.
     pub fn set_context(&mut self, context: Context) {
         self.context = context;
+    }
+
+    /// how far the movement keys lean the circle pad while Walk is held.
+    pub fn set_walk_lean(&mut self, lean: f32) {
+        self.walk_lean = lean;
     }
 
     /// lets go of everything, when the game stops seeing the keyboard.
@@ -160,7 +167,10 @@ impl Keyboard {
         if let Some(bindings) = &self.bindings {
             let held = self.actions.held(bindings, self.context);
             state.buttons = held.buttons;
-            [state.circle_x, state.circle_y] = held.circle;
+            [state.circle_x, state.circle_y] = match held.walk {
+                true => crate::bindings::walk(held.circle, self.walk_lean),
+                false => held.circle,
+            };
             [state.c_stick_x, state.c_stick_y] = held.c_stick;
         }
         state
@@ -253,6 +263,22 @@ mod tests {
         assert_eq!(prompts.get(Input::CirclePad), &Label::Key("IJKL".into()));
         keys.a = KeyCode::Space;
         assert_eq!(super::prompts(&keys).get(Input::A), &Label::Key("Space".into()));
+    }
+
+    /// with Walk held in a battle the movement keys lean as far as Walk
+    /// speed says; letting go of Walk leans them all the way.
+    #[test]
+    fn walk_leans_the_movement_keys_to_its_speed() {
+        let mut keyboard = Keyboard::new(Keys::default());
+        keyboard.set_bindings(Some(ActionBindings::default()));
+        keyboard.set_context(Context::Gameplay);
+        keyboard.set_walk_lean(0.6);
+        keyboard.key(PhysicalKey::Code(KeyCode::KeyW), true);
+        keyboard.key(PhysicalKey::Code(KeyCode::ShiftLeft), true);
+        let state = keyboard.state();
+        assert_eq!((state.circle_x, state.circle_y), (0.0, 0.6));
+        keyboard.key(PhysicalKey::Code(KeyCode::ShiftLeft), false);
+        assert_eq!(keyboard.state().circle_y, 1.0);
     }
 
     #[test]

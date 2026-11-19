@@ -30,6 +30,10 @@ pub enum Action {
     MoveDown,
     MoveLeft,
     MoveRight,
+    /// held, the movement keys lean the circle pad only part way, so Pit
+    /// walks instead of dashing and sprinting. Keyboard only: a stick
+    /// already leans as far as it is pushed.
+    Walk,
     AimUp,
     AimDown,
     AimLeft,
@@ -65,11 +69,12 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 30] = [
+    pub const ALL: [Action; 31] = [
         Action::MoveUp,
         Action::MoveDown,
         Action::MoveLeft,
         Action::MoveRight,
+        Action::Walk,
         Action::AimUp,
         Action::AimDown,
         Action::AimLeft,
@@ -104,6 +109,7 @@ impl Action {
             Action::MoveDown => "Move Back",
             Action::MoveLeft => "Move Left",
             Action::MoveRight => "Move Right",
+            Action::Walk => "Walk (hold)",
             Action::AimUp => "Aim Up",
             Action::AimDown => "Aim Down",
             Action::AimLeft => "Aim Left",
@@ -146,6 +152,11 @@ impl Action {
 
     pub fn active(self, context: Context) -> bool {
         self.contexts().contains(&context)
+    }
+
+    /// whether a device can hold the action: Walk is the keyboard's alone.
+    pub fn on(self, device: Device) -> bool {
+        self != Action::Walk || device == Device::KeyboardMouse
     }
 
     /// whether two actions can be wanted at the same time, so cannot share
@@ -235,6 +246,8 @@ pub enum BindError {
     NoSuchSlot,
     /// taking it would leave a Screen or battle unreachable from the device.
     Required(Action),
+    /// the action takes no input from that device.
+    NotOnDevice(Action),
 }
 
 /// each action's primary and secondary input, one map a device.
@@ -287,6 +300,7 @@ impl Default for ActionBindings {
             (MoveDown, vec![key(KeyCode::KeyS)]),
             (MoveLeft, vec![key(KeyCode::KeyA)]),
             (MoveRight, vec![key(KeyCode::KeyD)]),
+            (Walk, vec![key(KeyCode::ShiftLeft)]),
             (Attack, vec![Source::Mouse(MouseButton::Left), key(KeyCode::Space)]),
             (UsePower, vec![key(KeyCode::KeyE), Source::Mouse(MouseButton::Right)]),
             (PowerUp, vec![key(KeyCode::ArrowUp)]),
@@ -374,6 +388,9 @@ impl ActionBindings {
             return Err(BindError::NoSuchSlot);
         }
         let device = source.device();
+        if !action.on(device) {
+            return Err(BindError::NotOnDevice(action));
+        }
         let previous = self.sources(device, action).get(slot).copied();
         let conflicts = self.conflicts(action, source);
         let mut next = self.clone();
@@ -488,6 +505,16 @@ impl ActionBindings {
     }
 }
 
+/// the movement keys' lean shortened to Walk's, the length and not each
+/// axis so a diagonal walks no faster.
+pub fn walk(circle: [f32; 2], lean: f32) -> [f32; 2] {
+    let length = circle[0].hypot(circle[1]);
+    if length == 0.0 {
+        return circle;
+    }
+    circle.map(|axis| axis * lean / length)
+}
+
 /// the console's input the held inputs make in a context: its buttons and
 /// the circle pad and C-stick as keys push them.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -496,6 +523,8 @@ pub struct Held {
     pub circle: [f32; 2],
     pub c_stick: [f32; 2],
     pub gyro_aim: bool,
+    /// Walk is held: the circle pad is for walk to shorten.
+    pub walk: bool,
 }
 
 /// the inputs held now, on both devices, each with the context it was
@@ -557,6 +586,7 @@ impl Inputs {
             circle: [axis(Action::MoveRight, Action::MoveLeft), axis(Action::MoveUp, Action::MoveDown)],
             c_stick: [axis(Action::AimRight, Action::AimLeft), axis(Action::AimUp, Action::AimDown)],
             gyro_aim: on(Action::GyroAim),
+            walk: on(Action::Walk),
         }
     }
 }
@@ -700,6 +730,42 @@ mod tests {
         let mut inputs = Inputs::default();
         inputs.press(&bindings, key(KeyCode::KeyS), Context::Screens);
         assert_eq!(inputs.held(&bindings, Context::Screens).circle, [0.0, -1.0]);
+    }
+
+    /// Walk is held in a battle only, and shortens a lean to its length,
+    /// diagonals included, keeping no lean none.
+    #[test]
+    fn walk_shortens_the_lean() {
+        let bindings = ActionBindings::default();
+        let mut inputs = Inputs::default();
+        inputs.press(&bindings, key(KeyCode::ShiftLeft), Context::Gameplay);
+        assert!(inputs.held(&bindings, Context::Gameplay).walk);
+        inputs.release(key(KeyCode::ShiftLeft));
+        assert!(!inputs.held(&bindings, Context::Gameplay).walk);
+        inputs.press(&bindings, key(KeyCode::ShiftLeft), Context::Screens);
+        assert!(!inputs.held(&bindings, Context::Screens).walk, "a Screen's movement is never shortened");
+
+        assert_eq!(walk([0.0, 0.0], 0.5), [0.0, 0.0], "Walk alone does not move");
+        assert_eq!(walk([0.0, 1.0], 0.5), [0.0, 0.5]);
+        let [x, y] = walk([1.0, 1.0], 0.5);
+        assert!((x.hypot(y) - 0.5).abs() < 1e-6 && (x - y).abs() < 1e-6, "diagonal {x}, {y}");
+    }
+
+    /// Walk is the keyboard's: no controller input can be given to it, and
+    /// a saved file from before it gets Shift.
+    #[test]
+    fn walk_is_keyboard_only() {
+        let mut bindings = ActionBindings::default();
+        assert_eq!(bindings.sources(Device::Controller, Action::Walk), &[]);
+        assert_eq!(
+            bindings.assign(Action::Walk, 0, Source::Pad(Button::LeftThumb), Resolve::Replace),
+            Err(BindError::NotOnDevice(Action::Walk))
+        );
+        bindings.assign(Action::Walk, 0, key(KeyCode::KeyC), Resolve::Replace).unwrap();
+        assert_eq!(bindings.sources(Device::KeyboardMouse, Action::Walk), &[key(KeyCode::KeyC)]);
+        let saved = "[keyboard_mouse]\nmove_up = [{ Key = \"KeyW\" }]\n";
+        let bindings: ActionBindings = toml::from_str(saved).unwrap();
+        assert_eq!(bindings.sources(Device::KeyboardMouse, Action::Walk), &[key(KeyCode::ShiftLeft)]);
     }
 
     /// an input used in the same context is a conflict; one used only in

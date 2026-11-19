@@ -2365,6 +2365,7 @@ impl App {
             aim_mouse.widen = top_width / 400.0;
             battle = aim_mouse.in_battle(game.system.frames);
             self.keyboard.set_context(if battle { bindings::Context::Gameplay } else { bindings::Context::Screens });
+            self.keyboard.set_walk_lean(self.settings.pc.movement.walk_lean());
         }
         let aim = &self.settings.pc.aim;
         let sticks = match self.keyboard.acting() {
