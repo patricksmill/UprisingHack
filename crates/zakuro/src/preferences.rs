@@ -40,6 +40,13 @@ pub struct Aim {
     pub gyro_sensitivity: f32,
     pub gyro_invert_x: bool,
     pub gyro_invert_y: bool,
+    /// the mouse's aim turned the other way, in both kinds of battle. the
+    /// game's own Invert reaches only the stylus.
+    pub mouse_invert_x: bool,
+    pub mouse_invert_y: bool,
+    /// and the right stick's.
+    pub stick_invert_x: bool,
+    pub stick_invert_y: bool,
 }
 
 /// aiming as saved, which may have one mouse sensitivity for both kinds
@@ -57,6 +64,10 @@ struct StoredAim {
     gyro_sensitivity: f32,
     gyro_invert_x: bool,
     gyro_invert_y: bool,
+    mouse_invert_x: bool,
+    mouse_invert_y: bool,
+    stick_invert_x: bool,
+    stick_invert_y: bool,
 }
 
 impl Default for StoredAim {
@@ -73,6 +84,10 @@ impl Default for StoredAim {
             gyro_sensitivity: aim.gyro_sensitivity,
             gyro_invert_x: aim.gyro_invert_x,
             gyro_invert_y: aim.gyro_invert_y,
+            mouse_invert_x: aim.mouse_invert_x,
+            mouse_invert_y: aim.mouse_invert_y,
+            stick_invert_x: aim.stick_invert_x,
+            stick_invert_y: aim.stick_invert_y,
         }
     }
 }
@@ -92,6 +107,10 @@ impl From<StoredAim> for Aim {
             gyro_sensitivity: stored.gyro_sensitivity,
             gyro_invert_x: stored.gyro_invert_x,
             gyro_invert_y: stored.gyro_invert_y,
+            mouse_invert_x: stored.mouse_invert_x,
+            mouse_invert_y: stored.mouse_invert_y,
+            stick_invert_x: stored.stick_invert_x,
+            stick_invert_y: stored.stick_invert_y,
         }
     }
 }
@@ -108,6 +127,10 @@ impl Default for Aim {
             gyro_sensitivity: 1.0,
             gyro_invert_x: false,
             gyro_invert_y: false,
+            mouse_invert_x: false,
+            mouse_invert_y: false,
+            stick_invert_x: false,
+            stick_invert_y: false,
         }
     }
 }
@@ -201,6 +224,8 @@ impl Category {
                 aim.air_mouse_sensitivity = defaults.pc.aim.air_mouse_sensitivity;
                 aim.land_mouse_sensitivity = defaults.pc.aim.land_mouse_sensitivity;
                 aim.idol_view_sensitivity = defaults.pc.aim.idol_view_sensitivity;
+                aim.mouse_invert_x = defaults.pc.aim.mouse_invert_x;
+                aim.mouse_invert_y = defaults.pc.aim.mouse_invert_y;
                 settings.pc.movement = defaults.pc.movement;
             }
             Category::Controller => {
@@ -211,6 +236,8 @@ impl Category {
                     air_mouse_sensitivity: aim.air_mouse_sensitivity,
                     land_mouse_sensitivity: aim.land_mouse_sensitivity,
                     idol_view_sensitivity: aim.idol_view_sensitivity,
+                    mouse_invert_x: aim.mouse_invert_x,
+                    mouse_invert_y: aim.mouse_invert_y,
                     ..fresh
                 };
             }
@@ -241,6 +268,8 @@ mod tests {
             dead_zone: 0.3,
             gyro: GyroMode::Hold,
             gyro_sensitivity: 2.0,
+            mouse_invert_x: true,
+            stick_invert_y: true,
             ..Aim::default()
         };
         settings.pc.presentation.hud_scale = 0.9;
@@ -271,6 +300,8 @@ mod tests {
         assert_eq!(settings.pc.aim.land_mouse_sensitivity, 0.5);
         assert_eq!(settings.pc.movement, Movement::default(), "Walk speed is the keyboard's");
         assert_eq!(settings.pc.aim.idol_view_sensitivity, 1.0);
+        assert!(!settings.pc.aim.mouse_invert_x, "the mouse's inversion is the keyboard's");
+        assert!(settings.pc.aim.stick_invert_y, "the stick's is the controller's");
         assert_eq!(attack(&settings, Device::Controller), Source::Pad(gilrs::Button::West));
         assert_eq!(settings.pc.aim.dead_zone, 0.3);
         assert_eq!(settings.pc.aim.gyro, GyroMode::Hold, "the gyro is the controller's");
@@ -286,6 +317,8 @@ mod tests {
         assert_eq!(settings.pc.aim.gyro, GyroMode::Off, "the gyro is the controller's");
         assert_eq!(settings.pc.aim.gyro_sensitivity, 1.0);
         assert_eq!(settings.pc.aim.idol_view_sensitivity, 2.5, "the Idol View's orbit is the mouse's");
+        assert!(settings.pc.aim.mouse_invert_x);
+        assert!(!settings.pc.aim.stick_invert_y);
         assert_eq!(settings.pc.movement.walk_lean, 0.7);
         assert_eq!(settings.volume, 0.3);
     }

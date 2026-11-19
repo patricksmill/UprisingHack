@@ -924,7 +924,8 @@ impl ApplicationHandler for App {
             if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
                 // scaled as the game takes it, by the kind of battle then
                 aim_mouse.sensitivity = [aim.air_mouse_sensitivity, aim.land_mouse_sensitivity];
-                aim_mouse.add(delta.0 as f32, delta.1 as f32);
+                let flip = |invert: bool| if invert { -1.0 } else { 1.0 };
+                aim_mouse.add(delta.0 as f32 * flip(aim.mouse_invert_x), delta.1 as f32 * flip(aim.mouse_invert_y));
             }
         }
     }
@@ -2372,7 +2373,11 @@ impl App {
         }
         let aim = &self.settings.pc.aim;
         let sticks = match self.keyboard.acting() {
-            true => gamepad::Sticks { dead_zone: aim.dead_zone, right_scale: aim.stick_sensitivity },
+            true => gamepad::Sticks {
+                dead_zone: aim.dead_zone,
+                right_scale: aim.stick_sensitivity,
+                right_invert: [aim.stick_invert_x, aim.stick_invert_y],
+            },
             false => gamepad::Sticks::default(),
         };
         let input = match &mut game.replay {

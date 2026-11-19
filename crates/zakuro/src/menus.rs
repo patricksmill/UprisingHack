@@ -1625,6 +1625,10 @@ impl Menus {
             (Device::KeyboardMouse, Section::Aim) => {
                 ui.add(egui::Slider::new(&mut aim.air_mouse_sensitivity, 0.1..=3.0).text("Air Battle mouse sensitivity"));
                 ui.add(egui::Slider::new(&mut aim.land_mouse_sensitivity, 0.1..=3.0).text("Land Battle mouse sensitivity"));
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut aim.mouse_invert_x, "Invert mouse horizontally");
+                    ui.checkbox(&mut aim.mouse_invert_y, "Invert mouse vertically");
+                });
             }
             (Device::KeyboardMouse, Section::Idols) => {
                 ui.add(egui::Slider::new(&mut aim.idol_view_sensitivity, 0.25..=3.0).text("Idol View orbit sensitivity"));
@@ -1632,6 +1636,10 @@ impl Menus {
             (Device::Controller, Section::Aim) => {
                 ui.add(egui::Slider::new(&mut aim.stick_sensitivity, 0.25..=3.0).text("Right stick sensitivity"));
                 ui.add(egui::Slider::new(&mut aim.dead_zone, 0.0..=0.5).text("Stick dead zone"));
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut aim.stick_invert_x, "Invert right stick horizontally");
+                    ui.checkbox(&mut aim.stick_invert_y, "Invert right stick vertically");
+                });
                 ui.horizontal(|ui| {
                     ui.label("Gyro aim");
                     for (mode, name) in [(GyroMode::Off, "Off"), (GyroMode::Always, "Always on"), (GyroMode::Hold, "Hold to aim")] {

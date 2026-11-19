@@ -56,11 +56,13 @@ pub struct Gamepads {
 pub struct Sticks {
     pub dead_zone: f32,
     pub right_scale: f32,
+    /// the right stick turned the other way, across and up and down.
+    pub right_invert: [bool; 2],
 }
 
 impl Default for Sticks {
     fn default() -> Self {
-        Sticks { dead_zone: DEADZONE, right_scale: 1.0 }
+        Sticks { dead_zone: DEADZONE, right_scale: 1.0, right_invert: [false; 2] }
     }
 }
 
@@ -256,7 +258,8 @@ fn lean_sticks(state: &mut InputState, left: [f32; 2], right: [f32; 2], sticks: 
         (state.circle_x, state.circle_y) = (x, y);
     }
     if let Some((x, y)) = lean((right[0], right[1]), sticks.dead_zone, sticks.right_scale) {
-        (state.c_stick_x, state.c_stick_y) = (x, y);
+        let flip = |invert: bool| if invert { -1.0 } else { 1.0 };
+        (state.c_stick_x, state.c_stick_y) = (x * flip(sticks.right_invert[0]), y * flip(sticks.right_invert[1]));
     }
 }
 
@@ -339,6 +342,18 @@ mod tests {
         let applied = gamepads.apply(state, Sticks::default(), false);
         assert_eq!(applied.buttons, PadState::A);
         assert_eq!((applied.circle_x, applied.circle_y, applied.touch), (1.0, 0.0, Some((1, 2))));
+    }
+
+    /// the right stick turns the other way on an inverted axis, and the
+    /// left stick never does.
+    #[test]
+    fn the_right_stick_inverts_per_axis() {
+        let sticks = Sticks { dead_zone: 0.0, right_scale: 1.0, right_invert: [true, false] };
+        let mut state = InputState::default();
+        lean_sticks(&mut state, [0.5, 0.5], [0.5, 0.5], sticks);
+        assert!(state.circle_x > 0.0 && state.circle_y > 0.0);
+        assert!(state.c_stick_x < 0.0 && state.c_stick_y > 0.0);
+        assert_eq!(state.c_stick_x, -state.c_stick_y);
     }
 
     /// a prompt shows the controller button the console's is bound to, by
