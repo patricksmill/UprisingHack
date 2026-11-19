@@ -30,7 +30,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 136] = [
+pub const PLACES: [u32; 138] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -74,8 +74,10 @@ pub const PLACES: [u32; 136] = [
     menu_top::SCISSOR_DONE,
     menu_top::BOTTOM_TEXT,
     menu_top::BOTTOM_TRANSLUCENT,
-    menu_top::FONT_CALL[0],
-    HINT_CAMERA[0],
+    menu_top::FONT_DRAW,
+    menu_top::FONT_DRAWN,
+    CAMERA_CALL,
+    RIGHT_EYE_LAYER,
     menu_top::START,
     menu_top::FINISHED,
     menu_top::CIRCLE_SHADOW_DRAW,
@@ -819,10 +821,23 @@ const TOP_LAYER: u32 = 0xB;
 const TOP_TEXT: u32 = 0x00727F10;
 const TOP_TEXT_DRAWN: u32 = 0x00727F14;
 
+/// in the top's 3D (0x00727C24), each layer drawn for the left eye: where it
+/// turns to the right eye (target 2) to draw the layer again, and where it
+/// turns back to the left. the right eye is never shown (its draws are
+/// dropped as RIGHT_EYE), so the game skips building it: each menu replay
+/// built every layer twice.
+const RIGHT_EYE_LAYER: u32 = 0x00727E88;
+const LEFT_EYE_AGAIN: u32 = 0x00727ED0;
+
 /// in the text's drawing (the loop at 0x00A35750), each line's camera call,
-/// 0x0090A5B4 with the projection in r1, and just after it: the Fiend's
-/// Cauldron's hint gets its Hint placement in that projection.
+/// 0x0090A5B4 with the projection in r1: the Fiend's Cauldron's hint gets
+/// its Hint placement in that projection.
 const HINT_CAMERA: [u32; 2] = [0x00A35AF4, 0x00A35BBC];
+/// the camera call itself, hooked instead of the loop so the loop, which
+/// draws every menu's text, stays compiled: its entry (a HINT_CAMERA return
+/// address in lr), and where 0x0090A56C has copied the projection.
+const CAMERA_CALL: u32 = 0x0090A5B4;
+const CAMERA_CALL_COPIED: u32 = 0x0090A5C8;
 
 /// a scene's bottom screen drawing, 0x007C8ECC(drawing), and its vtable.
 /// with the scene at +0x40 and the viewport at +0x44 as for the top's, it
@@ -1994,13 +2009,14 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         TOP_TEXT | TOP_TEXT_DRAWN => {
             if !menu_top::text(system, pc) { top_text_viewport(system, pc); }
         }
-        _ if HINT_CAMERA.iter().any(|&site| pc == site || pc == site + 4) => cauldron_hint(system, pc),
+        CAMERA_CALL | CAMERA_CALL_COPIED => cauldron_hint(system, pc),
+        RIGHT_EYE_LAYER => system.cpu.regs[15] = LEFT_EYE_AGAIN,
         menu_top::SCISSOR => menu_top::scissor(system),
         menu_top::SCISSOR_DONE => menu_top::scissor_done(system),
         menu_top::BOTTOM_TEXT => menu_top::bottom_text(system),
         menu_top::BOTTOM_TRANSLUCENT => menu_top::bottom_translucent(system),
-        _ if menu_top::FONT_CALL.contains(&pc) => menu_top::font(system),
-        _ if menu_top::FONT_DONE.contains(&pc) => menu_top::font_done(system),
+        menu_top::FONT_DRAW => menu_top::font_draw(system),
+        menu_top::FONT_DRAWN => menu_top::font_done(system),
         TOP_SCENE_DRAWN => top_screen_cauldron(system),
         BOTTOM_SCENE_DRAW => {
             if !matches!(drawing(system), Some(Drawing::Cauldron(_) | Drawing::CauldronRing | Drawing::MenuTop(_))) {
@@ -2538,7 +2554,7 @@ fn place_projection(matrices: &mut [u32], place: Placement, source_width: f32) {
 
 /// at a camera call of the top's text (HINT_CAMERA) while the Fiend's
 /// Cauldron's hint is drawn: the projection in r1 gets the Hint placement
-/// (none, hidden, draws it nowhere), put back just after the call. the
+/// (none, hidden, draws it nowhere), put back once the call has copied it. the
 /// text is in the top screen's 400 as drawn, the game's own screen
 /// squeezed into its middle when it is shown wider.
 fn cauldron_hint(system: &mut System, pc: u32) {
@@ -2546,7 +2562,8 @@ fn cauldron_hint(system: &mut System, pc: u32) {
     if let Some((at, old)) = aim_mouse.hint_back.take() {
         system.memory.write_bytes(at, &old);
     }
-    if !HINT_CAMERA.contains(&pc) || !aim_mouse.menu_top.cauldron_font {
+    let from_text = HINT_CAMERA.iter().any(|&site| system.cpu.regs[14] == site + 4);
+    if pc != CAMERA_CALL || !from_text || !aim_mouse.menu_top.cauldron_font {
         return;
     }
     let widen = aim_mouse.widen;
@@ -3907,6 +3924,52 @@ fn shrink_reticle(system: &mut System) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The text loop draws every menu's words; interpreted, each File Select
+    // replay of it cost about as much as the whole frame's compiled code.
+    #[test]
+    fn the_text_loop_stays_compiled() {
+        const TEXT_LOOP: std::ops::Range<u32> = 0x00A35638..0x00A35C38;
+        assert!(HINT_CAMERA.iter().all(|site| TEXT_LOOP.contains(site)));
+        assert!(PLACES.iter().all(|place| !TEXT_LOOP.contains(place)), "a stop in the text loop interprets all of it");
+    }
+
+    #[test]
+    fn the_font_calls_caller_stays_compiled() {
+        const WORDS: std::ops::Range<u32> = 0x00A36AF8..0x00A36FB8;
+        assert!(menu_top::FONT_CALL.iter().all(|site| WORDS.contains(site)));
+        assert!(PLACES.iter().all(|place| !WORDS.contains(place)), "a stop in 0x00A36AF8 interprets all of it");
+    }
+
+    #[test]
+    fn the_top_3d_builds_only_the_shown_eye() {
+        let mut system = System::new(crate::Config::default());
+        system.aim_mouse = Some(AimMouse::default());
+        system.cpu.regs[15] = RIGHT_EYE_LAYER;
+        apply(&mut system, RIGHT_EYE_LAYER);
+        assert_eq!(system.cpu.regs[15], LEFT_EYE_AGAIN, "the right eye's switch, draw and flush are skipped");
+    }
+
+    #[test]
+    fn cauldron_hint_is_placed_at_its_camera_call_and_put_back_once_copied() {
+        let mut system = System::new(crate::Config::default());
+        system.memory.map(0x14000000, 0x20000000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        let projection = 0x14000000;
+        let native: Vec<u8> = (0..16).flat_map(|i| (i as f32 + 1.0).to_bits().to_le_bytes()).collect();
+        system.memory.write_bytes(projection, &native);
+        let read = |system: &mut System| { let mut bytes = vec![0; 64]; system.memory.read_bytes(projection, &mut bytes); bytes };
+        for (lr, placed) in [(HINT_CAMERA[0] + 4, true), (HINT_CAMERA[1] + 4, true), (0x00A36000, false)] {
+            let mut mouse = AimMouse::default();
+            mouse.menu_top.cauldron_font = true;
+            system.aim_mouse = Some(mouse);
+            system.cpu.regs[1] = projection;
+            system.cpu.regs[14] = lr;
+            cauldron_hint(&mut system, CAMERA_CALL);
+            assert_eq!(read(&mut system) != native, placed, "lr {lr:08X}");
+            cauldron_hint(&mut system, CAMERA_CALL_COPIED);
+            assert_eq!(read(&mut system), native, "lr {lr:08X}");
+        }
+    }
 
     #[test]
     fn vehicle_actions_expire_and_follow_native_control_availability() {

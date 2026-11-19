@@ -15,6 +15,12 @@ pub(super) const FINISHED: u32 = 0x0072A0B4;
 pub(super) const CIRCLE_SHADOW_DRAW: u32 = 0x0080B100;
 pub(super) const FONT_CALL: [u32; 7] = [0x00A36E64, 0x00A36EC8, 0x00A36EE4, 0x00A36F00, 0x00A36F1C, 0x00A36F74, 0x00A36FA4];
 pub(super) const FONT_DONE: [u32; 7] = [0x00A36E68, 0x00A36ECC, 0x00A36EE8, 0x00A36F04, 0x00A36F20, 0x00A36F78, 0x00A36FA8];
+/// what every FONT_CALL calls, 0x005CB24C(text, ...): it copies the text's
+/// 0x64 bytes (its size and place at +0x24) and draws from the copy, then
+/// returns at FONT_DRAWN. Hooked here, not at its calls, so their caller,
+/// 0x00A36AF8, which draws every menu's words, stays compiled.
+pub(super) const FONT_DRAW: u32 = 0x005CB24C;
+pub(super) const FONT_DRAWN: u32 = 0x005CB2A8;
 
 #[derive(Default)]
 pub(super) struct MenuTop {
@@ -2090,9 +2096,10 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
     if let Some(Drawing::MenuTop(step)) = drawing(system) {
         let mouse = system.aim_mouse.as_mut().unwrap();
         if mouse.menu_top.part(step / 8).is_some_and(|part| part.top && (part.model.is_some() || part.backdrop)) {
-            if place == TOP_TEXT && mouse.menu_top.active.is_some_and(|(index, ..)|
+            // File Select's backdrop groups are meshes too: the Board owns its words.
+            if place == TOP_TEXT && (mouse.menu_top.file_select() || mouse.menu_top.active.is_some_and(|(index, ..)|
                 mouse.menu_top.part(step / 8).is_some_and(|part|
-                    top_layers(index).iter().any(|&(layer, ..)| Some(layer) == part.model))) {
+                    top_layers(index).iter().any(|&(layer, ..)| Some(layer) == part.model)))) {
                 // Mesh-only layers must not allocate another copy of the details text.
                 system.cpu.regs[15] = TOP_TEXT_DRAWN;
                 return true;
@@ -2113,6 +2120,17 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
         }
     }
     false
+}
+
+/// at FONT_DRAW: called from a FONT_CALL, what `font` does there, with the
+/// pc at that call. A call `font` skips returns at once.
+pub(super) fn font_draw(system: &mut System) {
+    let back = system.cpu.regs[14];
+    if !FONT_DONE.contains(&back) { return; }
+    let site = back - 4;
+    system.cpu.regs[15] = site;
+    font(system);
+    system.cpu.regs[15] = if system.cpu.regs[15] == site { FONT_DRAW } else { back };
 }
 
 pub(super) fn font(system: &mut System) {
@@ -2579,6 +2597,24 @@ mod tests {
                 assert_eq!(system.cpu.regs[15], TOP_TEXT_DRAWN);
                 assert!(system.aim_mouse.as_ref().unwrap().menu_top.text_parent.is_none());
             }
+        }
+    }
+
+    // Each replay of a File Select backdrop group ran the Board's whole text
+    // pass again, all of it hidden, which held the Screen near 30 FPS.
+    #[test]
+    fn file_select_backdrop_groups_leave_the_words_to_the_board() {
+        let mut system = System::new(crate::Config::default());
+        for part in [6].into_iter().chain(8..16) {
+            let mut mouse = shown(0);
+            mouse.menu_top.active = Some((0, 0, 0, false));
+            mouse.menu_top.draw_order = vec![part];
+            mouse.saved = Some(Saved { regs: [0; 16], cpsr: system.cpu.cpsr, vfp: [0; 32], drawing: Drawing::MenuTop(0), moved: Vec::new() });
+            system.aim_mouse = Some(mouse);
+            system.cpu.regs[15] = TOP_TEXT;
+            let board = part == 6;
+            assert_eq!(text(&mut system, TOP_TEXT), !board, "part {part}");
+            assert_eq!(system.cpu.regs[15], if board { TOP_TEXT } else { TOP_TEXT_DRAWN }, "part {part}");
         }
     }
 
@@ -3086,12 +3122,19 @@ mod tests {
                     mouse.saved = Some(Saved { regs: [0; 16], cpsr: system.cpu.cpsr, vfp: [0; 32], drawing: Drawing::MenuTop(0), moved: Vec::new() });
                 }
                 system.aim_mouse = Some(mouse);
-                system.cpu.regs[15] = pc;
-                font(&mut system);
-                assert_eq!(system.cpu.regs[15], pc + if placed && pc == 0x00A36F74 { 4 } else { 0 },
+                // hooked in the call's callee: a skipped call returns at once
+                system.cpu.regs[14] = pc + 4;
+                system.cpu.regs[15] = FONT_DRAW;
+                font_draw(&mut system);
+                assert_eq!(system.cpu.regs[15], if placed && pc == 0x00A36F74 { pc + 4 } else { FONT_DRAW },
                     "only the placed bold copy is omitted; native text and outlines keep their passes");
             }
         }
+        // the callee's other callers are not the menus' words
+        system.cpu.regs[14] = 0x00A36F78 + 0x100;
+        system.cpu.regs[15] = FONT_DRAW;
+        font_draw(&mut system);
+        assert_eq!(system.cpu.regs[15], FONT_DRAW);
     }
 
     #[test]
