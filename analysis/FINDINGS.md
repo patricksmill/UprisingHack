@@ -1539,9 +1539,32 @@ string source.
 
 Open questions recorded before any new native Control is built:
 
-- Whether the Air/Land Battle speed sliders scale the mouse's aim deltas
-  (`0x00B12218` return) or only stylus drags. If they do, the mouse's host
-  sensitivity is a second Control for the same thing.
+- Answered 19 Nov: the Air/Land Battle speed and Invert Horizontal reach
+  the stylus only. Measured on `s8` (land, camera yaw from the matrix at
+  `0x141F8AEC`) and `s5` (air, reticle x at aim `+0xA4`), poking the save
+  fields `0x00EF9790` (Land horizontal speed), `0x00EF9798` (Air speed) and
+  the flags byte `0x00EF97AC` (0x41 as saved): a stylus drag turned 9°,
+  33° and 80° at Land speed -1, 0 and 1 and moved the air reticle 30, 60
+  and 120 pixels; Invert Horizontal reversed it in both. The mouse (the
+  `0x00B12218` return) turned 14.76° and moved 12 pixels in every case, and
+  the right stick was unchanged too. The battle reads the save fields
+  themselves; the copies at the singleton's `+0x50..+0x64` read 0 in battle.
+  Vertical inversion and Stop were not measured.
+- Control Configuration (answered 19 Nov, driven through the page from a
+  Practice Range Land Battle's Pause → Options): Step 1 picks how Pit
+  moves, Circle Pad (Default) or the face buttons (the `????` is their
+  glyphs); the face buttons lead to Step 2, how the reticle moves (Touch
+  Screen (Default), +Control Pad, Circle Pad), and Step 3, a button layout
+  with Reset, Try It! and OK. Its default for the face buttons: L Align
+  Camera, R Attack, Circle Pad up Change View and left, right and down
+  Attack, +Control Pad up Attack, left and right Select Powers, down Use
+  Power, A B X Y Move. OK writes flags bit 0 (`0x00EF97AC`, 1 Circle Pad,
+  0 face buttons) and applies it at once; poking the bit alone, even before
+  a battle starts, changes nothing. With the face buttons chosen, a held
+  Circle Pad moved Pit 0 units in 30 frames (9.9 before) and A, B and Y
+  moved him 33: the Action Bindings' Move, Attack (L) and Change View (X)
+  no longer do what they say. State `lp_buttons` in the session's scratch
+  holds it.
 - The `????` scheme label: a glyph missing from the stand-in font or the
   game's own text. Darkshade's patch extends this page (Step 1 movement,
   Step 2 aim source) and ships RomFS assets for it.
