@@ -20,6 +20,10 @@ _Avoid_: Front-end menu, out-of-battle menu, static screen, 2D scene
 Zakuro's own host-drawn interface for emulator configuration, diagnostics and recovery, containing no game UI.
 _Avoid_: Emulator menu, settings overlay, debug menu
 
+**UprisingHack Window**:
+The Frontend Menu window that shows and changes the PC Preferences: Action Bindings, aiming and presentation.
+_Avoid_: UprisingHack menu, PC settings menu, preferences overlay
+
 **Screen**:
 One named menu surface the game enters; listed under Screens.
 _Avoid_: Page (except where the game's own page is meant), view, scene
