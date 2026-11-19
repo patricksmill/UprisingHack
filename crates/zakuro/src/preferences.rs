@@ -23,10 +23,12 @@ pub enum GyroMode {
 /// aiming with the mouse, the right stick and the gyro. vertical inversion
 /// is the game's own (Reticle/Camera's Invert Vertical Movement), not here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, from = "StoredAim")]
 pub struct Aim {
-    /// reticle pixels a count of the mouse moves it.
-    pub mouse_sensitivity: f32,
+    /// reticle pixels a count of the mouse moves it in an Air Battle.
+    pub air_mouse_sensitivity: f32,
+    /// and in a Land Battle, where it turns the camera.
+    pub land_mouse_sensitivity: f32,
     /// how fast a mouse drag Orbits the Idol View, 1 for 0.3° a window pixel.
     pub idol_view_sensitivity: f32,
     /// how far the right stick turns, 1 as the game's own C-stick does.
@@ -40,10 +42,65 @@ pub struct Aim {
     pub gyro_invert_y: bool,
 }
 
+/// aiming as saved, which may have one mouse sensitivity for both kinds
+/// of battle, from before they had their own.
+#[derive(Deserialize)]
+#[serde(default)]
+struct StoredAim {
+    mouse_sensitivity: Option<f32>,
+    air_mouse_sensitivity: Option<f32>,
+    land_mouse_sensitivity: Option<f32>,
+    idol_view_sensitivity: f32,
+    stick_sensitivity: f32,
+    dead_zone: f32,
+    gyro: GyroMode,
+    gyro_sensitivity: f32,
+    gyro_invert_x: bool,
+    gyro_invert_y: bool,
+}
+
+impl Default for StoredAim {
+    fn default() -> Self {
+        let aim = Aim::default();
+        StoredAim {
+            mouse_sensitivity: None,
+            air_mouse_sensitivity: None,
+            land_mouse_sensitivity: None,
+            idol_view_sensitivity: aim.idol_view_sensitivity,
+            stick_sensitivity: aim.stick_sensitivity,
+            dead_zone: aim.dead_zone,
+            gyro: aim.gyro,
+            gyro_sensitivity: aim.gyro_sensitivity,
+            gyro_invert_x: aim.gyro_invert_x,
+            gyro_invert_y: aim.gyro_invert_y,
+        }
+    }
+}
+
+impl From<StoredAim> for Aim {
+    /// the one sensitivity an older file has goes to both kinds of battle.
+    fn from(stored: StoredAim) -> Self {
+        let fresh = Aim::default();
+        let old = stored.mouse_sensitivity;
+        Aim {
+            air_mouse_sensitivity: stored.air_mouse_sensitivity.or(old).unwrap_or(fresh.air_mouse_sensitivity),
+            land_mouse_sensitivity: stored.land_mouse_sensitivity.or(old).unwrap_or(fresh.land_mouse_sensitivity),
+            idol_view_sensitivity: stored.idol_view_sensitivity,
+            stick_sensitivity: stored.stick_sensitivity,
+            dead_zone: stored.dead_zone,
+            gyro: stored.gyro,
+            gyro_sensitivity: stored.gyro_sensitivity,
+            gyro_invert_x: stored.gyro_invert_x,
+            gyro_invert_y: stored.gyro_invert_y,
+        }
+    }
+}
+
 impl Default for Aim {
     fn default() -> Self {
         Aim {
-            mouse_sensitivity: 0.5,
+            air_mouse_sensitivity: 0.5,
+            land_mouse_sensitivity: 0.5,
             idol_view_sensitivity: 1.0,
             stick_sensitivity: 1.0,
             dead_zone: 0.15,
@@ -140,7 +197,8 @@ impl Category {
             Category::KeyboardMouse => {
                 settings.pc.bindings.keyboard_mouse = defaults.pc.bindings.keyboard_mouse;
                 let aim = &mut settings.pc.aim;
-                aim.mouse_sensitivity = defaults.pc.aim.mouse_sensitivity;
+                aim.air_mouse_sensitivity = defaults.pc.aim.air_mouse_sensitivity;
+                aim.land_mouse_sensitivity = defaults.pc.aim.land_mouse_sensitivity;
                 aim.idol_view_sensitivity = defaults.pc.aim.idol_view_sensitivity;
                 settings.pc.movement = defaults.pc.movement;
             }
@@ -154,7 +212,8 @@ impl Category {
                 let (aim, fresh) = (&mut settings.pc.aim, defaults.pc.aim);
                 // the mouse's and sticks' own choices are on their Screens
                 *aim = Aim {
-                    mouse_sensitivity: aim.mouse_sensitivity,
+                    air_mouse_sensitivity: aim.air_mouse_sensitivity,
+                    land_mouse_sensitivity: aim.land_mouse_sensitivity,
                     idol_view_sensitivity: aim.idol_view_sensitivity,
                     stick_sensitivity: aim.stick_sensitivity,
                     dead_zone: aim.dead_zone,
@@ -181,7 +240,8 @@ mod tests {
         settings.volume = 0.3;
         settings.scale = 4;
         settings.pc.aim = Aim {
-            mouse_sensitivity: 2.0,
+            air_mouse_sensitivity: 2.0,
+            land_mouse_sensitivity: 1.5,
             stick_sensitivity: 1.5,
             dead_zone: 0.3,
             gyro: GyroMode::Hold,
@@ -212,7 +272,8 @@ mod tests {
         let mut settings = customised();
         Category::KeyboardMouse.restore_defaults(&mut settings);
         assert_eq!(attack(&settings, Device::KeyboardMouse), Source::Mouse(winit::event::MouseButton::Left));
-        assert_eq!(settings.pc.aim.mouse_sensitivity, 0.5);
+        assert_eq!(settings.pc.aim.air_mouse_sensitivity, 0.5);
+        assert_eq!(settings.pc.aim.land_mouse_sensitivity, 0.5);
         assert_eq!(settings.pc.movement, Movement::default(), "Walk speed is the keyboard's");
         assert_eq!(attack(&settings, Device::Controller), Source::Pad(gilrs::Button::West));
         assert_eq!(settings.pc.aim.dead_zone, 0.3);
@@ -223,9 +284,27 @@ mod tests {
         assert_eq!(attack(&settings, Device::Controller), Source::Pad(gilrs::Button::RightTrigger2));
         assert_eq!(settings.pc.aim.dead_zone, 0.15);
         assert_eq!(attack(&settings, Device::KeyboardMouse), Source::Key(KeyCode::KeyK));
-        assert_eq!(settings.pc.aim.mouse_sensitivity, 2.0);
+        assert_eq!(settings.pc.aim.air_mouse_sensitivity, 2.0);
+        assert_eq!(settings.pc.aim.land_mouse_sensitivity, 1.5);
         assert_eq!(settings.pc.aim.gyro, GyroMode::Hold, "the gyro is Reticle/Camera's");
         assert_eq!(settings.pc.movement.walk_lean, 0.7);
+    }
+
+    /// an older file's one mouse sensitivity goes to both kinds of battle,
+    /// and the two are kept apart once saved.
+    #[test]
+    fn one_mouse_sensitivity_becomes_air_and_land() {
+        let settings = Settings::parse("[pc.aim]\nmouse_sensitivity = 1.25\ndead_zone = 0.2\n").unwrap();
+        assert_eq!((settings.pc.aim.air_mouse_sensitivity, settings.pc.aim.land_mouse_sensitivity), (1.25, 1.25));
+        assert_eq!(settings.pc.aim.dead_zone, 0.2);
+        let mut changed = settings.clone();
+        changed.pc.aim.land_mouse_sensitivity = 0.75;
+        let saved = toml::to_string_pretty(&changed).unwrap();
+        assert!(!saved.contains("\nmouse_sensitivity"), "the old name is not written again");
+        let back = Settings::parse(&saved).unwrap();
+        assert_eq!((back.pc.aim.air_mouse_sensitivity, back.pc.aim.land_mouse_sensitivity), (1.25, 0.75));
+        let fresh = Settings::parse("volume = 0.4\n").unwrap();
+        assert_eq!(fresh.pc.aim, Aim::default());
     }
 
     /// Walk's lean is kept, comes as half from a file without it, and stays
@@ -253,7 +332,8 @@ mod tests {
         Category::ReticleCamera.restore_defaults(&mut settings);
         assert_eq!(settings.pc.aim.gyro, GyroMode::Off);
         assert_eq!(settings.pc.aim.gyro_sensitivity, 1.0);
-        assert_eq!(settings.pc.aim.mouse_sensitivity, 2.0);
+        assert_eq!(settings.pc.aim.air_mouse_sensitivity, 2.0);
+        assert_eq!(settings.pc.aim.land_mouse_sensitivity, 1.5);
         assert_eq!(settings.pc.aim.stick_sensitivity, 1.5);
         assert_eq!(settings.volume, 0.3);
     }

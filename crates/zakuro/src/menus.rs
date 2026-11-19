@@ -1583,7 +1583,8 @@ impl Menus {
         }
         if tab == UprisingTab::Aiming {
             let aim = &mut settings.pc.aim;
-        ui.add(egui::Slider::new(&mut aim.mouse_sensitivity, 0.1..=3.0).text("Mouse sensitivity"));
+        ui.add(egui::Slider::new(&mut aim.air_mouse_sensitivity, 0.1..=3.0).text("Air Battle mouse sensitivity"));
+        ui.add(egui::Slider::new(&mut aim.land_mouse_sensitivity, 0.1..=3.0).text("Land Battle mouse sensitivity"));
         ui.add(egui::Slider::new(&mut aim.idol_view_sensitivity, 0.25..=3.0).text("Idol View orbit sensitivity"));
         ui.add(egui::Slider::new(&mut aim.stick_sensitivity, 0.25..=3.0).text("Right stick sensitivity"));
         ui.add(egui::Slider::new(&mut aim.dead_zone, 0.0..=0.5).text("Stick dead zone"));

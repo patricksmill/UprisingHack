@@ -1328,6 +1328,9 @@ struct Hovering {
 pub struct AimMouse {
     /// reticle pixels moved since the game last took them.
     pub pending: [f32; 2],
+    /// how far a pending pixel moves, in the air and on the ground: the
+    /// PC Preferences' Air and Land Battle mouse sensitivity.
+    pub sensitivity: [f32; 2],
     /// whether the mouse is aiming, which on the ground keeps the reticle
     /// in the middle and turns the camera by all of the mouse's movement.
     pub captured: bool,
@@ -1475,6 +1478,7 @@ impl Default for AimMouse {
     fn default() -> AimMouse {
         AimMouse {
             pending: [0.0; 2],
+            sensitivity: [1.0; 2],
             captured: false,
             local_aim: None,
             hud_scale: 1.0,
@@ -2191,11 +2195,13 @@ fn add_delta(system: &mut System) {
     }
     let [dx, dy] = std::mem::take(&mut aim_mouse.pending);
     let (widen, half_width) = (aim_mouse.widen, aim_mouse.half_width);
+    let mut ground = [0u8];
+    system.memory.read_bytes(aim + 0x81, &mut ground);
+    let sensitivity = aim_mouse.sensitivity[(ground[0] != 0) as usize];
+    let (dx, dy) = (dx * sensitivity, dy * sensitivity);
     // on a wider top screen the mouse moves as far: in the air the reticle
     // as far across the window, on the ground the camera by as many degrees,
     // where the game turns by the reticle's share of the view's width
-    let mut ground = [0u8];
-    system.memory.read_bytes(aim + 0x81, &mut ground);
     let dx = match (widen == 1.0, ground[0] != 0) {
         (true, _) => dx,
         (false, true) => dx * half_width.atan() / (half_width * widen).atan(),
@@ -4041,6 +4047,28 @@ mod tests {
         apply(&mut system, AFTER_AIM_DELTA);
         assert_eq!(f32::from_bits(read_word(&mut system, stack + 8)), 40.0);
         assert_eq!(system.aim_mouse.as_ref().unwrap().pending, [6.0, 2.0]);
+    }
+
+    /// the mouse moves by the Air Battle sensitivity in the air and the
+    /// Land Battle one on the ground.
+    #[test]
+    fn air_and_ground_take_their_own_sensitivity() {
+        let mut system = armory_test_system();
+        let aim = 0x1400_0000;
+        let stack = 0x1400_1000;
+        system.cpu.regs[4] = aim;
+        system.cpu.regs[0] = 0;
+        system.cpu.regs[13] = stack;
+        system.cpu.vfp.regs[16] = 1.0f32.to_bits();
+        for (ground, expected) in [(0u8, [20.0, -4.0]), (1, [5.0, -1.0])] {
+            system.aim_mouse = Some(AimMouse { captured: true, pending: [10.0, -2.0], sensitivity: [2.0, 0.5], ..AimMouse::default() });
+            apply(&mut system, AIM_OWNERSHIP);
+            system.memory.write_bytes(aim + 0x81, &[ground]);
+            system.memory.write_bytes(stack + 8, &[0; 8]);
+            apply(&mut system, AFTER_AIM_DELTA);
+            let delta = [read_word(&mut system, stack + 8), read_word(&mut system, stack + 12)].map(f32::from_bits);
+            assert_eq!(delta, expected, "ground flag {ground}");
+        }
     }
 
     fn panel_quad(bounds: UiBox) -> Vec<u8> {

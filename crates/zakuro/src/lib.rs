@@ -920,9 +920,11 @@ impl ApplicationHandler for App {
             return;
         }
         if let (true, DeviceEvent::MouseMotion { delta }) = (self.aim_captured, event) {
-            let sensitivity = self.settings.pc.aim.mouse_sensitivity;
+            let aim = &self.settings.pc.aim;
             if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
-                aim_mouse.add(delta.0 as f32 * sensitivity, delta.1 as f32 * sensitivity);
+                // scaled as the game takes it, by the kind of battle then
+                aim_mouse.sensitivity = [aim.air_mouse_sensitivity, aim.land_mouse_sensitivity];
+                aim_mouse.add(delta.0 as f32, delta.1 as f32);
             }
         }
     }
