@@ -237,6 +237,8 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         idol_orbit_from: None,
         aim_captured: false,
         released_for_pause: false,
+        battle_seen: false,
+        focused: true,
         cursor: (0.0, 0.0),
         last_title_update: Instant::now(),
         next_frame: Instant::now(),
@@ -570,6 +572,13 @@ struct App {
     /// the mouse was let go for the pause menu on the top screen, and is
     /// held again once it is gone.
     released_for_pause: bool,
+    /// whether a battle was being played when last looked: mouse aiming is
+    /// taken up as one starts and let go as it ends. F6 still turns it off
+    /// and on in between; leaving the window or opening a menu forgets it,
+    /// so coming back to the battle takes the mouse again.
+    battle_seen: bool,
+    /// the window has the keyboard and pointer.
+    focused: bool,
     cursor: (f32, f32),
     last_title_update: Instant,
     /// when the next frame is due
@@ -820,7 +829,10 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             // keys let go while another window has the keyboard never come
+            WindowEvent::Focused(true) => self.focused = true,
             WindowEvent::Focused(false) => {
+                self.focused = false;
+                self.battle_seen = false;
                 self.fast_forward_key = false;
                 self.released_for_pause = false;
                 self.set_aim_captured(false);
@@ -1469,9 +1481,11 @@ impl App {
     fn follow_pause_menu(&mut self) {
         if self.menus.editor_open {
             if self.aim_captured { self.set_aim_captured(false); }
+            self.battle_seen = false;
             return;
         }
         let shown = self.pause_menu_shown();
+        self.follow_battle(shown);
         if shown && self.aim_captured {
             self.set_aim_captured(false);
             self.released_for_pause = true;
@@ -1481,6 +1495,26 @@ impl App {
             self.mouse_down = false;
             self.set_aim_captured(true);
         }
+    }
+
+    /// takes the mouse for aiming as a battle starts and lets it go as the
+    /// battle ends; a pause is neither.
+    fn follow_battle(&mut self, paused: bool) {
+        if paused || self.released_for_pause { return; }
+        if !self.focused || self.menus.menu_open {
+            self.battle_seen = false;
+            return;
+        }
+        let battle = self.game.as_ref().is_some_and(|game| {
+            game.system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.in_battle(game.system.frames))
+        });
+        if battle && !self.battle_seen {
+            self.mouse_down = false;
+            self.set_aim_captured(true);
+        } else if !battle && self.battle_seen && self.aim_captured {
+            self.set_aim_captured(false);
+        }
+        self.battle_seen = battle;
     }
 
     /// is the pointer busy w/ something other than the game
@@ -2585,7 +2619,9 @@ impl App {
 
     /// the menus, and the actions they asked for, done
     fn interface(&mut self, event_loop: &ActiveEventLoop) -> Overlay {
-        let idol_icon = self.idol_pointer_look();
+        // while the mouse aims the pointer stays hidden; the overlay would
+        // otherwise show it again whenever it sets its own cursor
+        let idol_icon = if self.aim_captured { Some(egui::CursorIcon::None) } else { self.idol_pointer_look() };
         // when the slot chosen was saved to, while the menu shows it
         let saved = self
             .menus
