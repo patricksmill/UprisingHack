@@ -97,7 +97,7 @@ Delta mouse look with camera box containment collapsed for third-person ground c
 _Avoid_: Ground aiming, relative mouse, ground turn
 
 **Walk**:
-A held keyboard Action Binding that leans the Circle Pad only part way while the movement keys are down, so Pit walks in a battle instead of dashing and sprinting. Controllers have none; the stick leans as far as it is pushed.
+A held keyboard Action Binding that leans the Circle Pad only part way while the movement keys are down, so Pit walks in a battle instead of dashing and sprinting. Controllers have none; the stick leans as far as it is pushed. With Walk by default on, the keys walk by themselves and holding the same binding runs; its Row reads Run (hold).
 _Avoid_: Sneak, slow mode, sprint toggle
 
 **Synthetic Touch**:
