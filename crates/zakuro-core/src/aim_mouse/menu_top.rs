@@ -432,7 +432,6 @@ fn hint_extra(kind: usize) -> Option<[f32; 4]> {
     match kind {
         0 | 3 | 4 => Some([0.0, 210.0, 400.0, 30.0]),
         5 => Some([0.0, 190.0, 400.0, 50.0]),
-        6 => Some([0.0, 170.0, 400.0, 70.0]),
         _ => None,
     }
 }
@@ -919,24 +918,35 @@ fn idol_revealing(system: &mut System, object: u32) -> bool {
     object != 0 && matches!(read_word(system, object + 0x430) & 0xFF, 2..=4)
 }
 
-/// where the egg queue goes on a top screen this wide: its rail runs the
-/// bottom screen's whole height and ends there, so it keeps its size down
-/// the right edge.
+/// where the egg queue goes on a top screen this wide: on the bowl's
+/// transform, so an egg keeps its size and place as it leaves the queue.
 fn idol_eggs(width: f32) -> Placement {
-    Placement { from: IDOL_EGGS, to: [width - IDOL_EGGS[2], 0.0, IDOL_EGGS[2], IDOL_EGGS[3]] }
+    Placement { from: IDOL_EGGS, to: idol_toss(width).to_box(IDOL_EGGS) }
 }
 
-/// where the bottom screen left of the egg queue goes: one transform for
-/// the bowl and the fountain, so they stand together as the game drew
-/// them, as far from the queue as there, the bowl's top at 62.
+/// where the bottom screen from the bowl's left edge goes: one transform for
+/// the bowl, the fountain and the egg queue, so they stand together as the
+/// game drew them, the queue down the right edge and its rail ending at the
+/// bottom edge, as it did at the bottom screen's.
 fn idol_toss(width: f32) -> Placement {
-    let from = [IDOL_LAUNCHER[0], 0.0, IDOL_EGGS[0] - IDOL_LAUNCHER[0], 240.0];
-    let scale = 0.68_f32.min(width * 0.6 / 280.0);
-    Placement { from, to: [idol_eggs(width).to[0] - from[2] * scale, 62.0 - IDOL_LAUNCHER[1] * scale, from[2] * scale, from[3] * scale] }
+    let from = [IDOL_LAUNCHER[0], 0.0, IDOL_EGGS[0] + IDOL_EGGS[2] - IDOL_LAUNCHER[0], 240.0];
+    let scale = 0.68_f32.min(width * 0.6 / from[2]);
+    let size = [from[2] * scale, from[3] * scale];
+    Placement { from, to: [width - size[0], 240.0 - size[1], size[0], size[1]] }
 }
 
-/// Idol Toss's screen while its play-coin Dialog shows over the hub.
-const IDOL_TOSS_SCREEN: usize = 22;
+/// Idol Toss, from the Solo Hub or the Vault alike: the registry's two rows
+/// are one Screen. Its class runs both rows' update thunks for either,
+/// every frame in the same order (the second row's last, only the first's
+/// while leaving), so a Screen can't be told from a thunk; its layout,
+/// saved edits and play-coin Dialog are the second row's.
+const IDOL_TOSS_SCREEN: usize = 25;
+const IDOL_TOSS_FIRST_ROW: usize = 22;
+
+/// the Screen a scripted update thunk's row draws and saves as.
+pub(super) fn screen_of_row(index: usize) -> usize {
+    if index == IDOL_TOSS_FIRST_ROW { IDOL_TOSS_SCREEN } else { index }
+}
 
 /// where the Dialog goes among a layout's parts: before the hint, which
 /// precedes the backdrop.
@@ -945,7 +955,7 @@ fn dialog_slot(parts: &[Part]) -> usize {
 }
 
 fn layout_with_dialog(index: usize, width: f32, idol_dialog: bool) -> (Placement, Vec<Part>) {
-    let (native, mut parts) = layout(if idol_dialog { 22 } else { index }, width);
+    let (native, mut parts) = layout(if idol_dialog { IDOL_TOSS_SCREEN } else { index }, width);
     if idol_dialog {
         let place = fitted([0.0, 0.0, 320.0, 240.0], [8.0, 48.0, width - 16.0, 180.0]);
         let hint = dialog_slot(&parts);
@@ -1613,8 +1623,11 @@ fn scene(system: &mut System, top: u32) -> Option<(usize, u32, u32, bool)> {
                 else if name.starts_with("MenSel") || name.starts_with("MenStageselect") { 8 }
                 else { continue };
             if let Some((index, object, _)) = last.filter(|&(index, _, _)| matches!((kind, index),
-                (3, 19) | (4, 17) | (5, 23) | (6, 22 | 25) | (7, 14..=20))) {
+                (3, 19) | (4, 17) | (5, 23) | (6, IDOL_TOSS_SCREEN) | (7, 14..=20))) {
                 fallback.get_or_insert((index, object, bottom, true));
+            } else if kind == 6 {
+                // Idol Toss draws before its input runs.
+                fallback.get_or_insert((IDOL_TOSS_SCREEN, 0, bottom, false));
             } else {
                 fallback.get_or_insert((ScreenTransform::scripted_len() + kind, current, bottom, true));
             }
@@ -2075,7 +2088,7 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
             return true;
         }
         if let Some((index, _, _, _)) = system.aim_mouse.as_ref().unwrap().menu_top.active.filter(|&(index, _, _, _)| !details_of(index)) {
-            let hint_index = if system.aim_mouse.as_ref().unwrap().menu_top.idol_dialog { 22 } else { index };
+            let hint_index = if system.aim_mouse.as_ref().unwrap().menu_top.idol_dialog { IDOL_TOSS_SCREEN } else { index };
             if let Some([_, y, _, height]) = hint_of(hint_index) {
                 let width = 400.0 * system.aim_mouse.as_ref().unwrap().widen;
                 let rect = if place == TOP_TEXT {
@@ -2419,6 +2432,11 @@ pub(super) fn draw(system: &mut System) -> bool {
         if scene(system, top).is_none() { return false; }
         0
     };
+    draw_part(system, top, next)
+}
+
+/// starts replaying part `next` of the shown menu, or ends the replays.
+fn draw_part(system: &mut System, top: u32, next: usize) -> bool {
     let Some((index, object, bottom, _)) = scene(system, top) else { return true };
     let part = system.aim_mouse.as_ref().unwrap().menu_top.part(next).cloned();
     let Some(part) = part else {
@@ -2440,6 +2458,15 @@ pub(super) fn draw(system: &mut System) -> bool {
     };
     let drawing = if part.top { top } else { bottom };
     let scene = read_word(system, top + 0x40);
+    // A new scene's bottom camera is set up by the first draw through it,
+    // so on a menu's first frame a replay ahead of the game's own bottom
+    // pass would draw its part unplaced, where the game puts it. Leave it to
+    // the next frame.
+    let screen = read_word(system, drawing + 0x58);
+    let camera = read_word(system, scene + SCENE_CAMERAS + screen * 4);
+    if !part.top && camera != 0 && read_word(system, camera + 8) & 4 == 0 {
+        return draw_part(system, top, next + 1);
+    }
     let renderer = read_word(system, scene + 4);
     let mut moved = Vec::new();
     // Both drawings borrow the same renderer and cameras. Restore every
@@ -2876,15 +2903,23 @@ mod tests {
                 assert_eq!(back.to[1] + back.to[3], 232.0);
                 let fountain = parts.iter().find(|part| part.idol == Some(IdolGroup::Fountain)).unwrap().place;
                 let eggs = parts.iter().find(|part| part.idol == Some(IdolGroup::Eggs)).unwrap().place;
-                assert_eq!(eggs.to, [width - 58.0, 0.0, 58.0, 240.0], "the queue keeps its size down the right edge");
                 let scale = launcher.to[2] / launcher.from[2];
-                assert!((launcher.map_point([eggs.from[0], 0.0])[0] - eggs.to[0]).abs() < 0.001, "the bowl is as far from the queue as on the bottom screen");
+                assert!((eggs.to[0] + eggs.to[2] - width).abs() < 0.001, "the queue runs down the right edge");
+                assert!((eggs.to[1] + eggs.to[3] - 240.0).abs() < 0.001, "its rail ends at the bottom edge");
+                for native in [[262.0, 20.0], [290.0, 120.0], [320.0, 240.0]] {
+                    for axis in 0..2 {
+                        assert!((launcher.map_point(native)[axis] - eggs.map_point(native)[axis]).abs() < 0.001, "an egg leaving the queue keeps its place");
+                    }
+                }
+                assert!((eggs.to[2] / eggs.from[2] - scale).abs() < 0.001, "and its size");
                 assert!((fountain.to[2] / fountain.from[2] - scale).abs() < 0.001);
                 for axis in 0..2 {
                     assert!((launcher.map_point([fountain.from[0], fountain.from[1]])[axis] - fountain.to[axis]).abs() < 0.001, "the fountain stands under the bowl");
                 }
                 assert_eq!(parts.iter().position(|part| part.backdrop), Some(4), "the scenery follows the layers saved before it");
-                assert_eq!(mouse.menus_top_touch(11, (eggs.to[0] + 29.0) / mouse.widen, 120.0, false), Some((291.0, 120.0)));
+                let rail = eggs.map_point([291.0, 120.0]);
+                let touch = mouse.menus_top_touch(11, rail[0] / mouse.widen, rail[1], false).unwrap();
+                assert!((touch.0 - 291.0).abs() < 0.01 && (touch.1 - 120.0).abs() < 0.01);
                 for native in [(30.0, 215.0), (160.0, 100.0)] {
                     let top = mouse.menus_top_point(11, native.0, native.1, None).unwrap();
                     assert_eq!(mouse.menus_top_touch(11, top.0, top.1, false), Some(native));
@@ -2917,6 +2952,20 @@ mod tests {
                 assert_eq!(mouse.menus_top_touch(11, point.0, point.1, false), Some(native));
             }
         }
+    }
+
+    #[test]
+    fn idol_toss_keeps_one_screens_edits_leaving_and_under_its_dialog() {
+        // Leaving runs only the first row's thunk, and the play-coin Dialog
+        // shows under its own Screen: both must draw and save Idol Toss's.
+        assert_eq!(screen_of_row(IDOL_TOSS_FIRST_ROW), IDOL_TOSS_SCREEN);
+        assert_eq!(screen_of_row(24), 24);
+        let mut menu_top = MenuTop { idol_dialog: true, dialog_at: Some(3), ..MenuTop::default() };
+        assert_eq!(menu_top.saved_as(11, 2), Some((IDOL_TOSS_SCREEN, 2)));
+        assert_eq!(menu_top.saved_as(11, 3), None, "the Dialog itself is not saved");
+        assert_eq!(menu_top.saved_as(11, 4), Some((IDOL_TOSS_SCREEN, 3)));
+        menu_top.idol_dialog = false;
+        assert_eq!(menu_top.saved_as(IDOL_TOSS_SCREEN, 2), Some((IDOL_TOSS_SCREEN, 2)));
     }
 
     #[test]

@@ -2946,7 +2946,7 @@ fn light_cauldron_cursor(system: &mut System) {
 /// comes back here, the CPU put back between them. off its parts what is
 /// outlined stays, and keys move it from there.
 fn outline_menu(system: &mut System, pc: u32) {
-    let Some(index) = ScreenTransform::scripted_at_update(pc) else { return };
+    let Some(index) = ScreenTransform::scripted_at_update(pc).map(menu_top::screen_of_row) else { return };
     let screen = ScreenTransform::scripted(index);
     let frame = system.frames;
     let back = system.aim_mouse.as_mut().and_then(|aim_mouse| aim_mouse.saved.take_if(|saved| matches!(saved.drawing, Drawing::Menu(..))));
