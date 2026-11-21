@@ -957,9 +957,39 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   Details card's guard-band replay they come out narrower than native
   ("Melee defense +1" 68 px at full size, native 85, the unsplit layout
   107); without the guard band every word breaks. Not fixed.
+  That build (top split, the bottom one whole Control) also broke mouse
+  clicks on the Board: `mhover` + `press` on a weapon did nothing, where
+  the Generic layout opened Fuse/Cancel. The bottom split below fixes it.
+- Armory — Fuse Weapons bottom node ownership (21 Nov, same slot).
+  `MenAltermixBt0000`: `NN_B0002` Weapon A's (green, top row) background,
+  `NN_B0003` Weapon B's (peach, left column), `NN_U0000` a grey mask under
+  the Frame that reaches past the screen's edges (drawn whole, it showed
+  as grey blocks beside the Board). `MenAltermixBt0002`: `NN_B0000` the
+  Frame (corner art, A and B tabs, bottom bar), `MN_B0000_` `NN_B0004`
+  `MN_B0005` Weapon A's scroll bar (track, thumb, arrow), `MN_B0001_`
+  `MN_B0003` Weapon B's, `NN_B0005` Back. `Bt0001` the grid, `Bt0004`
+  and `Bt0005` the A and B lists (one dynamic-texture node each), `Bt0006`
+  `Bt0007` `Bt0008` the column, row and grid Cursors, `Bt0009` the sort
+  order bar (its words, such as "Order Used", come from the bottom text
+  pass), `Bt0010` both questions (Fuse/Cancel, then "Equip?" No/Yes)
+  with their words, `Bt0003` the fusion's flash. `MenCmnWindowBt0000`
+  drew nothing in any phase seen.
+- Fuse Weapons' phase is the word at Screen object `+0x2B20` (object
+  vtable `0x00CEE148`, 0x1406C200 in that slot; written by `0x002C74DC`
+  with r4 the object): 0 on entry and after Cancel, 2 after a sort-order
+  touch, 3 after its direction arrow, 5 Fuse/Cancel, 6 fusing, 8 Equip?.
+  The model and node flags do not change between phases; the questions
+  appear by animation. A native touch on No does not answer Equip? (the
+  Generic build too); Yes and A do.
+- 17 bottom node layers replayed every frame froze the game in the
+  loading after Yes (grey screen with the loading orb, for good); 16, any
+  one fewer, did not. The question, flash and Window layers now draw only
+  in phases 5..8, so the Board replays 14. With them, the 36 one-node top
+  layers, and Powers' entry, this is the third time the replay count or
+  size froze or blanked a Screen.
   Windows release rebuilt; `dist/zakuro-kiu-mouse.exe` and the Downloads
   copy have SHA-256
-  `fa3208cbd2b821295f994354ddcea7bc0c09e7425aca6f77f0737120a2399d69` and
+  `41d2dcb884bbc8b1b5a4bafb41fdd2b4eb30be61c18a5498609f135dcb479db8` and
   completed the five-frame Windows startup check.
 - Power Portrait (the Vault's, Scripted Screen 27, MENUID 47; slot-2 state
   `trace/powerportrait.state`): object 0x14057168 there, vtable 0x00CF9388,

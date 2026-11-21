@@ -94,8 +94,18 @@ each layer named in `group` with its native box (Idols: `IDOLS_BOTTOM`).
 - Owning each of many small nodes (portrait pieces) separately can lose
   them; try one rest layer.
 
-- A Board row whose bottom is one whole Control (a `Generic` Screen made a
-  Board) uses `WHOLE_BOARD` as its group name: that part draws every model.
+- A `Generic` Screen made a Board needs its bottom split too: a single
+  model-less bottom part broke mouse clicks on Fuse Weapons. Test clicks
+  with `mhover` + `press`/`release` (`mpress` and `click` did not act on
+  Fuse in any build).
+- Count the replays. Fuse froze in a loading at 17 bottom node layers and
+  not at 16. Layers that only draw on a page (dialogs) can be made
+  unavailable outside it (`available`, from a game phase word), which also
+  keeps them from taking the pointer. Replay the Screen's whole flow,
+  including what follows a dialog, on the final build.
+- Find a Screen's phase by diffing heap dumps between pages (small words
+  steady within a page), then `watch` + `trace` with
+  `KIUTRACE_WATCH_REGS=1` for its writer and base register.
 - A particle model (`PtcCmn*`) has no nodes; replays drop it from the layer
   list unless they own it. If a probe shows the same sparkles in every
   layer, including one that owns nothing, look for such a model.
