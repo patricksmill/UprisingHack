@@ -914,6 +914,9 @@ const TOP_SCENE_3D_DRAW: u32 = 0x00727C24;
 /// pointer at +0x17C, whether it shows at +4. its CGFX model's dictionary
 /// of them, at +0xD0 from there, has them in the same order.
 const MODEL_NODES: u32 = 0x17C;
+/// The vtable of a particle model, a scene model with no mesh nodes that
+/// draws whatever its node or +0x1F6 flags say.
+pub(super) const PARTICLE_MODEL: u32 = 0x00D14A8C;
 
 /// a scene's cameras, pointers from +0xC8, by screen. a camera's
 /// projection is kept at +0x6C while bit 2 of +8 is set, turned for the

@@ -249,6 +249,87 @@ const POWERS_TOP: &[TopLayer] = &[
     ("Description background", "MenEquipUp0210", &["Wbase"]),
 ];
 
+/// Armory — Fuse Weapons' top screen, back to front. Identified by moving
+/// one node at a time (`MenAltermixUp0000`). `NN_U0000` is the paper with
+/// both weapons' coloured headers in one mesh. Each weapon's bonus slots
+/// are dark bars over one shared mesh of yellow filled bars (`NN_U0009`),
+/// which shows where a dark bar is hidden. The sparkles are a particle
+/// model. `light2` and `light3` are the white rays of the fusion's flash:
+/// left to the Details card, they drew over the new weapon. `NN_U0006`,
+/// `NN_U0007`, `Seed1`, `Seed2`, `MenAltermixUp0001` and `MenAltermixUp0102`
+/// draw nothing on this Screen or in its fusion and stay in the Details
+/// card, which keeps the words.
+const FUSE_TOP: &[TopLayer] = &[
+    ("Paper background", "MenAltermixUp0000", &["NN_U0000"]),
+    ("Ornament", "MenAltermixUp0000", &["NN_U01"]),
+    ("Weapon A", "MenAltermixUp0000", &["NN_U0003"]),
+    ("Weapon B", "MenAltermixUp0000", &["NN_U0005"]),
+    ("Filled bonus slots", "MenAltermixUp0000", &["NN_U0009"]),
+    ("Weapon A bonus slots", "MenAltermixUp0000", &["MN_U0001", "MN_U0002", "MN_U0003", "MN_U0004", "MN_U0005", "MN_U0006"]),
+    ("Weapon B bonus slots", "MenAltermixUp0000", &["MN_U0007", "MN_U0008", "MN_U0009", "MN_U0010", "MN_U0011", "MN_U0012"]),
+    ("Result bar", "MenAltermixUp0000", &["NN_U0008"]),
+    ("Result rings", "MenAltermixUp0000", &["cir", "cir1"]),
+    ("Result rays", "MenAltermixUp0000", &["light", "light1", "light2", "light3"]),
+    ("Result shadow", "MenAltermixUp0000", &["NN_U0001"]),
+    ("Result weapon", "MenAltermixUp0000", &["NN_U0002"]),
+    ("Sparkles", "PtcCmnMenuAlterMix", &[]),
+];
+
+/// Armory — Fuse Weapons' bottom models split by mesh node, probed from
+/// the user's desktop slot 4. `MenAltermixBt0000` holds the two lists'
+/// backgrounds and a grey mask the Frame covers; `MenAltermixBt0002` the
+/// Frame (corner art, A and B tabs, bottom bar), both scroll bars and Back.
+/// Weapon A's list is the row along the top, Weapon B's the column at the
+/// left. The three Cursors follow the Outline. `MenAltermixBt0003` (the
+/// fusion's flash), `MenAltermixBt0010` (Fuse and Cancel) and the Window
+/// (Yes and No) draw nothing while the Board is idle.
+const FUSE_BOTTOM: &[TopLayer] = &[
+    ("Weapon A background", "MenAltermixBt0000", &["NN_B0002"]),
+    ("Weapon B background", "MenAltermixBt0000", &["NN_B0003"]),
+    ("Frame mask", "MenAltermixBt0000", &["NN_U0000"]),
+    ("Frame", "MenAltermixBt0002", &["NN_B0000"]),
+    ("Weapon A scroll bar", "MenAltermixBt0002", &["MN_B0000_", "MN_B0004", "MN_B0005", "NN_B0004"]),
+    ("Weapon B scroll bar", "MenAltermixBt0002", &["MN_B0001_", "MN_B0002", "MN_B0003"]),
+    ("Back", "MenAltermixBt0002", &["NN_B0005"]),
+    ("Fusion flash", "MenAltermixBt0003", &[]),
+    ("Weapon A Cursor", "MenAltermixBt0006", &[]),
+    ("Weapon B Cursor", "MenAltermixBt0007", &[]),
+    ("Grid Cursor", "MenAltermixBt0008", &[]),
+    ("Sort order", "MenAltermixBt0009", &[]),
+    ("Fusion grid", "MenAltermixBt0001", &[]),
+    ("Weapon A list", "MenAltermixBt0004", &[]),
+    ("Weapon B list", "MenAltermixBt0005", &[]),
+    ("Fusion dialog", "MenAltermixBt0010", &[]),
+    ("Window", "MenCmnWindowBt0000", &[]),
+];
+
+/// The Fuse Weapons Board, back to front, with native boxes. Node layers
+/// are cut at their boxes: a Cursor's box covers every place it can go, a
+/// list's box is its window.
+const FUSE: &[(&str, [f32; 4])] = &[
+    ("Weapon A background", [56.0, 0.0, 264.0, 46.0]),
+    ("Weapon B background", [0.0, 26.0, 72.0, 214.0]),
+    ("Frame mask", [48.0, 30.0, 272.0, 210.0]),
+    ("Frame", [0.0, 0.0, 320.0, 240.0]),
+    ("Weapon A scroll bar", [118.0, 44.0, 184.0, 12.0]),
+    ("Weapon B scroll bar", [70.0, 80.0, 14.0, 130.0]),
+    ("Back", [8.0, 212.0, 48.0, 28.0]),
+    ("Fusion flash", [0.0, 0.0, 320.0, 240.0]),
+    ("Weapon A Cursor", [84.0, 0.0, 236.0, 214.0]),
+    ("Weapon B Cursor", [0.0, 56.0, 320.0, 158.0]),
+    ("Grid Cursor", [86.0, 58.0, 234.0, 156.0]),
+    ("Sort order", [136.0, 214.0, 168.0, 26.0]),
+    ("Fusion grid", [86.0, 58.0, 234.0, 156.0]),
+    ("Weapon A list", [84.0, 0.0, 220.0, 44.0]),
+    ("Weapon B list", [0.0, 56.0, 72.0, 154.0]),
+    ("Fusion dialog", [0.0, 0.0, 320.0, 240.0]),
+    ("Window", [0.0, 0.0, 320.0, 240.0]),
+];
+
+/// Top layers drawn under the hint's words, the bar its words sit on
+/// natively: placed with the hint by default, not in the Details card.
+pub(super) const HINT_BACKING: &[&str] = &["Result bar"];
+
 /// The Vault's Idols, back to front: the backdrop, the figure's shadow and
 /// the figure. Each idol is its own `Dol*` model, so that owner is a prefix.
 /// The floor shadow is the game's `CircleShadow` sprite, not a model, so
@@ -514,7 +595,7 @@ pub(super) static SCREENS: &[ScreenSpec] = &[
     scripted!(14, ArmoryGear, 0x00CEC2B8, outline_armory, Activate::None, LayoutKind::Board { group: GEAR, hint: HINT_TOP, top_layers: GEAR_TOP, bottom_layers: &[], texture_layers: &[] }),
     scripted!(15, ArmoryRedeemHearts, 0x00CEFCA8, outline_armory, Activate::None, LayoutKind::Generic { hint: None, details: true }),
     scripted!(16, ArmoryConvertToHearts, 0x00CEEBFC, outline_armory, Activate::None, LayoutKind::Generic { hint: None, details: true }),
-    scripted!(17, ArmoryFuseWeapons, 0x00CEE148, outline_armory, Activate::None, LayoutKind::Generic { hint: HINT_BOTTOM, details: true }),
+    scripted!(17, ArmoryFuseWeapons, 0x00CEE148, outline_armory, Activate::None, LayoutKind::Board { group: FUSE, hint: HINT_BOTTOM, top_layers: FUSE_TOP, bottom_layers: FUSE_BOTTOM, texture_layers: &[] }),
     scripted!(18, ArmoryPowers, 0x00CEC2E0, outline_armory, Activate::None, LayoutKind::Board { group: POWERS, hint: None, top_layers: POWERS_TOP, bottom_layers: &[], texture_layers: &[] }),
     scripted!(19, ArmoryWeapons, 0x00CEE1E8, outline_armory, Activate::None, LayoutKind::Board { group: WEAPON_LIST, hint: HINT_BOTTOM, top_layers: WEAPONS_TOP, bottom_layers: &[], texture_layers: &[] }),
     scripted!(20, ArmoryCategories, 0x00CEE1C0, outline_armory, Activate::None, LayoutKind::Board { group: CATEGORIES, hint: HINT_TOP, top_layers: &[], bottom_layers: &[], texture_layers: &[] }),

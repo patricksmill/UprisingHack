@@ -31,6 +31,8 @@ pub(super) struct MenuTop {
     idol_revealing: bool,
     /// the Idols List page is shown, not one idol's description.
     idols_list: bool,
+    /// Fuse Weapons' phase (`FUSE_PHASE`).
+    fuse_phase: u32,
     controls_more: bool,
     physics: Option<PhysicsCall>,
     drag_target: Option<(u32, [f32; 2])>,
@@ -194,6 +196,7 @@ impl MenuTop {
         if self.idol_revealing && matches!(part.idol, Some(IdolGroup::Launcher | IdolGroup::Fountain)) {
             return false;
         }
+        if fuse_dialog_part(part.model) && !part.top && !fuse_dialog(self.fuse_phase) { return false; }
         match part.model {
             Some("MenOptionControlBt0001" | "MenOptionControlBt0002" | "MenOptionControlBt0006") => !self.controls_more,
             Some("MenOptionControlBt0003" | "MenOptionControlBt0004" | "MenOptionControlBt0005" |
@@ -628,12 +631,46 @@ fn idols_takes_pointer(model: Option<&str>, list_page: bool) -> bool {
     }
 }
 
-fn board_text_now(index: usize, model: Option<&str>, idols_list: bool) -> bool {
+/// Fuse Weapons' phase word in its Screen object, written by 0x002C74DC:
+/// 0 on entry and after Cancel, 2 and 3 after changing the sort order or
+/// its direction (the Board still takes input), 5 asking Fuse or Cancel, 6
+/// fusing, 8 asking whether to equip the new weapon. Both questions are
+/// drawn by the Fusion dialog model.
+const FUSE_PHASE: u32 = 0x2B20;
+
+/// whether Fuse Weapons is asking or fusing rather than taking Board input.
+fn fuse_dialog(phase: u32) -> bool {
+    (5..=8).contains(&phase)
+}
+
+/// Fuse Weapons' layers that draw only while it asks or fuses. Left out of
+/// the Board's frames, the Board replays 14 bottom layers: at 17, the
+/// loading after an equip froze, as Powers' entry did with too many
+/// replays (any one fewer avoided it).
+fn fuse_dialog_part(model: Option<&str>) -> bool {
+    matches!(model, Some("Fusion dialog" | "Fusion flash" | "Window"))
+}
+
+/// whether a Fuse Weapons layer takes the pointer in this phase: the
+/// Board's Controls, or only the Fusion dialog while it asks.
+fn fuse_takes_pointer(model: Option<&str>, phase: u32) -> bool {
+    match model {
+        Some("Back" | "Weapon A list" | "Weapon B list" | "Weapon A scroll bar" | "Weapon B scroll bar"
+            | "Fusion grid" | "Sort order") => !fuse_dialog(phase),
+        Some("Fusion dialog") => fuse_dialog(phase),
+        _ => false,
+    }
+}
+
+fn board_text_now(index: usize, model: Option<&str>, idols_list: bool, fuse_phase: u32) -> bool {
     // The List's Rows and its frame's page pill carry the List's words.
     if matches!(model, Some("MenColViewlistBt0000" | "MenColViewlistBt0003")) { return idols_list; }
     if !bottom_layer_part(index, model) { return board_text(index, model); }
     match model {
         Some("Page counter" | "Title bar" | "Description") => !idols_list,
+        // Fuse Weapons' words belong to whichever of its pages shows
+        Some("Sort order") => !fuse_dialog(fuse_phase),
+        Some("Fusion dialog") => fuse_dialog(fuse_phase),
         _ => false,
     }
 }
@@ -859,6 +896,7 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
             parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
         }
     }
+    let mut hint_place = None;
     if let Some(mut from) = hint {
         let scale = if matches!(kind, Some(LayoutKind::Idol)) {
             // Keep both complete hint lines readable, with room for Back
@@ -867,9 +905,9 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
             0.6_f32.min((width - 88.0) / from[2])
         } else { HINT_SCALE.min(width / from[2]) };
         let height = from[3] * scale;
-        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: None, place: Placement {
-            from, to: [(width - from[2] * scale) * 0.5, if from[1] == 0.0 { 0.0 } else { 240.0 - height }, from[2] * scale, height],
-        } });
+        let place = Placement { from, to: [(width - from[2] * scale) * 0.5, if from[1] == 0.0 { 0.0 } else { 240.0 - height }, from[2] * scale, height] };
+        hint_place = Some(place);
+        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: None, place });
     }
     // Last, so adding it kept every other layer's saved index.
     parts.push(Part { visible: true, backdrop: true, chapter: false, idol: None, top: true, model: None, place: native });
@@ -883,8 +921,10 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
         }
     }
     // After the backdrop, so Gear's earlier saved indices are kept; back to front.
+    // A hint's backing sits under the hint's words, where the game draws it.
     for &(layer, ..) in kind.map_or(&[][..], LayoutKind::top_layers) {
-        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some(layer), place: native });
+        let place = hint_place.filter(|_| super::screen_transform::HINT_BACKING.contains(&layer)).unwrap_or(native);
+        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some(layer), place });
     }
     // After the node layers, so their saved indices are kept.
     for &(layer, _, from) in kind.map_or(&[][..], LayoutKind::texture_layers) {
@@ -1238,10 +1278,12 @@ impl AimMouse {
             let cropped = self.menu_screen.is_some_and(|(index, ..)| board_cut(index));
             let on_screen = inside(point, [0.0, 0.0, 400.0 * self.widen, 240.0]);
             let idols = self.menu_screen.is_some_and(|(index, ..)| ScreenTransform::scripted(index).id == super::screen_transform::Screen::Idols);
+            let fuse = self.menu_screen.is_some_and(|(index, ..)| ScreenTransform::scripted(index).id == super::screen_transform::Screen::ArmoryFuseWeapons);
             self.menu_top.candidates = self.menu_top.parts.iter().enumerate().rev().filter_map(|(index, part)| {
                 if !self.menu_top.enabled(part) || part.top || part.idol == Some(IdolGroup::Fountain)
                     || (self.menu_top.idol_dialog && part.idol != Some(IdolGroup::Dialog))
-                    || (idols && !idols_takes_pointer(part.model, self.menu_top.idols_list)) { return None; }
+                    || (idols && !idols_takes_pointer(part.model, self.menu_top.idols_list))
+                    || (fuse && !fuse_takes_pointer(part.model, self.menu_top.fuse_phase)) { return None; }
                 let addressable = part.model.and_then(button_hash).is_some();
                 if file && !addressable { return None; }
                 let hit = part.hit(point);
@@ -1667,6 +1709,9 @@ pub(super) fn begin(system: &mut System) -> bool {
     let current = read_word(system, top + 0x40);
     let idol_dialog = matches!(index, 10 | 11) && scene_has_idol(system, current);
     let controls_more = index == 5 && read_word(system, object + 0x11C) & 0x100 != 0;
+    let fuse_phase = if index < ScreenTransform::scripted_len()
+        && ScreenTransform::scripted(index).id == super::screen_transform::Screen::ArmoryFuseWeapons
+        && object != 0 { read_word(system, object + FUSE_PHASE) } else { 0 };
     let idol_revealing = index < ScreenTransform::scripted_len()
         && matches!(ScreenTransform::scripted(index).layout, LayoutKind::Idol)
         && idol_revealing(system, object);
@@ -1749,6 +1794,7 @@ pub(super) fn begin(system: &mut System) -> bool {
     mouse.menu_top.dialog_at = dialog_at;
     mouse.menu_top.idol_revealing = idol_revealing;
     mouse.menu_top.controls_more = controls_more;
+    mouse.menu_top.fuse_phase = fuse_phase;
     mouse.menu_top.active = Some((index, object, current, native_touch));
     mouse.menu_top.passthrough = native_touch;
     mouse.menu_top.started = system.frames;
@@ -2163,7 +2209,7 @@ pub(super) fn font(system: &mut System) {
         let text_part = system.aim_mouse.as_ref().and_then(|mouse| {
             let (index, ..) = mouse.menu_top.active?;
             mouse.menu_top.part(step / 8).filter(|part| armory_board(index) && !part.top
-                && board_text_now(index, part.model, mouse.menu_top.idols_list)).cloned()
+                && board_text_now(index, part.model, mouse.menu_top.idols_list, mouse.menu_top.fuse_phase)).cloned()
         });
         if let Some(part) = text_part {
             let at = system.cpu.regs[0] + 0x24;
@@ -2176,7 +2222,7 @@ pub(super) fn font(system: &mut System) {
             let smaller = system.aim_mouse.as_ref().is_some_and(|mouse| mouse.menu_top.active.is_some_and(|(index, ..)|
                 bottom_layer_part(index, part.model) && mouse.menu_top.parts.iter().any(|other| !other.top
                     && other.model != part.model && bottom_layer_part(index, other.model)
-                    && board_text_now(index, other.model, mouse.menu_top.idols_list)
+                    && board_text_now(index, other.model, mouse.menu_top.idols_list, mouse.menu_top.fuse_phase)
                     && inside(point, other.place.from) && area(other.place.from) < area(part.place.from))));
             if !inside(point, part.place.from) || smaller {
                 system.cpu.regs[15] += 4;
@@ -2356,7 +2402,7 @@ pub(super) fn bottom_text(system: &mut System) {
     if let Some((index, ..)) = mouse.menu_top.active.filter(|&(index, ..)| drawn_cut(index)) {
         // Armory text is one dense pass; replay it only where a Control shows text.
         if armory_board(index) && step.and_then(|step| mouse.menu_top.part(step / 8))
-            .is_some_and(|part| !part.top && part.model.is_some() && !board_text_now(index, part.model, mouse.menu_top.idols_list)) {
+            .is_some_and(|part| !part.top && part.model.is_some() && !board_text_now(index, part.model, mouse.menu_top.idols_list, mouse.menu_top.fuse_phase)) {
             system.cpu.regs[15] = BOTTOM_TEXT + 4;
         }
         return;
@@ -2523,15 +2569,28 @@ fn draw_part(system: &mut System, top: u32, next: usize) -> bool {
             let list = read_word(system, layers + layer * LAYER_SIZE + 4);
             let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
             if list == 0 || end < start || end - start > 0x1000 { continue; }
+            let mut kept = Vec::new();
             for at in (start..end).step_by(4) {
                 let model = read_word(system, at);
                 let name = model_name(system, model);
                 let selected = part.model.is_some_and(|layer| layer == name);
-                show_parts(system, &mut moved, model, |node| if part.backdrop {
+                let shown = |node: &str| if part.backdrop {
                     top_layer(top_layers(index), &name, node).is_none()
                 } else if part.model.is_some_and(|layer| top_layers(index).iter().any(|&(name, ..)| name == layer)) {
                     top_layer(top_layers(index), &name, node) == part.model
-                } else { selected && (part.model != Some("MenCmnUpHeart0000") || node != "capbase") });
+                } else { selected && (part.model != Some("MenCmnUpHeart0000") || node != "capbase") };
+                // A particle model has nothing to hide: it leaves the list.
+                if read_word(system, model) == super::PARTICLE_MODEL {
+                    if shown("") { kept.push(model); }
+                    continue;
+                }
+                kept.push(model);
+                show_parts(system, &mut moved, model, shown);
+            }
+            if kept.len() as u32 != (end - start) / 4 {
+                let bytes: Vec<u8> = kept.iter().flat_map(|model| model.to_le_bytes()).collect();
+                change(system, &mut moved, start, &bytes);
+                change(system, &mut moved, list + 0x1C, &(start + bytes.len() as u32).to_le_bytes());
             }
         }
     } else if let Some(group) = part.idol {
