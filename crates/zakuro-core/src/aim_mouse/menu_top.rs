@@ -197,6 +197,7 @@ impl MenuTop {
             return false;
         }
         if fuse_dialog_part(part.model) && !part.top && !fuse_dialog(self.fuse_phase) { return false; }
+        if fuse_board_part(part.model) && !part.top && fuse_dialog(self.fuse_phase) { return false; }
         match part.model {
             Some("MenOptionControlBt0001" | "MenOptionControlBt0002" | "MenOptionControlBt0006") => !self.controls_more,
             Some("MenOptionControlBt0003" | "MenOptionControlBt0004" | "MenOptionControlBt0005" |
@@ -649,6 +650,14 @@ fn fuse_dialog(phase: u32) -> bool {
 /// replays (any one fewer avoided it).
 fn fuse_dialog_part(model: Option<&str>) -> bool {
     matches!(model, Some("Fusion dialog" | "Fusion flash" | "Window"))
+}
+
+/// Fuse Weapons' layers the game hides while it asks or fuses. Left out
+/// then, the dialog's three layers keep the Board at 14 replays: at 17,
+/// the first frame of Fuse/Cancel bound no framebuffer (a read of guest
+/// 0x1C in 0x00B8C030, from 0x009166E0) and the bottom stopped updating.
+fn fuse_board_part(model: Option<&str>) -> bool {
+    matches!(model, Some("Weapon A scroll bar" | "Weapon B scroll bar" | "Back"))
 }
 
 /// whether a Fuse Weapons layer takes the pointer in this phase: the
