@@ -991,6 +991,21 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   copy have SHA-256
   `41d2dcb884bbc8b1b5a4bafb41fdd2b4eb30be61c18a5498609f135dcb479db8` and
   completed the five-frame Windows startup check.
+- That gating still replayed 17 in phases 5..8, as the dialog's three
+  layers joined the Board's 14. A mouse click on a grid cell (the second,
+  as natively) set phase 5 and, on its first frame, the bottom pass's
+  buffer bind 0x009166E0 called 0x00B8C030, which read guest `0x1C`
+  through a null from 0x001ECC5C (the context's +8, then +0xC: no bound
+  framebuffer); the bottom stopped updating, so Fuse/Cancel never showed
+  (`access to unmapped guest address 0x0000001C`). Natively the game hides
+  both scroll bars and Back then, so those layers now draw only outside
+  phases 5..8 and every phase replays 14. Grid click, Fuse, Equip? and Yes
+  by mouse on slot 4 (`trace/fuse-slot4.state`) then ran with no fault and
+  no freeze. Windows release rebuilt; `dist/zakuro-kiu-mouse.exe` and the
+  Downloads copy have SHA-256
+  `72154f02c79ea4d1ac36d227769f4c34b0522fa63162127910089623f6b447e1` and
+  completed 60 headless frames; the previous build is
+  `dist/zakuro-kiu-mouse-before-fuse-dialog.exe`.
 - Power Portrait (the Vault's, Scripted Screen 27, MENUID 47; slot-2 state
   `trace/powerportrait.state`): object 0x14057168 there, vtable 0x00CF9388,
   update 0x0018AEB8, a thunk of 0x001AD618 (0x0018AEC8, a thunk of
