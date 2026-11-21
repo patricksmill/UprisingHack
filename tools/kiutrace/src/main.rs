@@ -44,6 +44,7 @@
 //!   models                        list the menu scene's models by layer, with their mesh nodes and which are off
 //!   layer <index> <x> <y> <w> <h> move/resize a Scripted Menu layer through the editor
 //!   visible <index> <0|1>         hide/show a Scripted Menu editor item, without changing its geometry
+//!   override <screen> <part> <x> <y> <w> <h>  a saved menu-layout.toml layer, as the frontend loads it
 //!   pausevisible <span|center|left|right|corner> <0|1>  hide/show one Pause rule group
 //!   navlink <from> <up|down|left|right> <to|native> set an explicit editor navigation link
 //!   cauldron                      draw the Fiend's Cauldron's two screens on the top screen, laid out to fit it
@@ -491,6 +492,14 @@ fn main() {
                 let index = num(1) as usize;
                 assert!(index < mouse.editor_layers().len(), "visible editor layer");
                 mouse.set_editor_layer(index, [float(2), float(3), float(4), float(5)]);
+            }
+            "override" => {
+                let mouse = system.aim_mouse.as_mut().expect("menutop before override");
+                let mut overrides = mouse.editor_overrides();
+                let (screen, part) = (num(1) as usize, num(2) as usize);
+                overrides.retain(|&(kept, index, _)| (kept, index) != (screen, part));
+                overrides.push((screen, part, [float(3), float(4), float(5), float(6)]));
+                mouse.set_editor_overrides(overrides);
             }
             "visible" => {
                 let mouse = system.aim_mouse.as_mut().expect("menutop before visible");

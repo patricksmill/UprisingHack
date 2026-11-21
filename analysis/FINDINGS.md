@@ -2261,3 +2261,71 @@ SHA-256 both equal
 Physical mouse testing remains unperformed. The Linux interpreter replay
 captured the corrected reveal but was terminated before its return capture;
 Windows completed all three captures.
+
+## Idol Toss pop-ins on entering, leaving and the play-coin Dialog (20 November)
+
+Idol Toss is one Screen to the game, from the Solo Hub and from the Vault
+alike. For either one's object the class runs 0x001B4D4C alone on its first
+frame, then 0x001B4D58 and 0x001B4D4C every frame (harness `calls`, also
+during a held egg drag), and only 0x001B4D58 while leaving. So the
+registry's rows 22 (0x001B4D58) and 25 (0x001B4D4C) never told the two
+apart: the Screen was 25 every steady frame, from the hub too, and the
+saved edits are all under 25. It became 22 on the leaving frames and
+under the play-coin Dialog (hard-coded 22), and those frames drew 22's
+default Placements: everything jumped while the scene faded out, and
+jumped when the Dialog opened and again when buying closed it.
+`menu_top::screen_of_row` now draws and saves row 22 as 25, and the
+Dialog uses 25.
+
+Entering from the Vault, the first frame the Idol Toss models loaded drew
+the native fallback layout (`scripted_len() + 6`: a Details card a third of
+the screen wide and the whole bottom screen as one Board), because MENUID 44
+names both rows and the model scan kept Idol Toss only when the last input
+was already one. `MenColVision` models now draw Screen 25.
+
+The frame after that still drew the Fountain where the bottom screen had
+it. A new scene's bottom camera has no projection (camera `+8` bit 2
+clear, flags 0x01; 0x45 once 0x003901C4 builds it, 0x77 after a draw)
+until the first draw through it, and the replays run before the game's
+own bottom pass: the first replay drew unplaced. Building the projection
+first (calling 0x003901C4) was not enough; the rest of the camera is also
+set by that first draw. Bottom parts whose camera is unset now wait for
+the next frame (`menu_top::draw_part`). This fires on exactly one frame per
+scene change (entering Idol Toss, Chapter Select, the Vault) and on none
+while a Screen is steady.
+
+Under the user's saved layout a dragged egg follows the pointer within
+about 3 px across the hand-off from Egg queue to Launcher. Under the
+default layout it shrinks from scale 1 to 0.68 and drops about 27 px where
+it leaves the queue (native x 262), because the default Egg queue keeps
+its native size down the right edge while the Launcher is at 0.68. The
+native touch ring and sparkle trail are not drawn on the top screen. The
+green leaves dropping off a dragged egg and the large Back arrow sweeping
+the top screen while leaving are the game's own.
+
+Harness: `kiutrace` `override <screen> <part> x y w h` loads a saved
+`menu-layout.toml` layer, as the frontend does. `build/toss-popins/` holds
+the replays (`enter`, `exit`, `coin`, `buy`, `drag`), the user's layout as
+`override` lines, and 0.2.32 states reached from slot 2: the Vault, Idol
+Toss, the Dialog, an egg ready to drag, a loaded egg and the Solo Hub.
+0.2.30 states no longer load. The leaving, Dialog and buying replays keep
+Counters at (0, 4) and the Launcher at y 102 throughout; entering goes
+from 24 straight to 25.
+Windows release rebuilt; `dist/zakuro-kiu-mouse.exe` and the Downloads
+copy both have SHA-256
+`36badbf624a9b186368cd6392dde5536bfd8a8a5185438d7b648610de05d84cc`, and
+the distributed executable completed its five-frame Windows startup check.
+Physical mouse testing remains unperformed.
+
+Default Egg queue at the bowl's scale (20 November): Launcher, Fountain and
+Egg queue now share `idol_toss` by default, bottom-anchored with the queue
+flush right (at 16:9 the bowl's top moves from y 62 to 104, the queue
+[387.2, 76.8, 39.4, 163.2]). Replaying `build/toss-popins/bought2.state`
+with no saved layout, a dragged egg stays within 1.5 px of its previous
+offset from the pointer every frame and keeps its size, where it used to
+shrink from scale 1 to 0.68 and drop 27 px leaving the queue. Saved edits
+still override the default.
+Windows release rebuilt with it; `dist/zakuro-kiu-mouse.exe` and the
+Downloads copy have SHA-256
+`c71d3a0dadf07f79f6538d2f19b3ba7b4c6e14517bcf13631a8644e2b04f2013` and
+completed the five-frame Windows startup check.
