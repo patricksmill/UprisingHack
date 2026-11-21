@@ -935,6 +935,46 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   The layout row declares these groups; replays retain native node visibility
   and restore it afterward. The doubled camera guard band enlarged this
   artwork despite its Placement; these groups use the native viewport mapping.
+- Armory — Fuse Weapons top-screen node ownership (Scripted Screen 17,
+  MENUID 26; the user's desktop slot 4 of 20 Nov, a 0.2.32 state).
+  `MenAltermixUp0000`: `NN_U0000` Paper background (with both weapons'
+  coloured headers, one mesh), `NN_U01` Ornament, `NN_U0003` Weapon A,
+  `NN_U0005` Weapon B, `NN_U0009` the yellow filled bonus slots of both
+  weapons (one mesh, showing where a dark bar is hidden), `MN_U0001..0006`
+  and `MN_U0007..0012` the dark bonus slots of A and B (`MN_U0001` and
+  `MN_U0007` hidden where the first slot is filled), `NN_U0008` the Result
+  bar under the hint's words, `cir`/`cir1` a faint ring, `light`/`light1`
+  the orange and green rays, `light2`/`light3` the white rays of the
+  fusion's flash, `NN_U0001` the result's shadow, `NN_U0002` the result
+  weapon. `NN_U0006`, `NN_U0007`, `Seed1`, `Seed2`, `MenAltermixUp0001`
+  and `MenAltermixUp0102` drew nothing before or during a fusion. The
+  sparkles are `PtcCmnMenuAlterMix`, a particle model (vtable `0x00D14A8C`,
+  CGFX models `0x00D14AF4`): no mesh nodes, and clearing its `+0x1F6` byte
+  does not stop its draw, so it drew in every layer's replay (36 node
+  layers exhausted the drawing buffer: the rows and weapon vanished).
+  A replay that does not own it now takes it out of its layer list.
+  The bonus slots' words are fitted to the slot width by the game; in the
+  Details card's guard-band replay they come out narrower than native
+  ("Melee defense +1" 68 px at full size, native 85, the unsplit layout
+  107); without the guard band every word breaks. Not fixed.
+  Windows release rebuilt; `dist/zakuro-kiu-mouse.exe` and the Downloads
+  copy have SHA-256
+  `fa3208cbd2b821295f994354ddcea7bc0c09e7425aca6f77f0737120a2399d69` and
+  completed the five-frame Windows startup check.
+- Power Portrait (the Vault's, Scripted Screen 27, MENUID 47; slot-2 state
+  `trace/powerportrait.state`): object 0x14057168 there, vtable 0x00CF9388,
+  update 0x0018AEB8, a thunk of 0x001AD618 (0x0018AEC8, a thunk of
+  0x001AD498, runs beside it). Found with `entered <object>`; `calls` on the
+  0x001B4Cxx thunks caught nothing. Top-screen node ownership,
+  `MenColPazUp0000`: `NN_U1101` Frame (with its green board), `NN_U1102`
+  Checkerboard, `NN_U0001`..`NN_U0060` the 60 portrait pieces (hidden until
+  earned). `MN_U1103`, `complete` and `flash` draw nothing at 15%. Owning
+  each piece in its own layer lost the earned pieces' drawing; one rest
+  layer keeps them. Bottom, `MenColPazBt0001`: `NN_B1000` the Current
+  Completion banner and ring in one mesh, `NN_B1001` the digits; `comp`
+  and `pPlane1` draw nothing. `MenCmnBg0000` is the bottom backdrop: left
+  as a plain group model it drew across the whole top screen and covered
+  the portrait, so it is a bottom node layer.
 - Armory Weapons top-screen node ownership (found by moving one node at a
   time; hide-diffs were misleading): `MenEquipUp0100` is the paper with its
   crest, ornaments and ink frame in one mesh. `MenEquipUp0121`: `NN_U0005`
@@ -1043,6 +1083,7 @@ Canonical Screen names are in `GLOSSARY.md`; this table is the only place their 
 | Vault | 0x00CF8248 | 0x00224B80 | outline_vault | 0x00345FDC |
 | Idol Toss (Vault) | 0x00CF9400 | 0x001B4D4C | outline_idol | none (click is a touch) |
 | Idols (Vault) | 0x00CF93D8 | 0x001B4D70 | outline_none | none (click is a touch) |
+| Power Portrait (Vault) | 0x00CF9388 | 0x0018AEB8 | outline_none | none (click is a touch) |
 | Control Configuration | in-game Options page 5 | 0x00A0ACF0 | none | drags what it holds |
 | Pause | object at ctx+0x243C | 0x0060DC7C input | pause options page at +0x678 | touch: 0x00A0867C main page, 0x00A06188 Options |
 | Retreat Dialog | dialog object | 0x007226C4 input | picked button at +0x294 | touch began now |
