@@ -1070,6 +1070,7 @@ impl App {
             // the mouse touches them, ZAKURO_CAULDRON_TOP=0 leaves them as they are
             aim_mouse.cauldron_on_top = std::env::var("ZAKURO_CAULDRON_TOP").map_or(true, |value| value != "0");
             aim_mouse.menus_on_top = std::env::var("ZAKURO_MENUS_TOP").map_or(true, |value| value != "0");
+            aim_mouse.land_camera_distance = self.settings.pc.presentation.land_camera_distance();
             system.aim_mouse = Some(aim_mouse);
             if let Some(mouse) = system.aim_mouse.as_mut() {
                 mouse.set_editor_overrides(self.layout_overrides.clone());
@@ -1741,6 +1742,7 @@ impl App {
                 let shown = &self.settings.pc.presentation;
                 mouse.hud_scale = shown.hud_scale;
                 mouse.portrait_scale = shown.portrait_scale;
+                mouse.land_camera_distance = shown.land_camera_distance();
             }
         }
         self.apply_camera();

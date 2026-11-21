@@ -1566,6 +1566,12 @@ impl Menus {
         let shown = &mut settings.pc.presentation;
         ui.add(egui::Slider::new(&mut shown.hud_scale, Presentation::HUD.0..=Presentation::HUD.1).text("HUD and reticle size"));
         ui.add(egui::Slider::new(&mut shown.portrait_scale, Presentation::PORTRAIT.0..=Presentation::PORTRAIT.1).text("Portrait size"));
+        ui.add(
+            egui::Slider::new(&mut shown.land_camera_distance, Presentation::LAND_CAMERA.0..=Presentation::LAND_CAMERA.1)
+                .text("Land Battle camera distance")
+                .custom_formatter(|scale, _| format!("{:.0}%", scale * 100.0)),
+        )
+        .on_hover_text("How far behind Pit the camera stays on the ground. 100% is the game's own.");
         self.reset_button(ui, settings, Category::Presentation, "Default presentation");
         }
     }

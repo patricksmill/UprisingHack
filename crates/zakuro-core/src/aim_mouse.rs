@@ -30,7 +30,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 141] = [
+pub const PLACES: [u32; 142] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2, APPLY_CONTROLS, INPUT_FRAME, MOVE_CHOICE_PICK,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -39,6 +39,7 @@ pub const PLACES: [u32; 141] = [
     AFTER_AIM_DELTA,
     BEFORE_CAMERA_TURN,
     PITCH_LIMITS,
+    CAMERA_DISTANCE,
     SPRITE_FLUSH,
     PROJECTION,
     PASS_BEGIN,
@@ -954,6 +955,18 @@ const PITCH_LIMITS: u32 = 0x0074651C;
 /// measured 9.8 either way.
 const CAPTURED_PITCH_REACH: f32 = 10.0 * std::f32::consts::PI / 180.0;
 
+/// in the game camera's distance update (0x007EF350, called only from the
+/// camera update 0x00703B68), the distance from the target worked out
+/// afresh this frame and not yet stored: s0, about to go to the camera's
+/// matrix object (r4) at +0x30, from which the eye is placed here and
+/// whenever the yaw or pitch turns (0x006063E8). r10 is still the caller's
+/// aim object, +0x81 set on the ground. 34 on the ground as the game has it.
+const CAMERA_DISTANCE: u32 = 0x007EF464;
+
+/// the aim objects' vtables: stub input, and the players' (0x0076E854,
+/// 0x0076EBF0), the last Pit's on the ground.
+const AIM_VTABLES: [u32; 3] = [0x00CEDA50, 0x00CF1B40, 0x00CF1B94];
+
 /// the 2D sprite batch's flush, entered with the batch in r0: it draws the
 /// quads added since the last one, which end at [batch+0x38], count
 /// [batch+0x3C] - [batch+0x40], 0x60 bytes each, four corners of 0x18 bytes
@@ -1494,6 +1507,9 @@ pub struct AimMouse {
     /// 1 for its own shape: the view is that much wider and the top
     /// screen's 2D that much narrower, so it shows the right shape stretched.
     pub widen: f32,
+    /// how many times further from Pit the camera stays in a Land Battle,
+    /// 1 as the game has it.
+    pub land_camera_distance: f32,
     /// the 2D contexts seen starting a pass, and the screen each draws.
     screens: Vec<(u32, u32)>,
     /// the lenses widened: where, the aspect the game gave each and the one
@@ -1567,6 +1583,7 @@ impl Default for AimMouse {
             menu_touched: None,
             menu_wheel: None,
             widen: 1.0,
+            land_camera_distance: 1.0,
             solo_camera_back: None,
             screens: Vec::new(),
             lenses: Vec::new(),
@@ -1993,6 +2010,7 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
             }
         }
         PITCH_LIMITS => widen_pitch(system),
+        CAMERA_DISTANCE => pull_back_land_camera(system),
         AFTER_AIM_DELTA => add_delta(system),
         BEFORE_CAMERA_TURN => close_box(system),
         PROJECTION => widen_view(system),
@@ -2229,6 +2247,28 @@ fn widen_pitch(system: &mut System) {
     let up = f32::from_bits(regs[19]) - CAPTURED_PITCH_REACH;
     regs[18] = down.to_bits();
     regs[19] = up.to_bits();
+}
+
+/// on the ground, puts the camera land_camera_distance times as far from
+/// Pit as the game would: the distance is worked out again every frame,
+/// so scaling it here never builds up, and the game's own easing of it
+/// (for a dash or a zoom) carries on around the new length.
+fn pull_back_land_camera(system: &mut System) {
+    let Some(scale) = system.aim_mouse.as_ref().map(|mouse| mouse.land_camera_distance) else { return };
+    if scale == 1.0 || !scale.is_finite() || scale <= 0.0 {
+        return;
+    }
+    let aim = system.cpu.regs[10];
+    if aim == 0 || !AIM_VTABLES.contains(&read_word(system, aim)) {
+        return;
+    }
+    let mut ground = [0u8];
+    system.memory.read_bytes(aim + 0x81, &mut ground);
+    if ground[0] == 0 {
+        return;
+    }
+    let distance = f32::from_bits(system.cpu.vfp.regs[0]) * scale;
+    system.cpu.vfp.regs[0] = distance.to_bits();
 }
 
 /// adds what the mouse moved to the local player's aim delta, divided by

@@ -143,11 +143,14 @@ pub struct Presentation {
     pub hud_scale: f32,
     /// the portraits on the top screen, 0 for none.
     pub portrait_scale: f32,
+    /// how many times further from Pit the camera stays in a Land Battle,
+    /// 1 as the game has it.
+    pub land_camera_distance: f32,
 }
 
 impl Default for Presentation {
     fn default() -> Self {
-        Presentation { hud_scale: 0.7, portrait_scale: 0.5 }
+        Presentation { hud_scale: 0.7, portrait_scale: 0.5, land_camera_distance: 1.25 }
     }
 }
 
@@ -155,6 +158,14 @@ impl Presentation {
     /// the smallest and largest HUD the top screen draws legibly.
     pub const HUD: (f32, f32) = (0.5, 1.0);
     pub const PORTRAIT: (f32, f32) = (0.0, 1.0);
+    /// the game's own distance, up to 1.6 times it.
+    pub const LAND_CAMERA: (f32, f32) = (1.0, 1.6);
+
+    /// the Land Battle camera's distance, within LAND_CAMERA whatever the
+    /// file says.
+    pub fn land_camera_distance(&self) -> f32 {
+        self.land_camera_distance.clamp(Self::LAND_CAMERA.0, Self::LAND_CAMERA.1)
+    }
 }
 
 /// moving Pit with the keyboard.
