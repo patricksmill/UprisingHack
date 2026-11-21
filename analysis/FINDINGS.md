@@ -126,6 +126,21 @@ pixels being 9.8° of a 45° view. The port widens both limits by 10° while
 the mouse aims on the ground (`PITCH_LIMITS`, `CAPTURED_PITCH_REACH`).
 `0x0034C210` is clamp(s0, s1, s2); `0x0034C248` wraps an angle.
 
+Ground camera distance (`trace/s8.state`, found 20 November by poking and
+watching writes): the camera update `0x00703B68` stores its camera in
+`*0x00D3A18C` (0x141FDE68 there). The matrix object at camera+0x278 holds the eye at
++0, the direction at +0xC, the target at +0x24, the distance at +0x30 (34 on
+the ground), the yaw at +0x34, the pitch at +0x38, the fovy at +0x40 and the aspect at +0x44.
+`0x006063E8(matrix, yaw, pitch)` places the eye at target − direction ×
+distance. `0x007EF350` (called only at 0x00703FAC) works the distance out
+again each frame from a base at camera+0x6AC times a zoom at camera+0x6D8
+(1, eased back after a poke by 0x0090AECC), floored at 0.01, and stores it
+at `0x007EF464` (`vstr s0, [r4, #0x30]`, r4 the matrix object). r10 there is still the
+caller's aim object (vtable 0x00CF1B94, +0x81 = 1 on the ground). A poke
+of +0x30 lasts one frame. The port scales s0 at that store
+(`CAMERA_DISTANCE`, the PC Preference "Land Battle camera distance",
+default 1.25): 42.5 held steady through 175 frames of running.
+
 Pit's ground movement (`trace/s8.state`, measured 19 November by stepping
 the Circle Pad and reading Pit's position each frame): his position is the
 vec3 at `0x141FBEA0` (x, y, z; many matrix copies nearby). The game's input
