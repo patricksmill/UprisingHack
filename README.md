@@ -99,12 +99,17 @@ The Zakuro and 3dsrecomp forks live in their own repositories. Clone them into `
    git clone -b kiu https://github.com/patricksmill/3dsrecomp tools/3dsrecomp
    ```
 2. Place your dump at `dumps/kiu.cci`.
-3. Build and launch:
+3. Build and open the library:
+   ```sh
+   cargo run --release --manifest-path tools/zakuro/Cargo.toml -p zakuro
+   ```
+4. Press **Choose folder…**, pick `dumps/`, and press **Recompile** next to the game. Do this once, and again after each update. If Zakuro finds no C compiler, it offers to download one.
+5. Launch the game from the library, or straight from the command line:
    ```sh
    cargo run --release --manifest-path tools/zakuro/Cargo.toml -p zakuro -- dumps/kiu.cci
    ```
-4. Press **Recompile** in the library (once, and again after each update).
-5. Press **F12** in-game for the emulator menu.
+   Until you recompile, the game runs in the interpreter, which is much slower.
+6. Press **F12** in-game for the emulator menu.
 
 To update, `git pull` in the repository root, `tools/zakuro` and `tools/3dsrecomp`, then recompile.
 
