@@ -1387,8 +1387,18 @@ impl App {
             (gyro::Status::NoController, _) => "No controller connected".to_owned(),
             (gyro::Status::Unavailable, _) | (gyro::Status::Ready, None) => "Controller gyroscopes can't be read on this system".to_owned(),
         };
-        for (button, pressed) in self.gamepads.poll() {
+        let buttons = self.gamepads.poll();
+        if self.menus.rebinding_action.is_some_and(|(action, ..)| action.stick()) {
+            if let Some(stick) = self.gamepads.stick_leaning() {
+                self.capture_binding(bindings::Source::Stick(stick));
+            }
+        }
+        for (button, pressed) in buttons {
             if pressed && button == gilrs::Button::Mode && self.menus.rebinding_action.take().is_some() {
+                continue;
+            }
+            if pressed && self.menus.rebinding_action.is_some_and(|(action, ..)| action.stick()) {
+                // a stick's action waits for a stick, not a button
                 continue;
             }
             if pressed && self.capture_binding(bindings::Source::Pad(button)) {
@@ -2420,6 +2430,26 @@ impl App {
                 // Kid Icarus's gyro aims only in a battle, as its preferences say
                 if self.keyboard.acting() {
                     input.gyro = self.gyro.turning(aim, battle, self.keyboard.gyro_held());
+                }
+                // on Idols the Idol View Orbit binding's stick Orbits in
+                // place of what the game makes of it
+                let frame = game.system.frames;
+                let shown = self.keyboard.acting() && !self.menus.any_open()
+                    && game.system.aim_mouse.as_ref().is_some_and(|mouse| mouse.idol_view_shown(frame));
+                let mut orbit = [0.0f32; 2];
+                if shown {
+                    for &source in self.settings.pc.bindings.sources(bindings::Device::Controller, bindings::Action::IdolViewOrbit) {
+                        let bindings::Source::Stick(stick) = source else { continue };
+                        let Some(lean) = gamepad::lean_past(self.gamepads.stick(stick), aim.dead_zone) else { continue };
+                        orbit = [(orbit[0] + lean[0]).clamp(-1.0, 1.0), (orbit[1] + lean[1]).clamp(-1.0, 1.0)];
+                        match stick {
+                            bindings::Stick::Left => (input.circle_x, input.circle_y) = (0.0, 0.0),
+                            bindings::Stick::Right => (input.c_stick_x, input.c_stick_y) = (0.0, 0.0),
+                        }
+                    }
+                }
+                if let Some(mouse) = game.system.aim_mouse.as_mut() {
+                    mouse.idol_view_stick(orbit);
                 }
                 input
             }

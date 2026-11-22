@@ -66,10 +66,13 @@ pub enum Action {
     /// on Idols, X and Y: the Idol View's Zoom.
     ZoomIn,
     ZoomOut,
+    /// on Idols, a stick turning the Idol View's camera around the idol.
+    /// Controller only, and only a stick holds it.
+    IdolViewOrbit,
 }
 
 impl Action {
-    pub const ALL: [Action; 31] = [
+    pub const ALL: [Action; 32] = [
         Action::MoveUp,
         Action::MoveDown,
         Action::MoveLeft,
@@ -101,6 +104,7 @@ impl Action {
         Action::NextIdol,
         Action::ZoomIn,
         Action::ZoomOut,
+        Action::IdolViewOrbit,
     ];
 
     pub fn name(self) -> &'static str {
@@ -136,6 +140,7 @@ impl Action {
             Action::NextIdol => "Next Idol",
             Action::ZoomIn => "Zoom In",
             Action::ZoomOut => "Zoom Out",
+            Action::IdolViewOrbit => "Idol View Orbit",
         }
     }
 
@@ -145,7 +150,7 @@ impl Action {
         match self {
             MoveUp | MoveDown | MoveLeft | MoveRight => &[Context::Gameplay, Context::Screens],
             NavigateUp | NavigateDown | NavigateLeft | NavigateRight | Confirm | Back | Skip
-            | PreviousIdol | NextIdol | ZoomIn | ZoomOut => &[Context::Screens],
+            | PreviousIdol | NextIdol | ZoomIn | ZoomOut | IdolViewOrbit => &[Context::Screens],
             _ => &[Context::Gameplay],
         }
     }
@@ -159,7 +164,7 @@ impl Action {
     pub fn on(self, device: Device) -> bool {
         match self {
             Action::Walk => device == Device::KeyboardMouse,
-            Action::GyroAim => device == Device::Controller,
+            Action::GyroAim | Action::IdolViewOrbit => device == Device::Controller,
             _ => true,
         }
     }
@@ -173,7 +178,7 @@ impl Action {
             Attack | UsePower | PowerUp | PowerDown | PowerLeft | PowerRight | ChangeView | Pause => Section::Combat,
             VehicleAbility | ExitVehicle => Section::Vehicles,
             NavigateUp | NavigateDown | NavigateLeft | NavigateRight | Confirm | Back | Skip => Section::Screens,
-            PreviousIdol | NextIdol | ZoomIn | ZoomOut => Section::Idols,
+            PreviousIdol | NextIdol | ZoomIn | ZoomOut | IdolViewOrbit => Section::Idols,
         }
     }
 
@@ -181,6 +186,11 @@ impl Action {
     /// an input.
     pub fn overlaps(self, other: Action) -> bool {
         self.contexts().iter().any(|&context| other.active(context))
+    }
+
+    /// whether a stick holds the action rather than a button.
+    pub fn stick(self) -> bool {
+        self == Action::IdolViewOrbit
     }
 
     /// the console's button the action holds, if it holds one.
@@ -243,19 +253,27 @@ impl Section {
     }
 }
 
-/// a key, mouse button or controller button.
+/// a key, mouse button, controller button or controller stick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {
     Key(KeyCode),
     Mouse(MouseButton),
     Pad(Button),
+    Stick(Stick),
+}
+
+/// a controller's stick, for the actions a stick holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Stick {
+    Left,
+    Right,
 }
 
 impl Source {
     pub fn device(self) -> Device {
         match self {
             Source::Key(_) | Source::Mouse(_) => Device::KeyboardMouse,
-            Source::Pad(_) => Device::Controller,
+            Source::Pad(_) | Source::Stick(_) => Device::Controller,
         }
     }
 
@@ -270,6 +288,8 @@ impl Source {
             Source::Mouse(MouseButton::Forward) => "Mouse Forward".to_owned(),
             Source::Mouse(MouseButton::Other(n)) => format!("Mouse {n}"),
             Source::Pad(button) => crate::gamepad::button_name(button).to_owned(),
+            Source::Stick(Stick::Left) => "Left Stick".to_owned(),
+            Source::Stick(Stick::Right) => "Right Stick".to_owned(),
         }
     }
 }
@@ -297,6 +317,8 @@ pub enum BindError {
     Required(Action),
     /// the action takes no input from that device.
     NotOnDevice(Action),
+    /// a stick for a button's action, or a button for a stick's.
+    WrongKind(Action),
 }
 
 /// each action's primary and secondary input, one map a device.
@@ -399,6 +421,7 @@ impl Default for ActionBindings {
             (NextIdol, vec![pad(Button::RightTrigger)]),
             (ZoomIn, vec![pad(Button::RightTrigger2)]),
             (ZoomOut, vec![pad(Button::LeftTrigger2)]),
+            (IdolViewOrbit, vec![Source::Stick(Stick::Right)]),
         ];
         ActionBindings { keyboard_mouse: keyboard_mouse.into_iter().collect(), controller: controller.into_iter().collect() }
     }
@@ -443,6 +466,9 @@ impl ActionBindings {
         let device = source.device();
         if !action.on(device) {
             return Err(BindError::NotOnDevice(action));
+        }
+        if action.stick() != matches!(source, Source::Stick(_)) {
+            return Err(BindError::WrongKind(action));
         }
         let previous = self.sources(device, action).get(slot).copied();
         let conflicts = self.conflicts(action, source);
@@ -861,6 +887,20 @@ mod tests {
         assert_eq!(bindings.sources(Device::KeyboardMouse, Action::PreviousIdol), &[]);
         assert_eq!(bindings.sources(Device::KeyboardMouse, Action::NextIdol), &[key(KeyCode::KeyE)]);
         assert_eq!(bindings.sources(Device::Controller, Action::ZoomIn), &[Source::Pad(Button::RightTrigger2)]);
+    }
+
+    #[test]
+    fn idol_view_orbit_takes_a_stick_and_only_it_does() {
+        let mut bindings = ActionBindings::default();
+        assert_eq!(bindings.sources(Device::Controller, Action::IdolViewOrbit), &[Source::Stick(Stick::Right)]);
+        assert_eq!(bindings.assign(Action::IdolViewOrbit, 0, Source::Pad(Button::South), Resolve::Swap), Err(BindError::WrongKind(Action::IdolViewOrbit)));
+        assert_eq!(bindings.assign(Action::Confirm, 0, Source::Stick(Stick::Left), Resolve::Swap), Err(BindError::WrongKind(Action::Confirm)));
+        assert_eq!(bindings.assign(Action::IdolViewOrbit, 0, Source::Stick(Stick::Left), Resolve::Swap), Ok(()));
+        assert_eq!(bindings.sources(Device::Controller, Action::IdolViewOrbit), &[Source::Stick(Stick::Left)]);
+        let saved: ActionBindings = toml::from_str(&toml::to_string(&bindings).unwrap()).unwrap();
+        assert_eq!(saved, bindings, "a stick binding saves");
+        let older: ActionBindings = toml::from_str("[controller]\nconfirm = [{ Pad = \"South\" }]\n").unwrap();
+        assert_eq!(older.sources(Device::Controller, Action::IdolViewOrbit), &[Source::Stick(Stick::Right)], "older saves get the right stick");
     }
 
     #[test]

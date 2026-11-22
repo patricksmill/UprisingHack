@@ -238,6 +238,48 @@ impl Gamepads {
     }
 }
 
+impl Gamepads {
+    /// a stick as it leans on the controller leaning it furthest, up
+    /// positive, before any dead zone.
+    pub fn stick(&self, stick: crate::bindings::Stick) -> [f32; 2] {
+        use crate::bindings::Stick;
+        let mut furthest = [0.0f32; 2];
+        let mut take = |lean: [f32; 2]| {
+            if lean[0].hypot(lean[1]) > furthest[0].hypot(furthest[1]) {
+                furthest = lean;
+            }
+        };
+        let reports = self.pro.reports();
+        for report in &reports {
+            take(match stick { Stick::Left => report.left, Stick::Right => report.right });
+        }
+        if let Some(gilrs) = &self.gilrs {
+            for (_, pad) in gilrs.gamepads().filter(|(_, pad)| !left_out(pad, &reports)) {
+                take(match stick {
+                    Stick::Left => [pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY)],
+                    Stick::Right => [pad.value(Axis::RightStickX), pad.value(Axis::RightStickY)],
+                });
+            }
+        }
+        furthest
+    }
+
+    /// the stick leaned more than half way, for a binding waiting for one.
+    pub fn stick_leaning(&self) -> Option<crate::bindings::Stick> {
+        use crate::bindings::Stick;
+        [Stick::Left, Stick::Right].into_iter().find(|&stick| {
+            let lean = self.stick(stick);
+            lean[0].hypot(lean[1]) > 0.5
+        })
+    }
+}
+
+/// a stick's lean past the dead zone, with the dead zone taken out, none
+/// inside it.
+pub fn lean_past(stick: [f32; 2], dead_zone: f32) -> Option<[f32; 2]> {
+    lean((stick[0], stick[1]), dead_zone, 1.0).map(|(x, y)| [x, y])
+}
+
 /// a stick's lean past the dead zone, scaled, none inside it. the dead
 /// zone is taken out, so the stick starts from nothing at its edge rather
 /// than jumping to it.

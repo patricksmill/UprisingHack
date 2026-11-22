@@ -195,6 +195,21 @@ fn main() {
             "untouch" => input.touch = None,
             "circle" => (input.circle_x, input.circle_y) = (float(1), float(2)),
             "cstick" => (input.c_stick_x, input.c_stick_y) = (float(1), float(2)),
+            "mstick" => {
+                // the Idol View Orbit binding's lean, right and up, past its dead zone
+                let mouse = system.aim_mouse.as_mut().expect("menutop before mstick");
+                println!("  idol view shown: {}", mouse.idol_view_shown(system.frames));
+                mouse.idol_view_stick([float(1), float(2)]);
+            }
+            "mwheel" => {
+                // wheel notches at the hovered top-screen point, positive down, one frame apart
+                for _ in 0..num(2).max(1) {
+                    let mouse = system.aim_mouse.as_mut().expect("menutop before mwheel");
+                    let taken = mouse.scroll_menu(system.frames, [0.0, float(1)]);
+                    println!("  wheel taken: {taken}");
+                    if !run_frame(&mut system, input, &mut frame) { return; }
+                }
+            }
             "mpan" => {
                 // a right-drag over top-screen points, one frame a step
                 let (start, end, count) = ([float(1), float(2)], [float(3), float(4)], num(5).max(1));

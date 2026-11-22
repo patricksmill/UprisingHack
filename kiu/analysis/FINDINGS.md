@@ -892,6 +892,12 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   with the C-stick (the PC right stick) by itself: about 5°/frame at full
   tilt after a short ramp, stick right raising the angle, stick up lowering
   the tilt, nothing below about 0.2 of tilt.
+  The PC's Idol View Orbit binding (`bindings::Action::IdolViewOrbit`,
+  default the right stick, a `Source::Stick`) replaces that while the Idol
+  View is shown (`menu_top::idol_view_shown`): the frontend zeroes the bound
+  stick's native axes and feeds its lean, past the aim dead zone, to
+  `idol_view::STICK_ORBIT` (6° a 30 Hz tick, 180°/s), with Land Battle's
+  inversion.
   The Idols List is the generic list class at screen `+0x330`; its Cursor
   is screen `+0x40C` (list `+0xDC`). Its keys call 0x0031AA88(list, down,
   1, 1) from 0x00297E98 once per Row, stopping at the last Row. The wheel

@@ -3,7 +3,10 @@
 //! - Orbit: a left-drag over the Idol layer turns the camera angle and
 //!   tilt, and keeps turning after release, slowing as the game's own stylus
 //!   momentum does. The game's momentum only follows a real stylus release,
-//!   so it is kept here. The right stick, the C-stick, Orbits natively.
+//!   so it is kept here.
+//! - Orbit with a stick: the Idol View Orbit binding, by default the right
+//!   stick, turns at up to 180°/s at full tilt, in place of the game's own
+//!   C-stick Orbit.
 //! - Pan: a right-drag moves the idol with the pointer.
 //! - Zoom: the wheel, eased over a few frames.
 //! - Reset View: a double-click puts back the view each idol was first
@@ -36,6 +39,9 @@ const PITCH_LIMIT: f32 = 90.0;
 /// momentum lost each frame after release: about the game's own decay,
 /// a turn slowing to rest over about a second.
 const DECAY: f32 = 0.96;
+/// degrees a viewer tick the Idol View Orbit binding turns at full tilt:
+/// 180°/s at the viewer's 30 Hz.
+pub(super) const STICK_ORBIT: f32 = 180.0 / 30.0;
 /// slower than this, in degrees a frame, the idol is at rest.
 const REST: f32 = 0.05;
 /// frames of drag motion the release speed averages; a drag held still for
@@ -56,6 +62,8 @@ pub(super) struct IdolView {
     recent: Vec<[f32; 2]>,
     /// degrees a frame the view keeps turning after release.
     velocity: [f32; 2],
+    /// the Idol View Orbit binding's lean past its dead zone, right and up.
+    pub(super) stick: [f32; 2],
     /// whether this drag has stopped the idle spin yet.
     spin_stopped: bool,
     /// a Pan in progress: its last point and the native pixels a top-screen
@@ -157,7 +165,7 @@ impl IdolView {
 
     /// stops any Orbit, as when the Screen goes.
     pub(super) fn cancel(&mut self) {
-        *self = IdolView { held: self.held, first_view: self.first_view, ..IdolView::default() };
+        *self = IdolView { held: self.held, stick: self.stick, first_view: self.first_view, ..IdolView::default() };
     }
 
     /// this frame's turn, in degrees: the drag's motion, or the momentum.
@@ -167,6 +175,11 @@ impl IdolView {
             self.recent.push(moved);
             if self.recent.len() > RECENT { self.recent.remove(0); }
             return Some([moved[0] * gain, moved[1] * gain]);
+        }
+        if self.stick != [0.0; 2] {
+            // stick up raises the view as a drag up does
+            self.velocity = [0.0; 2];
+            return Some([self.stick[0] * STICK_ORBIT, -self.stick[1] * STICK_ORBIT]);
         }
         if self.velocity[0].hypot(self.velocity[1]) < REST {
             self.velocity = [0.0; 2];
@@ -204,7 +217,7 @@ pub(super) fn update(system: &mut System, object: u32, gain: f32) {
     let turn = view.step(gain);
     let pan = std::mem::take(&mut view.pan_pending);
     let zoom = view.zoom_step();
-    let acting = view.grab.is_some() || view.pan.is_some() || zoom != 0.0;
+    let acting = view.grab.is_some() || view.stick != [0.0; 2] || view.pan.is_some() || zoom != 0.0;
     let stop_spin = acting && !std::mem::replace(&mut view.spin_stopped, true);
     if !acting && turn.is_none() { view.spin_stopped = false; }
     let read = |system: &mut System, offset: u32| f32::from_bits(read_word(system, object + offset));
@@ -309,6 +322,18 @@ mod tests {
     fn a_pan_moves_by_the_measured_scale_and_screen_down_is_position_down() {
         let units = pan_units(0.5, [10.2, 10.2]);
         assert!((units[0] - 1.0).abs() < 0.03 && (units[1] + 1.0).abs() < 0.03, "{units:?}");
+    }
+
+    #[test]
+    fn a_full_stick_turns_180_degrees_a_second_and_stops_at_once() {
+        let mut view = IdolView::default();
+        view.stick = [1.0, 0.0];
+        let turned: f32 = (0..30).map(|_| view.step(0.3).unwrap()[0]).sum();
+        assert!((turned - 180.0).abs() < 0.01, "{turned}");
+        view.stick = [0.0, 1.0];
+        assert_eq!(view.step(0.3), Some([0.0, -STICK_ORBIT]), "stick up lowers the tilt, as a drag up does");
+        view.stick = [0.0; 2];
+        assert_eq!(view.step(0.3), None, "no momentum after the stick");
     }
 
     #[test]
