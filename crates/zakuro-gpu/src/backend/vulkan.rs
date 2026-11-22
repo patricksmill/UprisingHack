@@ -1,4 +1,4 @@
-//! Vulkan presentation backend.
+//! Vulkan presentation backend
 
 use std::ffi::CStr;
 use std::mem::ManuallyDrop;
@@ -8,7 +8,7 @@ use ash::vk;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use super::vulkan_overlay::OverlayPainter;
-use super::{place, GpuScreen, Overlay, PresentError, Presenter, ScreenFilter, ScreenImage, ScreenLayout, Shown, Stereo, StereoMode, Viewport};
+use super::{place, GpuScreen, Overlay, PresentError, Presenter, ScreenFilter, ScreenImage, ScreenLayout, ScreenOrientation, Shown, Stereo, StereoMode, Viewport};
 use crate::raster::hardware::{can_render, render_device};
 use crate::SharedDevice;
 
@@ -16,26 +16,31 @@ const VERTEX_SPIRV: &[u8] = include_bytes!("../../shaders/present.vert.spv");
 const FRAGMENT_SPIRV: &[u8] = include_bytes!("../../shaders/present.frag.spv");
 const STEREO_FRAGMENT_SPIRV: &[u8] = include_bytes!("../../shaders/present_stereo.frag.spv");
 
-/// the bytes of push constants the fragment shader reads: where the screen
-/// lies in its image, the bounds its samples keep in and the filter, and
-/// for 3D how the eyes show and the right eye's place in its image.
+/// byte offset of the vertex shader's push constants
+const VERT_CONSTANTS_OFFSET: u32 = 0;
+
+/// byte offset of the fragment shader's push constants
+const FRAG_CONSTANTS_OFFSET: u32 = 16;
+
+/// the bytes of push constants the fragment shader reads
+/// where the screen lies in its image, the bounds its samples stay inside and the filter,
+/// and for 3D how the eyes show plus the right eye's place in its image
 const CONSTANTS: u32 = 36;
 const STEREO_CONSTANTS: u32 = 80;
 
-/// how many frames may be recorded before waiting on the oldest.
+/// how many frames may be recorded b4 waiting on the oldest
 const FRAMES_IN_FLIGHT: usize = 2;
 
-/// a whole image, as the area of it a screen takes and the bounds its
-/// samples keep within, for the fragment shader.
+/// a whole image, as the area of it a screen takes and the bounds its samples stay inside, for the fragment shader
 const WHOLE: [f32; 8] = [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0];
 
-/// what a screen is drawn from in a frame.
+/// what a screen is drawn from in a frame
 #[derive(Clone, Copy)]
 enum Source {
     Nothing,
-    /// the image of its own the presenter uploads pixels to.
+    /// the presenter's own image it uploads pixels to
     Own,
-    /// an image of the renderer's, on the device they share.
+    /// one of the renderer's images, on the device they share
     Gpu(GpuScreen),
 }
 
@@ -47,7 +52,7 @@ pub(super) fn vk_fail(context: &str) -> impl Fn(vk::Result) -> PresentError + '_
     move |error| PresentError::Backend(format!("{context}: {error}"))
 }
 
-/// everything belonging to one emulated screen.
+/// everything that belongs to one emulated screen
 struct Screen {
     width: u32,
     height: u32,
@@ -59,11 +64,11 @@ struct Screen {
     staging_mapping: *mut u8,
     staging_size: vk::DeviceSize,
     descriptor: vk::DescriptorSet,
-    /// false until the image has been transitioned out of UNDEFINED.
+    /// false till the image got transitioned out of UNDEFINED
     initialized: bool,
-    /// set when new pixels were written into the staging buffer this frame.
+    /// set when new pixels were written into the staging buffer this frame
     dirty: bool,
-    /// the image holds what the screen showed last, not one of the renderer's.
+    /// the image holds what the screen showed last, not one of the renderer's
     showing: bool,
 }
 
@@ -91,20 +96,17 @@ pub struct VulkanPresenter {
     descriptor_pool: vk::DescriptorPool,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
-    /// what draws the top screen's two pictures in one, for 3D in red and
-    /// cyan or on alternate rows, with a set per frame in flight.
+    /// what draws the top screen's two pictures in one, for 3D in red and cyan or on alternate rows, w/ a set per frame in flight
     stereo_layout: vk::DescriptorSetLayout,
     stereo_pipeline_layout: vk::PipelineLayout,
     stereo_pipeline: vk::Pipeline,
     stereo_sets: Vec<vk::DescriptorSet>,
     sampler: vk::Sampler,
-    /// a set per frame in flight and screen, pointed at the renderer's
-    /// images when screens are drawn straight from them.
+    /// a set per frame in flight and screen, pointed at the renderer's images when screens get drawn straight from them
     gpu_sets: Vec<[vk::DescriptorSet; 3]>,
-    /// the device and instance, when the renderer draws on them too, which
-    /// go with the last of the two rather than with this.
+    /// the device and instance, when the renderer draws on them too, they go w/ the last of the two instead of w/ this
     shared: Option<Arc<SharedDevice>>,
-    /// whether a present waits for the display, as FIFO does.
+    /// does a present wait for the display, like FIFO does
     waits: bool,
 
     command_pool: vk::CommandPool,
@@ -115,17 +117,18 @@ pub struct VulkanPresenter {
     frame: usize,
 
     /// the top screen, the bottom one and the top one's picture for the
-    /// right eye.
+    /// right eye
     screens: [Screen; 3],
-    /// what is drawn over the screens, none only while being dropped.
+    /// what's drawn over the screens, none only while being dropped
     overlay: Option<OverlayPainter>,
     window: (u32, u32),
     arrangement: ScreenLayout,
+    orientation: ScreenOrientation,
     top_width: f32,
     filter: ScreenFilter,
     integer: bool,
     stereo: Stereo,
-    /// set when the swapchain no longer matches the window.
+    /// set when the swapchain no longer matches the window
     stale: bool,
 }
 
@@ -134,9 +137,7 @@ impl VulkanPresenter {
         window: &(impl HasDisplayHandle + HasWindowHandle),
         size: (u32, u32),
     ) -> Result<VulkanPresenter, PresentError> {
-        // SAFETY: the loader reads the system's Vulkan library, which is the
-        // documented way to start.
-        let entry = unsafe { ash::Entry::load() }
+        let entry = crate::instance::entry()
             .map_err(|e| fail(format!("no Vulkan loader: {e}")))?;
 
         let display = window
@@ -157,10 +158,7 @@ impl VulkanPresenter {
             .map_err(vk_fail("querying surface extensions"))?
             .to_vec();
 
-        let instance_info = vk::InstanceCreateInfo::default()
-            .application_info(&application)
-            .enabled_extension_names(&extensions);
-        let instance = unsafe { entry.create_instance(&instance_info, None) }
+        let instance = crate::instance::new(&entry, &application, &extensions)
             .map_err(vk_fail("creating the instance"))?;
 
         let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
@@ -184,9 +182,9 @@ impl VulkanPresenter {
         let memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
-        // the renderer draws on this device too when it can, so the screens
-        // it draws are shown from its images rather than copied out and up
-        // again, ZAKURO_COPY_SCREENS keeps the copies
+        // the renderer draws on this device too when it can,
+        // so the screens it draws get shown from its images instead of copied out and back up again,
+        // ZAKURO_COPY_SCREENS keeps the copies
         let copy = std::env::var_os("ZAKURO_COPY_SCREENS").is_some();
         let swapchain_extension = [ash::khr::swapchain::NAME.as_ptr()];
         let shared = if copy || !can_render(&instance, physical_device, queue_family) {
@@ -197,8 +195,7 @@ impl VulkanPresenter {
                 .ok()
                 .map(Arc::new)
         };
-        // not destroyed on the way out of a failure below, which leaves what
-        // was made from it, as everything else here does
+        // not destroyed on the way out of a failure below, which leaves what was made from it, like everything else here does
         let shared = ManuallyDrop::new(shared);
         let device = match shared.as_deref() {
             Some(shared) => shared.device.clone(),
@@ -207,9 +204,11 @@ impl VulkanPresenter {
                 let queue_info = [vk::DeviceQueueCreateInfo::default()
                     .queue_family_index(queue_family)
                     .queue_priorities(&priorities)];
+                let mut extensions = swapchain_extension.to_vec();
+                extensions.extend(crate::instance::portability_subset(&instance, physical_device).map(CStr::as_ptr));
                 let device_info = vk::DeviceCreateInfo::default()
                     .queue_create_infos(&queue_info)
-                    .enabled_extension_names(&swapchain_extension);
+                    .enabled_extension_names(&extensions);
                 unsafe { instance.create_device(physical_device, &device_info, None) }
                     .map_err(vk_fail("creating the device"))?
             }
@@ -234,8 +233,7 @@ impl VulkanPresenter {
         let sampler = unsafe {
             device.create_sampler(
                 &vk::SamplerCreateInfo::default()
-                    // linear, the screens come drawn at up to four times the
-                    // console's resolution and get shrunk as often as grown
+                    // linear, the screens come drawn at up to 4x the console's res and get shrunk as often as grown
                     .mag_filter(vk::Filter::LINEAR)
                     .min_filter(vk::Filter::LINEAR)
                     .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
@@ -247,10 +245,9 @@ impl VulkanPresenter {
         .map_err(vk_fail("creating the sampler"))?;
 
         let descriptor_pool = unsafe {
-            // a screen whose size changes is made again before the old one
-            // goes and gives its set back, so there is room for both, then
-            // the sets for the renderer's images and the 3D sets, which hold
-            // two pictures each
+            // a screen whose size changes gets made again b4 the old one goes and gives its set back,
+            // so there's room for both, then the sets for the renderer's images and the 3D sets,
+            // which hold two pictures each
             let sets = 6 + 4 * FRAMES_IN_FLIGHT as u32;
             let sizes = [vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
@@ -323,7 +320,7 @@ impl VulkanPresenter {
             in_flight.push(
                 unsafe {
                     device.create_fence(
-                        // signalled, so the first frame does not wait forever.
+                        // signaled, so the first frame doesn't wait forever
                         &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
                         None,
                     )
@@ -332,8 +329,7 @@ impl VulkanPresenter {
             );
         }
 
-        // the screens start at their native sizes, upload grows them if a
-        // title ever reports something different.
+        // the screens start at their native sizes, upload grows them if a title ever reports something different
         let screens = [
             Screen::new(
                 &device,
@@ -406,6 +402,7 @@ impl VulkanPresenter {
             overlay: Some(overlay),
             window: size,
             arrangement: ScreenLayout::default(),
+            orientation: ScreenOrientation::default(),
             top_width: super::TOP_WIDTH,
             filter: ScreenFilter::default(),
             integer: false,
@@ -424,8 +421,7 @@ impl VulkanPresenter {
         }
         .map_err(vk_fail("querying surface capabilities"))?;
 
-        // a current extent of u32::MAX means the surface takes its size from
-        // the swapchain rather than the other way round.
+        // a current extent of u32::MAX means the surface takes its size from the swapchain, not the other way round
         let extent = if capabilities.current_extent.width == u32::MAX {
             vk::Extent2D {
                 width: self.window.0.clamp(
@@ -442,7 +438,7 @@ impl VulkanPresenter {
         };
 
         if extent.width == 0 || extent.height == 0 {
-            // the window is minimized, nothing to build.
+            // the window's minimized, nothing to build
             self.extent = extent;
             return Ok(());
         }
@@ -457,11 +453,10 @@ impl VulkanPresenter {
                 .get_physical_device_surface_present_modes(self.physical_device, self.surface)
         }
         .map_err(vk_fail("querying present modes"))?;
-        // mailbox where there is one, the frontend keeps the frames to the
-        // console's rate itself, and a present that waits for the display,
-        // as FIFO does on Mesa under Wayland, holds the next frame back with
-        // it. FIFO is always there otherwise. ZAKURO_PRESENT_MODE=fifo,
-        // mailbox or immediate picks one
+        // mailbox where there's one, the frontend keeps frames to the console's rate itself,
+        // and a present that waits for the display (like FIFO on Mesa under Wayland) holds the next frame back w/
+        // it
+        // FIFO is always there otherwise, ZAKURO_PRESENT_MODE=fifo, mailbox or immediate picks one
         let wanted = match std::env::var("ZAKURO_PRESENT_MODE").as_deref() {
             Ok("fifo") => vec![vk::PresentModeKHR::FIFO],
             Ok("immediate") => vec![vk::PresentModeKHR::IMMEDIATE],
@@ -563,8 +558,7 @@ impl VulkanPresenter {
         }
     }
 
-    /// copies pixels into a screen's staging buffer, reallocating the image if
-    /// the size changed.
+    /// copies pixels into a screen's staging buffer, reallocating the image if the size changed
     fn upload(&mut self, index: usize, image: &ScreenImage<'_>) -> Result<(), PresentError> {
         if self.screens[index].width != image.width || self.screens[index].height != image.height
         {
@@ -587,9 +581,8 @@ impl VulkanPresenter {
         let screen = &mut self.screens[index];
         let bytes = (image.width * image.height * 4) as usize;
         let count = bytes.min(image.pixels.len());
-        // SAFETY: the staging buffer is host visible, persistently mapped and
-        // at least bytes long, and no command using it is in flight because
-        // the frame's fence was waited on first.
+        // safe bc the staging buffer is host visible, persistently mapped and at least bytes long,
+        // and no command using it is in flight since the frame's fence got waited on first
         unsafe {
             std::ptr::copy_nonoverlapping(image.pixels.as_ptr(), screen.staging_mapping, count);
         }
@@ -598,19 +591,17 @@ impl VulkanPresenter {
         Ok(())
     }
 
-    /// the device, for the renderer to draw on, when it can share it.
+    /// the device, for the renderer to draw on, when it can share it
     pub fn shared_device(&self) -> Option<Arc<SharedDevice>> {
         self.shared.clone()
     }
 
-    /// whether a present waits for the display, rather than handing the
-    /// frame over and going on.
+    /// does a present wait for the display, instead of handing the frame over and moving on
     pub fn waits_for_display(&self) -> bool {
         self.waits
     }
 
-    /// what a screen is drawn from this frame, pixels uploaded to its own
-    /// image or an image of the renderer's the frame's set points at.
+    /// what a screen gets drawn from this frame, pixels uploaded to its own image or one of the renderer's images the frame's set points at
     fn source(&mut self, index: usize, image: &ScreenImage<'_>) -> Result<Source, PresentError> {
         if let Some(gpu) = image.gpu {
             self.screens[index].showing = false;
@@ -623,8 +614,7 @@ impl VulkanPresenter {
                 .dst_binding(0)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&info);
-            // SAFETY: the frame's fence was waited on, so no command using
-            // the set is in flight
+            // safe bc the frame's fence was waited on, so no command using the set is in flight
             unsafe { self.device.update_descriptor_sets(&[write], &[]) };
             return Ok(Source::Gpu(gpu));
         }
@@ -636,8 +626,7 @@ impl VulkanPresenter {
         Ok(if screen.initialized && screen.showing { Source::Own } else { Source::Nothing })
     }
 
-    /// points the frame's 3D set at the top screen's two pictures, wherever
-    /// each is drawn from.
+    /// points the frame's 3D set at the top screen's two pictures, wherever each gets drawn from
     fn write_stereo_set(&self, sources: &[Source; 3]) {
         let view = |index: usize| match sources[index] {
             Source::Gpu(gpu) => Some((gpu.view, vk::ImageLayout::GENERAL)),
@@ -654,12 +643,11 @@ impl VulkanPresenter {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&infos[binding])
         });
-        // SAFETY: the frame's fence was waited on, so no command using the
-        // set is in flight
+        // safe bc the frame's fence was waited on, so no command using the set is in flight
         unsafe { self.device.update_descriptor_sets(&writes, &[]) };
     }
 
-    /// keeps the overlay's changes for the next frame drawn.
+    /// keeps the overlay's changes for the next frame drawn
     fn defer(&mut self, overlay: &Overlay) {
         if let Some(painter) = &mut self.overlay {
             painter.defer(overlay);
@@ -732,8 +720,7 @@ impl VulkanPresenter {
                 );
             }
 
-            // the renderer's work came first on the queue, its images are
-            // read once what it wrote is there
+            // the renderer's work came first on the queue, its images get read once what it wrote is there
             if sources.iter().any(|source| matches!(source, Source::Gpu(_))) {
                 let barrier = vk::MemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
@@ -776,7 +763,7 @@ impl VulkanPresenter {
                     Some((self.gpu_sets[self.frame][index], [x, y, width, height, left, top, right, bottom]))
                 }
             };
-            let places = place(self.extent.width, self.extent.height, self.arrangement, self.top_width, self.integer, self.stereo, right);
+            let places = place(self.extent.width, self.extent.height, self.arrangement, self.orientation, self.top_width, self.integer, self.stereo, right);
             for (viewport, shown) in places {
                 let index = match shown {
                     Shown::Top | Shown::Both => 0,
@@ -801,7 +788,8 @@ impl VulkanPresenter {
                 set_viewport(device, command_buffer, viewport, self.extent);
                 device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
                 device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::GRAPHICS, layout, 0, &[set], &[]);
-                device.cmd_push_constants(command_buffer, layout, vk::ShaderStageFlags::FRAGMENT, 0, &constants);
+                device.cmd_push_constants(command_buffer, layout, vk::ShaderStageFlags::VERTEX, VERT_CONSTANTS_OFFSET, &self.orientation.clockwise_angle().to_le_bytes());
+                device.cmd_push_constants(command_buffer, layout, vk::ShaderStageFlags::FRAGMENT, FRAG_CONSTANTS_OFFSET, &constants);
                 device.cmd_draw(command_buffer, 3, 1, 0, 0);
             }
 
@@ -826,16 +814,15 @@ impl Presenter for VulkanPresenter {
         overlay: &Overlay,
     ) -> Result<(), PresentError> {
         if self.stale {
-            // the swapchain no longer matches the window. rebuilding it is
-            // what lets a minimized window come back: while minimized the
-            // surface has no size, nothing is built, and stale stays set
-            // until the window is restored to a size again, so the guard
-            // below for an empty extent must not come first.
+            // the swapchain no longer matches the window
+            // rebuilding it is what lets a minimized window come back, while minimized the surface has no size,
+            // nothing gets built, and stale stays set till the window's restored to a size again,
+            // so the guard below for an empty extent must not come first
             self.defer(overlay);
             unsafe { self.device.device_wait_idle() }.map_err(vk_fail("waiting for idle"))?;
             self.build_swapchain()?;
             if self.extent.width == 0 || self.extent.height == 0 {
-                // still minimized, keep waiting for a size.
+                // still minimized, keep waiting for a size
                 return Ok(());
             }
             return Err(PresentError::OutOfDate);
@@ -874,7 +861,7 @@ impl Presenter for VulkanPresenter {
             }
         };
 
-        // only reset the fence once we know we are going to submit.
+        // only reset the fence once we know we're going to submit
         unsafe {
             self.device
                 .reset_fences(&[fence])
@@ -897,8 +884,7 @@ impl Presenter for VulkanPresenter {
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
                 .map_err(vk_fail("resetting a command buffer"))?;
         }
-        // the painter is taken out while it records, it and the presenter
-        // both being borrowed
+        // the painter gets taken out while it records, since it and the presenter are both borrowed
         let mut painter = self.overlay.take().expect("the overlay painter lives as long as the presenter");
         painter.begin_frame(&self.device, frame);
         let recorded = self.record(command_buffer, self.framebuffers[image_index as usize], &mut painter, overlay, sources, has_right);
@@ -960,6 +946,10 @@ impl Presenter for VulkanPresenter {
         self.arrangement = arrangement;
     }
 
+    fn set_orientation(&mut self, orientation: ScreenOrientation) {
+        self.orientation = orientation;
+    }
+
     fn set_top_width(&mut self, width: f32) {
         self.top_width = width;
     }
@@ -1009,8 +999,7 @@ impl Drop for VulkanPresenter {
             self.device
                 .destroy_descriptor_set_layout(self.descriptor_layout, None);
             self.device.destroy_render_pass(self.render_pass, None);
-            // a shared device and its instance go with the last of the
-            // renderer and this, the surface before
+            // a shared device and its instance go w/ the last of the renderer and this, the surface b4
             if self.shared.is_none() {
                 self.device.destroy_device(None);
             }
@@ -1023,9 +1012,7 @@ impl Drop for VulkanPresenter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Setup helpers
-// ---------------------------------------------------------------------------
+// setup helpers
 
 fn pick_device(
     instance: &ash::Instance,
@@ -1053,7 +1040,7 @@ fn pick_device(
             if !supported {
                 continue;
             }
-            // prefer a discrete GPU, then integrated, then anything.
+            // prefer a discrete GPU, then integrated, then whatever
             let properties = unsafe { instance.get_physical_device_properties(device) };
             let score = match properties.device_type {
                 vk::PhysicalDeviceType::DISCRETE_GPU => 3,
@@ -1081,8 +1068,7 @@ fn choose_format(
     }
     .map_err(vk_fail("querying surface formats"))?;
 
-    // the emulator produces straight sRGB-ish bytes, so an UNORM target keeps
-    // them looking the way the console does.
+    // the emulator makes straight sRGB ish bytes, so an UNORM target keeps them looking like the console does
     formats
         .iter()
         .copied()
@@ -1134,8 +1120,7 @@ fn create_render_pass(
     .map_err(vk_fail("creating the render pass"))
 }
 
-/// a set of pictures the fragment shader samples, one or the top screen's
-/// two for 3D.
+/// a set of pictures the fragment shader samples, one, or the top screen's two for 3D
 fn create_descriptor_layout(
     device: &ash::Device,
     pictures: u32,
@@ -1169,8 +1154,14 @@ fn create_pipeline(
     let fragment = create_shader_module(device, fragment_spirv)?;
 
     let layouts = [descriptor_layout];
-    let constants = [vk::PushConstantRange::default()
+    let constants = [
+        vk::PushConstantRange::default()
+        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .offset(VERT_CONSTANTS_OFFSET)
+        .size(4),
+        vk::PushConstantRange::default()
         .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        .offset(FRAG_CONSTANTS_OFFSET)
         .size(constants_size)];
     let pipeline_layout = unsafe {
         device.create_pipeline_layout(
@@ -1193,7 +1184,7 @@ fn create_pipeline(
             .name(c"main"),
     ];
 
-    // the vertex shader builds its own triangle, so there is no input state.
+    // the vertex shader builds its own triangle, so there's no input state
     let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
     let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
@@ -1349,8 +1340,7 @@ fn set_viewport(
                 max_depth: 1.0,
             }],
         );
-        // the scissor has to be clamped to the framebuffer or validation
-        // complains when the window is smaller than the layout wants.
+        // the scissor has to be clamped to the framebuffer or validation complains when the window's smaller than the layout wants
         let x = viewport.x.max(0.0) as i32;
         let y = viewport.y.max(0.0) as i32;
         let width = (viewport.width as u32).min(extent.width.saturating_sub(x as u32));
@@ -1484,7 +1474,7 @@ impl Screen {
         unsafe { device.bind_buffer_memory(staging, staging_memory, 0) }
             .map_err(vk_fail("binding staging memory"))?;
 
-        // mapped once and kept mapped, the buffer is written every frame.
+        // mapped once and kept mapped, the buffer gets written every frame
         let staging_mapping = unsafe {
             device.map_memory(
                 staging_memory,

@@ -1,80 +1,177 @@
-# Zakuro
+<div align="center">
 
-A WIP HLE Nintendo 3DS emulator written in Rust that uses ahead-of-time (AOT) recompilation instead of a JIT.
+<!-- LOGO PLACEHOLDER: replace with docs/images/logo.png (recommended ~640px wide, transparent PNG) -->
+<img src="kiu/docs/images/logo.png" alt="Kid Icarus: Uprising PC logo" width="480">
 
-Bug reports, progress and everything else are on the [Discord server](https://discord.gg/7dduXVv2xm).
+# Kid Icarus: Uprising — PC
 
-The games tested so far are in [COMPATIBILITY.md](COMPATIBILITY.md).
+**A native-feeling PC port of Kid Icarus: Uprising, with real mouse aim and a single-screen layout.**
 
-<p>
-  <img width="266" alt="Pokémon Y running in Zakuro" src="docs/screenshots/pokemon-y.png" />
-  <img width="266" alt="The Legend of Zelda: Majora's Mask 3D running in Zakuro" src="docs/screenshots/majoras-mask-3d.png" />
-  <img width="266" alt="Persona Q running in Zakuro" src="docs/screenshots/persona-q.png" />
-</p>
+Statically recompiled with [3dsrecomp](https://github.com/patricksmill/3dsrecomp) · a fork of [Zakuro](https://github.com/fearkov/zakuro)
 
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-informational)
+![Title](https://img.shields.io/badge/title-0004000000030100%20(USA)-blue)
+![Status](https://img.shields.io/badge/status-work%20in%20progress-orange)
 
-I started developing this project in October 2025, before
-[feargba](https://github.com/fearkov/feargba). 
+<!-- HERO SCREENSHOT PLACEHOLDER: docs/images/hero.png (16:9 air battle, 1920x1080) -->
+<img src="kiu/docs/images/hero.png" alt="Air battle with mouse aim" width="900">
 
-I first wrote it in C++, but I was learning Rust at the time and noticed there wasn't a working 3DS emulator written in Rust, so I switched.
+</div>
 
-This is a personal experimental project. You can use it to play games, but that was never the main goal. Some games boot. Instead of translating code while the game runs, like a JIT does, Zakuro runs code recompiled ahead of time by [3dsrecomp](https://github.com/fearkov/3dsrecomp), and tested games run at full speed that way. On the interpreter alone they run below full speed.
+---
 
-Builds for Windows and Linux are on the [releases page](https://github.com/fearkov/zakuro/releases): on Windows, unzip it and run zakuro.exe, and on Linux, extract it and run ./zakuro.
+## Features
 
-To build it yourself you need Rust 1.95 or newer. On Linux, building also needs pkg-config and the ALSA and udev development files (libasound2-dev and libudev-dev on Debian and Ubuntu, alsa-lib and systemd-libs on Arch). On Windows, nothing else is needed:
+### 🎯 Controls
+- **True mouse aiming** — absolute reticle in air battles, relative mouse-look camera on the ground.
+- **Fully rebindable** keyboard, mouse and controller input.
+- **Optional gyro aim** for supported controllers (experimental: needs [Darkshade's patch](#gyro-aim-and-darkshades-patch)).
+- **Mouse-driven menus** — hover and click call the game's own cursor and confirm logic, so menus behave exactly as they would on hardware.
 
-    cargo install --git https://github.com/fearkov/zakuro --locked zakuro
+### 🖥️ One Screen
+- **Battle HUD, dialogue, pause menu and scripted menus** relocated from the bottom screen onto the main view.
+- **Widescreen** — 16:9 is recommended, since menu layouts are hand-placed for it; ultrawide is supported in battle.
+- Every relocated Screen can be switched back to its original 3DS presentation individually.
 
-Cargo puts it in ~/.cargo/bin, which has to be on your PATH. Then `zakuro` in a terminal opens it. To play you need a decrypted ROM:
+### ⚡ Performance
+- **Ahead-of-time recompiled** game code — no JIT warm-up, no interpreter.
+- **60 FPS patch**, generated from your own `code.bin` by `kiu/scripts/make_60fps_ips.py` ([how](kiu/docs/BUILDING.md#5-optional-the-60-fps-patch)).
+- Headless benchmark harness to track frame rate across upstream merges.
 
-    zakuro path/to/rom.3ds
+<!-- SCREENSHOT GRID PLACEHOLDERS: replace each with docs/images/<name>.png -->
+<table>
+  <tr>
+    <td><img src="kiu/docs/images/ground-battle.png" alt="Ground battle" width="440"></td>
+    <td><img src="kiu/docs/images/menus.png" alt="Single-screen menus" width="440"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Ground battle with mouse-look</sub></td>
+    <td align="center"><sub>Menus on one screen</sub></td>
+  </tr>
+  <tr>
+    <td><img src="kiu/docs/images/ultrawide.png" alt="Ultrawide" width="440"></td>
+    <td><img src="kiu/docs/images/settings.png" alt="Input settings" width="440"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Ultrawide in battle</sub></td>
+    <td align="center"><sub>Rebinding & PC settings</sub></td>
+  </tr>
+</table>
 
-Without a ROM it opens a library with the games in a folder you pick, where you can also recompile them. Esc brings up a menu over the game, and the settings (controls, sound, graphics, a background for the library) are in there too.
+---
 
-Games run faster with their code recompiled ahead of time by [3dsrecomp](https://github.com/fearkov/3dsrecomp), which comes with Zakuro: press Recompile next to a game in the library, once per game. It takes around ten minutes and needs a C compiler. If your computer has gcc or clang, Zakuro uses it, and if it has neither, Zakuro offers to download Zig, which comes with one and needs no installing, into its own folder. From then on Zakuro runs the recompiled code on its own, and anything it doesn't cover still goes through the interpreter.
+## How It Works
 
-3dsrecomp also works on its own, from the terminal:
+| Layer | Role |
+| --- | --- |
+| **3dsrecomp** | Translates the game's ARM `code.bin` into native code ahead of time. |
+| **Overrides** | Small C replacements for selected game functions (`kiu/overrides/`, tracked in `kiu/docs/decomp/LEDGER.md`). |
+| **Zakuro fork** | Runtime: GPU, audio, services, plus the PC frontend, input and screen-layout hooks. |
+| **kiutrace** | Headless harness for save states, scripted input, screenshots and benchmarks. |
 
-    cargo install --git https://github.com/fearkov/3dsrecomp --locked recomp3ds
-    3dsrecomp build path/to/rom.3ds
+Only a handful of game functions are hooked; everything else runs as the original game logic.
 
---recompiled points it at another library, and --interpreter runs everything in the interpreter.
+---
 
-You can use mods too. I kept the same folders Luma3DS and Azahar use, so if a mod works there, it should work here as it is. Each game has its own folder, `mods/<title ID>/`, inside Zakuro's data folder (`~/.local/share/zakuro/mods/` on Linux, `%APPDATA%\zakuro\mods\` on Windows), and the Mods button next to the game in the library opens it for you:
+## Getting Started
 
-- `romfs/` is for files that replace the game's own, or add new ones.
-- `romfs_ext/` is for .ips and .bps patches to the game's files, and .stub files to remove one.
-- `code.bin`, `code.ips` or `code.bps`, in the folder or in `exefs/`, change the game's code.
-- `exheader.bin`, in the game's folder, replaces the game's exheader, which code mods that make the game's code longer come with.
-- `textures/` is for texture packs made for Citra or Azahar. Put in it what the pack puts in `load/textures/<title ID>/`, its pack.json and its folders of PNGs.
+> [!IMPORTANT]
+> You must provide your own **decrypted** dump of Kid Icarus: Uprising (USA). No game data is included or distributed.
 
-If your mod changes the game's code, recompile the game with the mod already in its folder, and everything keeps running at full speed. Otherwise the parts the mod touches go through the interpreter and run slower, and if you recompiled the game before 0.2.19, the whole game goes through it until you recompile it again.
+### Prerequisites
 
-Texture packs need "Draw the 3D on the GPU", which is on by default. Their pictures load in the background, so the first time something shows up you may see the game's own texture for a moment. Only PNGs are read for now, which is what almost every pack uses.
+- [Rust](https://rustup.rs) (stable) and a C compiler.
+- **Linux:** `cmake`, `pkg-config`, and the ALSA and udev development files. On Debian, Ubuntu and Mint:
+  ```sh
+  sudo apt install build-essential cmake pkg-config libasound2-dev libudev-dev
+  ```
+- **Windows:** MinGW-w64 gcc (through MSYS2 or WinLibs) and CMake.
 
-Got updates or DLC for a game? Just drop them in the same folder as your games and Zakuro figures out which game they belong to, and uses them when you play it. They need to be decrypted, same as the games. If you have more than one update for the same game, it picks the newest. And if you recompiled the game before adding its update, recompile it again, or the parts the update changed will run slower.
+### Build
 
-Cheats work too, the same files Citra and Azahar use, so if you already have them there, just copy them over to the cheats folder in Zakuro's data folder. You can also turn them on and off, or paste a new one, from the Cheats button in the menu while you're playing.
+1. Clone the repository:
+   ```sh
+   git clone https://github.com/patricksmill/UprisingHack
+   cd UprisingHack
+   ```
+2. Place your dump at `kiu/dumps/kiu.cci` (git ignores that folder).
+3. Build and open the library:
+   ```sh
+   cargo run --release -p zakuro
+   ```
+   Cargo fetches the 3dsrecomp fork itself, at the commit `Cargo.lock` pins.
+4. Press **Choose folder…**, pick `kiu/dumps/`, and press **Recompile** next to the game. Do this once, and again after each update. If Zakuro finds no C compiler, it offers to download one.
+5. Launch the game from the library, or straight from the command line:
+   ```sh
+   cargo run --release -p zakuro -- kiu/dumps/kiu.cci
+   ```
+   Until you recompile, the game runs in the interpreter, which is much slower.
+6. Press **F12** in-game for the emulator menu.
 
-For some games, the Cheats window also has a 60 FPS switch. It's a code someone from the community made (their name is right there), and I only list it for the exact version of the game I tested it on, so it might not show up for your copy. One thing to know: most of these games count time in frames, so with 60 FPS on, the whole game runs twice as fast too. Great for grinding in Pokémon, maybe less so for everything else.
+To update, `git pull`, rebuild, then recompile.
 
-No copyrighted data is included. I do not condone piracy, and I will not help you with that. So, don't ask me about that.
+More detail, including the 60 FPS patch: [kiu/docs/BUILDING.md](kiu/docs/BUILDING.md).
 
-Controls:
+### Restoring original presentation
 
-| 3DS | Keyboard | Controller |
-|---|---|---|
-| A / B / X / Y | X / Z / S / A | Right / bottom / top / left face buttons |
-| L / R | Q / W | LB / RB (L1 / R1) |
-| Start / Select | Enter / Backspace | Start / Back (Select) |
-| D-pad | Arrow keys | D-pad |
-| Circle pad | I / J / K / L | Left stick |
-| Touch screen | Mouse (click) | |
-| Menu / Pause / Fullscreen | Esc / F1 / F11 | Home |
+Set any of these to `0` to show that feature as the 3DS draws it:
 
-Keys and controller buttons can be changed in the settings. Xbox, PlayStation, Switch Pro and most other controllers work.
+| Variable | Feature |
+| --- | --- |
+| `ZAKURO_MENUS_TOP` | Scripted menus on the top screen |
+| `ZAKURO_NARRATION_TOP` | Dialogue / narration |
+| `ZAKURO_PAUSE_TOP` | Pause menu |
+| `ZAKURO_CAULDRON_TOP` | Fiend's Cauldron |
+| `ZAKURO_MIRROR_BOTTOM` | Bottom-screen mirroring |
+| `ZAKURO_MENU_HOVER` | Mouse hover in menus |
 
-Contributions are welcome. Using AI is fine sometimes, but the code must always be reviewed by a human. Code that is entirely vibecoded will be discarded.
+---
 
-MIT license.
+## Repository Layout
+
+This repository is a fork of [Zakuro](https://github.com/fearkov/zakuro). Upstream's code stays where it is; the port's own work sits in `kiu/`.
+
+| Path | Contents |
+| --- | --- |
+| `crates/` | Zakuro, with the port's hooks (`zakuro-core/src/aim_mouse/`) and PC frontend (`zakuro/`) |
+| `kiu/overrides/` | C overrides, embedded into Recompile |
+| `kiu/tools/kiutrace` | Headless test & benchmark harness |
+| `kiu/tools/funclist` | Function list export for Ghidra |
+| `kiu/ghidra/` | Headless analysis scripts |
+| `kiu/scripts/` | Benchmarks, IPS builder, image conversion |
+| `kiu/analysis/` | `FINDINGS.md` (addresses), `PERFORMANCE.md` |
+| `kiu/docs/` | Building, design decisions (`adr/`), decomp notes |
+| `GLOSSARY.md` | Project terminology |
+
+The recompiler is the [3dsrecomp fork](https://github.com/patricksmill/3dsrecomp), a Cargo dependency.
+
+Roadmap and open issues: [`kiu/PLAN.md`](kiu/PLAN.md).
+
+---
+
+## Gyro aim and Darkshade's patch
+
+The port reads a controller's gyroscope into the console's, but the game only aims with it once Darkshade's **Kid Icarus: Uprising C-Stick & Gyro Patch** is installed. That patch is not included here; get it from Darkshade's own release.
+
+Combining it with the port is **experimental and not yet verified**:
+
+- It replaces `code.bin` outright, so it cannot be combined with the [60 FPS patch](kiu/docs/BUILDING.md#5-optional-the-60-fps-patch), which is generated against the original.
+- Install only its **Base Patch**. Skip its widescreen option: the port has its own.
+- Recompile after installing it.
+
+---
+
+## Credits
+
+- **[fearkov](https://github.com/fearkov)**, for [Zakuro](https://github.com/fearkov/zakuro), which this repository is a fork of, and [3dsrecomp](https://github.com/fearkov/3dsrecomp).
+- **Darkshade**, for the Kid Icarus: Uprising C-Stick & Gyro Patch. Its widescreen hooks mapped the projection, HUD and reticle code the port's widescreen builds on.
+
+## License
+
+The port is licensed under the [GNU General Public License v3.0 or later](LICENSE). It is built on Zakuro and 3dsrecomp by fearkov, whose code remains available under the [MIT license](LICENSE-MIT); that notice is kept with it.
+
+---
+
+<div align="center">
+<sub>Not affiliated with or endorsed by Nintendo, Project Sora or Sora Ltd. Kid Icarus is a trademark of Nintendo.</sub>
+</div>

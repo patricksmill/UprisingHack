@@ -1,33 +1,33 @@
-//! command line parsing.
+//! command line parsing
 
 use zakuro_gpu::RendererKind;
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// the game to start, none to open the library.
+    /// the game to start, none to open the library
     pub rom: Option<String>,
-    /// the settings' choice when not given.
+    /// the settings' choice when not given
     pub renderer: Option<RendererKind>,
-    /// window scale relative to the console's 400x480 combined screens, the
-    /// settings' when not given.
+    /// window scale relative to the console's 400x480 combined screens, the settings' when not given
     pub scale: Option<u32>,
-    /// run without a window for this many frames, then report.
+    /// run w/o a window for this many frames, then report
     pub headless: Option<u64>,
     pub profile: bool,
     pub new3ds: bool,
-    /// skip loading a ROM entirely and just paint both screens solid colors.
+    /// skip loading a ROM entirely and just paint both screens solid colors
     pub test_pattern: bool,
-    /// a library of recompiled code for the title, or a directory of them.
+    /// a library of recompiled code for the title, or a directory of them
     pub recompiled: Option<String>,
-    /// draw on the host GPU rather than in software, the settings' choice
-    /// when not given.
+    /// draw on the host GPU instead of in software, the settings' choice when not given
     pub hardware_rasterizer: Option<bool>,
-    /// where saves live, instead of the usual place.
+    /// where saves live, instead of the usual place
     pub data: Option<String>,
-    /// interpret everything, whatever recompiled code there is.
+    /// interpret everything, whatever recompiled code there is
     pub interpreter: bool,
-    /// play no sound.
+    /// play no sound (shh)
     pub mute: bool,
+    /// open the developer layout editor over the game.
+    pub menu_editor: bool,
 }
 
 const USAGE: &str = "\
@@ -51,20 +51,25 @@ options:
   --profile                        collect a sampling profile and print it
   --recompiled <path>              run code 3dsrecomp built for the title, a
                                    library or a directory holding <title id>.so
-                                   (.dll on Windows, default: the one 3dsrecomp
-                                   build installed for it, in the system's
-                                   place for data, ~/.local/share/3dsrecomp or
+                                   (.dylib on macOS, .dll on Windows, default:
+                                   the one 3dsrecomp build installed for it, in
+                                   the system's place for data,
+                                   ~/.local/share/3dsrecomp,
+                                   ~/Library/Application Support/3dsrecomp or
                                    %APPDATA%\\3dsrecomp)
   --interpreter                    interpret everything, even with recompiled
                                    code around
   --mute                           play no sound
+  --menu-editor                    open the developer layout editor (F2 toggles)
   --data <dir>                     where saves live (default: the system's
-                                   place for data, ~/.local/share/zakuro or
+                                   place for data, ~/.local/share/zakuro,
+                                   ~/Library/Application Support/zakuro or
                                    %APPDATA%\\zakuro)
   -h, --help                       show this message
 
-The system font cannot be generated: put a dump at sysdata/shared_font.bin, in
-the working directory or where saves live, for titles that render text with it.
+Without a dump of the system font at sysdata/shared_font.bin, in the working
+directory or where saves live, a stand-in is drawn from the computer's fonts,
+its button symbols following the keys, mouse or controller in use.
 ";
 
 pub fn parse() -> Result<Options, String> {
@@ -82,6 +87,7 @@ pub fn parse() -> Result<Options, String> {
         data: None,
         interpreter: false,
         mute: false,
+        menu_editor: false,
     };
 
     let mut args = std::env::args().skip(1);
@@ -126,8 +132,11 @@ pub fn parse() -> Result<Options, String> {
             }
             "--interpreter" => options.interpreter = true,
             "--mute" => options.mute = true,
+            "--menu-editor" => options.menu_editor = true,
             "--profile" => options.profile = true,
             "--test-pattern" => options.test_pattern = true,
+            // macOS hands an app it hasn't run b4 a process number
+            other if cfg!(target_os = "macos") && other.starts_with("-psn_") => {}
             other if other.starts_with('-') => {
                 return Err(format!("unknown option '{other}'"));
             }

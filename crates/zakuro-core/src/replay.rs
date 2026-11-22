@@ -1,7 +1,8 @@
 //! a run's inputs written down frame by frame, with the clock it started
 //! at, so the run can be played back exactly. a line per change of input,
-//! the frame it starts at, the buttons, the circle pad, the touch, the tilt
-//! and the C-stick, which recordings from before them leave out.
+//! the frame it starts at, the buttons, the circle pad, the touch, the tilt,
+//! the C-stick and a controller's gyroscope, which recordings from before
+//! them leave out.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -16,7 +17,7 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// starts a recording of a run whose clock starts at clock.
+    /// starts recording a run whose clock starts at clock
     pub fn create(path: &Path, clock: u64) -> std::io::Result<Recorder> {
         let mut out = BufWriter::new(File::create(path)?);
         writeln!(out, "clock {clock}")?;
@@ -24,13 +25,14 @@ impl Recorder {
         Ok(Recorder { out, last: None, frame: 0 })
     }
 
-    /// takes the input of the frame about to run.
+    /// takes the input of the frame about to run
     pub fn record(&mut self, input: InputState) {
         if self.last != Some(input) {
             let (x, y) = input.touch.map_or((-1, -1), |(x, y)| (x as i32, y as i32));
             let [tilt_x, tilt_y] = input.tilt;
+            let [gyro_x, gyro_y, gyro_z] = input.gyro;
             let line = format!(
-                "{} {:x} {:?} {:?} {x} {y} {tilt_x:?} {tilt_y:?} {:?} {:?}",
+                "{} {:x} {:?} {:?} {x} {y} {tilt_x:?} {tilt_y:?} {:?} {:?} {gyro_x:?} {gyro_y:?} {gyro_z:?}",
                 self.frame,
                 input.buttons.bits(),
                 input.circle_x,
@@ -38,7 +40,7 @@ impl Recorder {
                 input.c_stick_x,
                 input.c_stick_y
             );
-            // written through at once, the run may end in a crash
+            // written thru at once, the run might end in a crash
             if writeln!(self.out, "{line}").and_then(|()| self.out.flush()).is_err() {
                 log::warn!("could not write to the input recording");
             }
@@ -70,10 +72,13 @@ impl Replay {
             let parse = || -> Option<(u64, InputState)> {
                 let (tx, ty): (i32, i32) = (tx.parse().ok()?, ty.parse().ok()?);
                 let pair = |x: &str, y: &str| -> Option<[f32; 2]> { Some([x.parse().ok()?, y.parse().ok()?]) };
-                let (tilt, c_stick) = match rest {
-                    [] => ([0.0; 2], [0.0; 2]),
-                    [x, y] => (pair(x, y)?, [0.0; 2]),
-                    [x, y, cx, cy] => (pair(x, y)?, pair(cx, cy)?),
+                let (tilt, c_stick, gyro) = match rest {
+                    [] => ([0.0; 2], [0.0; 2], [0.0; 3]),
+                    [x, y] => (pair(x, y)?, [0.0; 2], [0.0; 3]),
+                    [x, y, cx, cy] => (pair(x, y)?, pair(cx, cy)?, [0.0; 3]),
+                    [x, y, cx, cy, gx, gy, gz] => {
+                        (pair(x, y)?, pair(cx, cy)?, [gx.parse().ok()?, gy.parse().ok()?, gz.parse().ok()?])
+                    }
                     _ => return None,
                 };
                 Some((
@@ -86,6 +91,7 @@ impl Replay {
                         tilt,
                         c_stick_x: c_stick[0],
                         c_stick_y: c_stick[1],
+                        gyro,
                     },
                 ))
             };
@@ -94,12 +100,12 @@ impl Replay {
         Ok(Replay { clock, changes, next: 0, current: InputState::default() })
     }
 
-    /// the clock the recorded run started at.
+    /// the clock the recorded run started at
     pub fn clock(&self) -> u64 {
         self.clock
     }
 
-    /// the input of a frame, frames asked for in order.
+    /// a frame's input, frames asked for in order
     pub fn input(&mut self, frame: u64) -> InputState {
         while let Some(&(start, input)) = self.changes.get(self.next) {
             if start > frame {
@@ -116,7 +122,7 @@ impl Replay {
 mod tests {
     use super::*;
 
-    /// what a recording writes, a replay of it gives back frame for frame.
+    /// what a recording writes, a replay gives back frame for frame
     #[test]
     fn a_recording_plays_back() {
         let path = std::env::temp_dir().join(format!("zakuro-replay-{}.txt", std::process::id()));
@@ -128,6 +134,7 @@ mod tests {
             tilt: [0.25, -0.5],
             c_stick_x: -0.75,
             c_stick_y: 1.0,
+            gyro: [12.5, -3.0, 0.5],
         };
         let mut recorder = Recorder::create(&path, 1234).unwrap();
         for frame in 0..10 {
@@ -143,7 +150,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    /// a recording from before tilt was written down plays back untilted.
+    /// a recording from b4 tilt existed plays back untilted
     #[test]
     fn an_old_recording_has_no_tilt() {
         let path = std::env::temp_dir().join(format!("zakuro-replay-old-{}.txt", std::process::id()));

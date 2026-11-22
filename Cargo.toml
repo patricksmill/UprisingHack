@@ -7,14 +7,16 @@ members = [
     "crates/zakuro-gpu",
     "crates/zakuro-core",
     "crates/zakuro",
+    "kiu/tools/kiutrace",
+    "kiu/tools/funclist",
 ]
 
 [workspace.package]
-version = "0.2.30"
+version = "0.2.32"
 edition = "2021"
 rust-version = "1.95"
-license = "MIT"
-repository = "https://github.com/fearkov/zakuro"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/patricksmill/UprisingHack"
 
 [workspace.dependencies]
 zakuro-common = { path = "crates/zakuro-common" }
@@ -37,15 +39,14 @@ parking_lot = "0.12"
 opt-level = 1
 debug = true
 
-# The emulator is unusably slow in a plain debug build; give the hot crates -O2
-# even in dev profile.
+# a plain debug build is unusably slow, so the hot crates get O2 even in dev
 [profile.dev.package.zakuro-cpu]
 opt-level = 3
 [profile.dev.package.zakuro-gpu]
 opt-level = 3
 [profile.dev.package.zakuro-core]
 opt-level = 2
-# translated vertex shaders compile through it as games run
+# translated vertex shaders compile thru it while games run
 [profile.dev.package.naga]
 opt-level = 3
 
@@ -55,3 +56,9 @@ lto = "thin"
 codegen-units = 4
 panic = "unwind"
 debug = 1
+
+# the port's recompiler fork: title-specific hints and the ABI's mouse hook support.
+# Cargo.lock pins the commit; `cargo update -p recomp3ds` moves it.
+[patch."https://github.com/fearkov/3dsrecomp"]
+recomp-abi = { git = "https://github.com/patricksmill/3dsrecomp", branch = "kiu" }
+recomp3ds = { git = "https://github.com/patricksmill/3dsrecomp", branch = "kiu" }

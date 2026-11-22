@@ -1,22 +1,36 @@
-//! keyboard to 3DS button mapping.
+//! keyboard to 3DS button mapping: the console's buttons for most titles,
+//! Action Bindings for Kid Icarus: Uprising.
 
 use winit::keyboard::{KeyCode, PhysicalKey};
 use zakuro_core::services::hid::{InputState, PadState};
+use zakuro_core::services::prompts::{Input, Label, MouseButton, Prompts};
 
+use crate::bindings::{Action, ActionBindings, Context, Inputs, Source};
 use crate::settings::Keys;
 
-/// accumulates key state between frames.
+/// piles up key state between frames
 #[derive(Default)]
 pub struct Keyboard {
     keys: Keys,
     buttons: PadState,
-    /// the circle pad keys held, up, down, left, right.
+    /// the circle pad keys held, up, down, left, right
     circle: [bool; 4],
-    /// the C-stick's, the same way.
+    /// the C stick's, same deal
     c_stick: [bool; 4],
     touch: Option<(u16, u16)>,
+    /// buttons the mouse's buttons hold while it aims.
+    mouse_buttons: PadState,
     /// how the mouse tilts the console, see InputState::tilt.
     tilt: [f32; 2],
+    /// Kid Icarus's Action Bindings, which then take every key, mouse
+    /// button and controller button in place of the console's.
+    bindings: Option<ActionBindings>,
+    actions: Inputs,
+    context: Context,
+    /// how far the movement keys lean while walking.
+    walk_lean: f32,
+    /// the movement keys walk unless Walk is held, which then runs.
+    walk_by_default: bool,
 }
 
 impl Keyboard {
@@ -29,13 +43,61 @@ impl Keyboard {
         self.release();
     }
 
+    /// takes input through Action Bindings, or the console's buttons with none.
+    pub fn set_bindings(&mut self, bindings: Option<ActionBindings>) {
+        if bindings != self.bindings {
+            self.bindings = bindings;
+            self.release();
+        }
+    }
+
+    pub fn acting(&self) -> bool {
+        self.bindings.is_some()
+    }
+
+    /// where the game is, a battle or a Screen, for the actions of the
+    /// inputs pressed from now on.
+    pub fn set_context(&mut self, context: Context) {
+        self.context = context;
+    }
+
+    /// how far the movement keys lean the circle pad while walking, and
+    /// whether they walk by themselves, Walk held then running.
+    pub fn set_walk(&mut self, lean: f32, by_default: bool) {
+        self.walk_lean = lean;
+        self.walk_by_default = by_default;
+    }
+
     /// lets go of everything, when the game stops seeing the keyboard.
     pub fn release(&mut self) {
         self.buttons = PadState::default();
         self.circle = [false; 4];
         self.c_stick = [false; 4];
         self.touch = None;
+        self.mouse_buttons = PadState::default();
         self.tilt = [0.0; 2];
+        self.actions.release_all();
+    }
+
+    /// holds or lets go of a button for a mouse button.
+    pub fn mouse_button(&mut self, button: PadState, pressed: bool) {
+        self.mouse_buttons.set(button, pressed);
+    }
+
+    /// presses or lets go of a key, mouse button or controller button
+    /// through the Action Bindings, giving the actions a press starts.
+    pub fn source(&mut self, source: Source, pressed: bool) -> Vec<Action> {
+        let Some(bindings) = &self.bindings else { return Vec::new() };
+        if !pressed {
+            self.actions.release(source);
+            return Vec::new();
+        }
+        self.actions.press(bindings, source, self.context)
+    }
+
+    /// lets go of the Action Bindings' inputs of one kind.
+    pub fn release_where(&mut self, gone: impl Fn(Source) -> bool) {
+        self.actions.release_where(gone);
     }
 
     fn button_for(&self, key: KeyCode) -> Option<PadState> {
@@ -61,10 +123,13 @@ impl Keyboard {
         .map(|(_, button)| button)
     }
 
-    pub fn key(&mut self, key: PhysicalKey, pressed: bool) {
+    pub fn key(&mut self, key: PhysicalKey, pressed: bool) -> Vec<Action> {
         let PhysicalKey::Code(code) = key else {
-            return;
+            return Vec::new();
         };
+        if self.acting() {
+            return self.source(Source::Key(code), pressed);
+        }
         if let Some(button) = self.button_for(code) {
             self.buttons.set(button, pressed);
         }
@@ -75,39 +140,170 @@ impl Keyboard {
                 *held = pressed;
             }
         }
+        Vec::new()
     }
 
-    /// records a click on the bottom screen, in screen pixels, or its release.
+    /// records a click on the bottom screen, in screen pixels, or its release
     pub fn touch(&mut self, position: Option<(u16, u16)>) {
         self.touch = position;
     }
 
-    /// records the tilt the mouse gives the console.
+    /// records the tilt the mouse gives the console
     pub fn tilt(&mut self, tilt: [f32; 2]) {
         self.tilt = tilt;
     }
 
     pub fn state(&self) -> InputState {
-        // holding two opposite keys cancels out, which is what a real stick
-        // would do
+        // holding two opposite keys cancels out, like a real stick would
         let axis = |plus: bool, minus: bool| plus as i8 as f32 - minus as i8 as f32;
         let [up, down, left, right] = self.circle;
         let [c_up, c_down, c_left, c_right] = self.c_stick;
-        InputState {
-            buttons: self.buttons,
+        let mut state = InputState {
+            buttons: self.buttons | self.mouse_buttons,
             circle_x: axis(right, left),
             circle_y: axis(up, down),
             c_stick_x: axis(c_right, c_left),
             c_stick_y: axis(c_up, c_down),
             touch: self.touch,
             tilt: self.tilt,
+            gyro: [0.0; 3],
+        };
+        if let Some(bindings) = &self.bindings {
+            let held = self.actions.held(bindings, self.context);
+            state.buttons = held.buttons;
+            // a Screen's movement is never shortened
+            let walking = self.context == Context::Gameplay && held.walk != self.walk_by_default;
+            [state.circle_x, state.circle_y] = match walking {
+                true => crate::bindings::walk(held.circle, self.walk_lean),
+                false => held.circle,
+            };
+            [state.c_stick_x, state.c_stick_y] = held.c_stick;
         }
+        state
     }
+
+    /// whether the Gyro Aim action is held.
+    pub fn gyro_held(&self) -> bool {
+        self.bindings.as_ref().is_some_and(|bindings| self.actions.held(bindings, self.context).gyro_aim)
+    }
+}
+
+/// the console's button symbols as the keys they are on.
+pub fn prompts(keys: &Keys) -> Prompts {
+    let mut prompts = Prompts::default();
+    for (input, key) in [
+        (Input::A, keys.a),
+        (Input::B, keys.b),
+        (Input::X, keys.x),
+        (Input::Y, keys.y),
+        (Input::L, keys.l),
+        (Input::R, keys.r),
+        (Input::ZL, keys.zl),
+        (Input::ZR, keys.zr),
+        (Input::Up, keys.up),
+        (Input::Down, keys.down),
+        (Input::Left, keys.left),
+        (Input::Right, keys.right),
+    ] {
+        prompts.set(input, Label::Key(cap(key)));
+    }
+    let together = |keys: &[KeyCode]| Label::Key(keys.iter().map(|&key| cap(key)).collect::<Vec<_>>().join(""));
+    prompts.set(Input::DPad, together(&[keys.up, keys.left, keys.down, keys.right]));
+    prompts.set(Input::UpDown, together(&[keys.up, keys.down]));
+    prompts.set(Input::LeftRight, together(&[keys.left, keys.right]));
+    prompts.set(Input::CirclePad, together(&[keys.circle_up, keys.circle_left, keys.circle_down, keys.circle_right]));
+    prompts
+}
+
+/// how a Kid Icarus Action Binding's key or mouse button looks in a prompt.
+pub fn label(source: Source) -> Label {
+    match source {
+        Source::Key(key) => Label::Key(cap(key)),
+        Source::Mouse(winit::event::MouseButton::Left) => Label::Mouse(MouseButton::Left),
+        Source::Mouse(winit::event::MouseButton::Right) => Label::Mouse(MouseButton::Right),
+        Source::Mouse(winit::event::MouseButton::Middle) => Label::Mouse(MouseButton::Middle),
+        other => Label::Key(other.name()),
+    }
+}
+
+/// a key's name short enough for a keycap.
+fn cap(key: KeyCode) -> String {
+    let short = match key {
+        KeyCode::ArrowUp => "↑",
+        KeyCode::ArrowDown => "↓",
+        KeyCode::ArrowLeft => "←",
+        KeyCode::ArrowRight => "→",
+        KeyCode::Enter | KeyCode::NumpadEnter => "Enter",
+        KeyCode::Backspace => "Bksp",
+        KeyCode::Space => "Space",
+        KeyCode::Escape => "Esc",
+        KeyCode::Tab => "Tab",
+        KeyCode::ShiftLeft | KeyCode::ShiftRight => "Shift",
+        KeyCode::ControlLeft | KeyCode::ControlRight => "Ctrl",
+        KeyCode::AltLeft | KeyCode::AltRight => "Alt",
+        KeyCode::Minus => "-",
+        KeyCode::Equal => "=",
+        KeyCode::Comma => ",",
+        KeyCode::Period => ".",
+        KeyCode::Slash => "/",
+        KeyCode::Semicolon => ";",
+        KeyCode::Quote => "'",
+        KeyCode::BracketLeft => "[",
+        KeyCode::BracketRight => "]",
+        _ => return crate::menus::key_name(key).trim_start_matches("Numpad").to_owned(),
+    };
+    short.to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// a prompt shows the key a button is bound to, and follows a rebinding.
+    #[test]
+    fn prompts_follow_the_keys() {
+        let mut keys = Keys::default();
+        let prompts = super::prompts(&keys);
+        assert_eq!(prompts.get(Input::A), &Label::Key("X".into()));
+        assert_eq!(prompts.get(Input::DPad), &Label::Key("↑←↓→".into()));
+        assert_eq!(prompts.get(Input::CirclePad), &Label::Key("IJKL".into()));
+        keys.a = KeyCode::Space;
+        assert_eq!(super::prompts(&keys).get(Input::A), &Label::Key("Space".into()));
+    }
+
+    /// with Walk held in a battle the movement keys lean as far as Walk
+    /// speed says; letting go of Walk leans them all the way.
+    #[test]
+    fn walk_leans_the_movement_keys_to_its_speed() {
+        let mut keyboard = Keyboard::new(Keys::default());
+        keyboard.set_bindings(Some(ActionBindings::default()));
+        keyboard.set_context(Context::Gameplay);
+        keyboard.set_walk(0.6, false);
+        keyboard.key(PhysicalKey::Code(KeyCode::KeyW), true);
+        keyboard.key(PhysicalKey::Code(KeyCode::ShiftLeft), true);
+        let state = keyboard.state();
+        assert_eq!((state.circle_x, state.circle_y), (0.0, 0.6));
+        keyboard.key(PhysicalKey::Code(KeyCode::ShiftLeft), false);
+        assert_eq!(keyboard.state().circle_y, 1.0);
+    }
+
+    /// walking by default, the movement keys walk by themselves and Walk
+    /// held runs; a Screen's movement is never shortened.
+    #[test]
+    fn walking_by_default_reverses_walk() {
+        let mut keyboard = Keyboard::new(Keys::default());
+        keyboard.set_bindings(Some(ActionBindings::default()));
+        keyboard.set_context(Context::Gameplay);
+        keyboard.set_walk(0.6, true);
+        keyboard.key(PhysicalKey::Code(KeyCode::KeyW), true);
+        assert_eq!(keyboard.state().circle_y, 0.6);
+        keyboard.key(PhysicalKey::Code(KeyCode::ShiftLeft), true);
+        assert_eq!(keyboard.state().circle_y, 1.0);
+        keyboard.release();
+        keyboard.set_context(Context::Screens);
+        keyboard.key(PhysicalKey::Code(KeyCode::KeyW), true);
+        assert_eq!(keyboard.state().circle_y, 1.0);
+    }
 
     #[test]
     fn keys_press_the_buttons_they_are_bound_to() {

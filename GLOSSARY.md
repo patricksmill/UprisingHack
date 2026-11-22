@@ -1,0 +1,206 @@
+# Kid Icarus: Uprising PC Port
+
+Terminology for the PC recompilation, graphics enhancement, and single-screen mouse/keyboard interface. Use these terms in issues, plans, tests, and change requests; the words under _Avoid_ are not used. Code anchors live in `analysis/FINDINGS.md`, and change requests follow `docs/agents/change-requests.md`.
+
+## Language
+
+### Menus
+
+Do not write `menu` alone: every reference names one of the three families below.
+
+**In-Game Menu**:
+The pause screen, its Options pages, and the dialogs opened over a battle. Drawn by the game's battle UI.
+_Avoid_: Pause menu, in-battle menu
+
+**Scripted Menu**:
+An out-of-battle game screen laid out by the game's scripted layout system: file select, chapter select, the hubs, Armory, Vault, Fiend's Cauldron.
+_Avoid_: Front-end menu, out-of-battle menu, static screen, 2D scene
+
+**Frontend Menu**:
+Zakuro's own host-drawn interface for emulator configuration, diagnostics and recovery, containing no game UI.
+_Avoid_: Emulator menu, settings overlay, debug menu
+
+**UprisingHack Window**:
+The Frontend Menu window that shows and changes the PC Preferences: Action Bindings, aiming and presentation.
+_Avoid_: UprisingHack menu, PC settings menu, preferences overlay
+
+**Screen**:
+One named menu surface the game enters; listed under Screens.
+_Avoid_: Page (except where the game's own page is meant), view, scene
+
+**Dialog**:
+A Screen shown over another Screen, sharing its input.
+_Avoid_: Popup, modal, prompt
+
+**Hint strip**:
+The one- or two-line control hint the game draws along a Screen edge.
+_Avoid_: Help text, footer, caption
+
+**Screen Transform**:
+The one process that moves a game-owned Screen's drawing and input onto the top screen: detect, capture, seat, replay, map input.
+_Avoid_: Menu relocation, top-screen replay, UI hack
+
+**Placement**:
+A source rectangle on the game's screen and where it shows on the top screen, shared by drawing and hit-testing.
+_Avoid_: Offset, box, viewport
+
+### UI structure
+
+**Board**:
+The fixed layout container of a Screen, holding Controls at anchored positions.
+_Avoid_: Panel, layout, canvas, scene
+
+**Control**:
+One hittable thing on a Screen: a button, row, slider, or tile.
+_Avoid_: Element, widget, part, button (for anything that is not a button)
+
+**List**:
+A scrolling sequence of Rows inside a Screen.
+_Avoid_: Table, grid, menu list
+
+**Row**:
+A Control that is one entry in a List.
+_Avoid_: Item, line, entry
+
+**Hover**:
+The pointer lighting the Control under it through a held Synthetic Touch.
+_Avoid_: Mouseover, focus, highlight
+
+**Outline**:
+The Control the game currently has selected on a Screen, lit by keys, gamepad, or Hover.
+_Avoid_: Selection, highlight
+
+**Cursor**:
+The game's own selection marker moved by keys or gamepad.
+_Avoid_: Pointer, mouse cursor
+
+**Pointer**:
+The host's mouse position in window space.
+_Avoid_: Cursor (when the mouse is meant)
+
+### Input
+
+**PC Preferences**:
+Control, audio, display and presentation choices for the PC version that apply across save books, independently of game progress.
+_Avoid_: Emulator settings (for player-facing choices), PC save data
+
+**Action Binding**:
+A keyboard, mouse or controller assignment to a named player action, such as Attack or Use Power, rather than to a virtual 3DS button.
+_Avoid_: 3DS mapping (for action-based assignments)
+
+**Gyro Aim**:
+Optional controller-motion aiming that supplements stick aiming during gameplay.
+_Avoid_: Motion controls (when referring specifically to aiming)
+
+**Air Aim**:
+Absolute mouse coordinate mapping used during aerial flight sections.
+_Avoid_: Flight mouse, absolute look, air cursor
+
+**Ground Look**:
+Delta mouse look with camera box containment collapsed for third-person ground combat.
+_Avoid_: Ground aiming, relative mouse, ground turn
+
+**Walk**:
+A held keyboard Action Binding that leans the Circle Pad only part way while the movement keys are down, so Pit walks in a battle instead of dashing and sprinting. Controllers have none; the stick leans as far as it is pushed. With Walk by default on, the keys walk by themselves and holding the same binding runs; its Row reads Run (hold).
+_Avoid_: Sneak, slow mode, sprint toggle
+
+**Synthetic Touch**:
+Stylus touch state synthesized from the host pointer and mouse buttons (touching, began, x, y).
+_Avoid_: Virtual touch, mouse emulation, fake stylus
+
+**Pointer Reset**:
+Forced broadcast of an out-of-bounds release event to clear guest touch state on window focus loss or scene change.
+_Avoid_: Touch cancel, cursor release, input flush
+
+### Idol View
+
+**Idol View**:
+The 3D figure of the idol shown on the Idols Screen, and the area of the top screen where it is drawn.
+_Avoid_: Model viewer, figure pane, 3D preview
+
+**Orbit**:
+Turning the Idol View's camera around the idol.
+_Avoid_: Rotate, spin, turn
+
+**Pan**:
+Sliding the idol across the Idol View without turning or zooming it; the game's own name is Move.
+_Avoid_: Move (outside quoting the game), drag, shift
+
+**Zoom**:
+Bringing the Idol View's camera closer to or further from the idol.
+_Avoid_: Scale, magnify
+
+**Reset View**:
+Returning the Idol View to the angle, position and zoom it shows an idol with first.
+_Avoid_: Recenter, home
+
+### Rendering
+
+**Top Screen Pass**:
+The render pipeline pass that emits graphics to the primary 3D display buffer.
+_Avoid_: Main screen, primary viewport, Upper LCD
+
+**Sprite Batch**:
+The shared vertex quad buffer submitted to the GPU command list.
+_Avoid_: UI buffer, 2D mesh, quad array
+
+**Lens Aspect**:
+The perspective camera's aspect-ratio parameter.
+_Avoid_: Camera ratio, projection aspect, frustum ratio
+
+**Aspect Ratio Factor (k)**:
+The current viewport aspect ratio divided by the original 5:3 3DS aspect.
+_Avoid_: Aspect multiplier, widescreen scale, zoom factor
+
+**Quad Squeeze**:
+Horizontal scale by 1/k applied to 2D sprite quads during the sprite batch flush.
+_Avoid_: UI shrink, sprite unstretch, aspect correction
+
+**High Refresh Mode**:
+The game showing a new picture on every host refresh above 60 Hz while gameplay keeps its 60 FPS speed.
+_Avoid_: High FPS, uncapped, 120 FPS patch
+
+### Build
+
+**C Override**:
+Hand-written native C hook compiled into the recompilation runtime instead of into the game.
+_Avoid_: Patch, hack, DLL injection
+
+## Screens
+
+Canonical names for the Screens a change request can name. Use the game's visible label; the family determines which subsystem owns the Screen.
+
+| Screen | Family | Notes |
+| --- | --- | --- |
+| Pause | In-Game Menu | Main pause page: Resume, Retreat, Options, Remove Display |
+| Retreat Dialog | In-Game Menu | Confirmation over Pause |
+| Midstage Loading | In-Game Menu | The loading between an air and a land battle: Tip bar, Tip, Loading orb, Midstage Progress; no Controls |
+| Control Configuration | In-Game Menu | Options page for binding controls |
+| File Select | Scripted Menu | Three save books |
+| Chapter Select | Scripted Menu | Chapter thumbnails and Back |
+| Main Menu | Scripted Menu | Solo, StreetPass, Vault, Together, Options, AR, guide, Back |
+| Options | Scripted Menu | Reached from Pause and Main Menu |
+| Other | Scripted Menu | Options' Other page |
+| Controls | Scripted Menu | Control Configuration, Reticle/Camera, More Controls, Back |
+| Reticle/Camera | Scripted Menu | Air Battle, Land Battle, Back |
+| Subtitles | Scripted Menu | Subtitle settings |
+| Volume | Scripted Menu | Music, SFX, Voice, Music Gallery, Back |
+| Profile | Scripted Menu | Player and Back |
+| Profile Yes/No | Scripted Menu | Confirmation over Profile |
+| SpotPass Dialog | Scripted Menu | Yes/No choice over Other |
+| Solo Hub | Scripted Menu | Move Out, Arms Altar, Practice Range, Idol Toss, Gear, Treasure Hunt, Back |
+| Arms Altar | Scripted Menu | Redeem Hearts, Fuse Weapons, Convert to Hearts, Gear, Back |
+| Practice Range | Scripted Menu | Air Battle, Land Battle, Gear, Back |
+| Armory — Gear | Scripted Menu | Equipment list |
+| Armory — Redeem Hearts | Scripted Menu | Redeem list |
+| Armory — Convert to Hearts | Scripted Menu | Convert list |
+| Armory — Fuse Weapons | Scripted Menu | Fusion board |
+| Armory — Powers | Scripted Menu | Power list |
+| Armory — Weapons | Scripted Menu | Weapon rows |
+| Armory — Categories | Scripted Menu | Category rows |
+| Idol Toss | Scripted Menu | Two instances: from Solo Hub and from Vault |
+| Treasure Hunt | Scripted Menu | Tile board |
+| Vault | Scripted Menu | Idols, Music Gallery, Power Portrait, Offering, Idol Toss, Records, AR, Back |
+| Idols | Scripted Menu | Idol List and one idol's description inside Vault; Rows, Back, AR |
+| Music Gallery | Scripted Menu | Track List inside Vault |
+| Fiend's Cauldron | Scripted Menu | Bet bar, pot, Move Out, Back |

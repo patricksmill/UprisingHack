@@ -1,16 +1,20 @@
-//! Zakuro's frontend, a window showing the library of games or a game with
-//! a menu over it, and the loop that drives the emulated console one frame
-//! at a time.
+//! Zakuro's frontend, a window showing the game library or a game w/ a menu over it,
+//! plus the loop that drives the emulated console one frame at a time
 
 mod audio;
+mod bindings;
 mod camera;
 mod cli;
 mod gamepad;
 mod gui;
+mod gyro;
 mod input;
 mod library;
 mod menus;
+mod preferences;
+mod microphone;
 mod present;
+mod pro_controller;
 mod recompile;
 mod report;
 mod settings;
@@ -20,12 +24,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use zakuro_common::Screen;
+use zakuro_core::aim_mouse::{CauldronRules, DialogRules, LoadingRules, NavigationLink, PauseRules};
 use zakuro_core::{loader, Config, FrameOutcome, System};
 use zakuro_gpu::{layout, GpuScreen, Overlay, PresentError, RendererKind, ScreenImage};
 
@@ -34,14 +39,125 @@ use input::Keyboard;
 use library::Library;
 use menus::{Action, Menus};
 use present::Backend;
-use recompile::{Job, Stage, Toolchain};
-use settings::{CameraSource, Renderer, Screens, Settings};
+use recompile::{Job, Stage, Toolchain, Wanted};
+use settings::{CameraSource, MicrophoneSource, Renderer, Screens, Settings};
 
+pub use zakuro_core::memory::Memory;
 pub use zakuro_core::recompiled::Linked;
 
-/// runs the emulator as the command line says, on recompiled code linked
-/// into the program when there is some.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedLayout {
+    /// Scripted Menu parts hidden by the editor, by screen and part, absent
+    /// in older files. first, as TOML wants its values before its tables.
+    #[serde(default)]
+    hidden: Vec<(usize, usize)>,
+    #[serde(default)]
+    layers: Vec<SavedLayer>,
+    /// absent in files written before Pause rules were kept.
+    #[serde(default)]
+    pause: Option<PauseRules>,
+    /// the Retreat Dialog's rules, absent in older files.
+    #[serde(default)]
+    dialog: Option<DialogRules>,
+    /// explicit Control-to-Control navigation links, absent in older files.
+    #[serde(default)]
+    navigation: Vec<NavigationLink>,
+    /// the Fiend's Cauldron's rules, absent in older files. last, as its
+    /// rules are an array of tables.
+    #[serde(default)]
+    cauldron: Option<CauldronRules>,
+    /// the Midstage Loading's rules, absent in older files; a list of
+    /// tables like the Cauldron's.
+    #[serde(default)]
+    loading: Option<LoadingRules>,
+    /// the editor's layer folders, by Screen; absent in older files.
+    #[serde(default)]
+    folders: Vec<menus::EditorFolder>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedLayer {
+    screen: usize,
+    part: usize,
+    to: [f32; 4],
+}
+
+/// the port's menu layout, which every launch starts from: the editor's
+/// saved layout, made the defaults. `--menu-editor` reads the data folder's
+/// menu-layout.toml instead, once Save layout has written one.
+const DEFAULT_LAYOUT: &str = include_str!("../../../kiu/menu-layout.toml");
+
+fn default_layout() -> SavedLayout {
+    toml::from_str(DEFAULT_LAYOUT).expect("kiu/menu-layout.toml is a layout")
+}
+
+fn layout_path(data_dir: &Option<PathBuf>) -> PathBuf {
+    data_dir.clone().unwrap_or_default().join("menu-layout.toml")
+}
+
+fn load_layout(data_dir: &Option<PathBuf>) -> Result<SavedLayout, String> {
+    let path = layout_path(data_dir);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(default_layout()),
+        Err(error) => return Err(format!("Could not read {}: {error}", path.display())),
+    };
+    toml::from_str(&text).map_err(|error| format!("Could not read {}: {error}", path.display()))
+}
+
+fn save_layout(
+    data_dir: &Option<PathBuf>,
+    layers: &[(usize, usize, [f32; 4])],
+    pause: PauseRules,
+    dialog: DialogRules,
+    cauldron: CauldronRules,
+    loading: LoadingRules,
+    navigation: Vec<NavigationLink>,
+    hidden: Vec<(usize, usize)>,
+    folders: &[menus::EditorFolder],
+) -> Result<PathBuf, String> {
+    let saved = SavedLayout {
+        layers: layers.iter().map(|&(screen, part, to)| SavedLayer { screen, part, to }).collect(),
+        pause: Some(pause),
+        dialog: Some(dialog),
+        navigation,
+        cauldron: Some(cauldron),
+        loading: Some(loading),
+        hidden,
+        folders: folders.to_vec(),
+    };
+    let path = layout_path(data_dir);
+    let text = toml::to_string_pretty(&saved).map_err(|error| error.to_string())?;
+    std::fs::write(&path, text).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+use crate::settings::Orientation;
+
+/// what a program built on Zakuro shows over its game, worked out from the game's memory,
+/// a line kept in a corner and a notice shown for a moment
+/// a recompiled game can show what the game keeps hidden this way (its alignment, a timer) w/o drawing into the game's own screens
+pub trait GameOverlay {
+    /// called after each frame the game runs, w/ its memory
+    fn frame(&mut self, memory: &mut Memory) -> OverlayText;
+}
+
+/// what a GameOverlay shows after a frame
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+pub struct OverlayText {
+    /// a line in the bottom right corner while it's some
+    pub corner: Option<String>,
+    /// a notice at the top for a moment, like a save state's
+    pub notice: Option<String>,
+}
+
+/// runs the emulator like the command line says, on recompiled code linked into the program when there's some
 pub fn run(linked: Option<Linked>) {
+    run_with(linked, None)
+}
+
+/// runs the emulator like run does, w/ an overlay over the game
+pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
     report::init();
 
     let options = match cli::parse() {
@@ -52,58 +168,113 @@ pub fn run(linked: Option<Linked>) {
         }
     };
     let mut settings = Settings::load();
-    // the console's own number, made the first time and kept, which tells
-    // it apart from others over local wireless
+    // the console's own number, made the first time and kept, it tells this one apart from others over local wireless
     if settings.console_id == 0 {
         use std::hash::{BuildHasher, Hasher};
         let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
         hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_nanos()));
         settings.console_id = hasher.finish() | 1;
-        settings.save();
+        let _ = settings.save();
     }
 
     let data_dir = options.data.clone().map(PathBuf::from).or_else(default_data_dir);
+    // the editor works on the data folder's layout; a normal launch, the port's
+    let (layout_overrides, pause_rules, dialog_rules, cauldron_rules, loading_rules, navigation, hidden, folders, layout_error) = {
+        match if options.menu_editor { load_layout(&data_dir) } else { Ok(default_layout()) } {
+            Ok(saved) => (
+                saved.layers.into_iter().map(|layer| (layer.screen, layer.part, layer.to)).collect(),
+                saved.pause.unwrap_or_default(),
+                saved.dialog.unwrap_or_default(),
+                saved.cauldron.unwrap_or_default(),
+                saved.loading.unwrap_or_default(),
+                saved.navigation,
+                saved.hidden,
+                saved.folders,
+                None,
+            ),
+            Err(error) => {
+                log::warn!("{error}");
+                (Vec::new(), PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), Vec::new(), Vec::new(), Some(error))
+            }
+        }
+    };
     if let Some(dir) = &data_dir {
         report::to_file(dir);
         bring_saves(dir);
     }
 
+    let menu_editor = options.menu_editor;
     let mut app = App {
         keyboard: Keyboard::new(settings.keys.clone()),
         gamepads: gamepad::Gamepads::new(settings.pad.clone()),
+        gyro: gyro::Gyro::new(),
+        prompt_faces: None,
+        prompts_shown: None,
         scale: options.scale.unwrap_or(settings.scale).max(1),
         layout: settings.layout,
+        orientation: settings.orientation,
         top_shape: settings.top_shape,
         options,
+        active: settings.clone(),
         settings,
         linked,
+        overlay,
+        overlay_corner: None,
         library: Library::new(data_dir.clone()),
         data_dir,
+        layout_overrides,
+        pause_rules,
+        dialog_rules,
+        cauldron_rules,
+        loading_rules,
+        navigation,
+        hidden,
         game: None,
         menus: {
             let mut menus = Menus::default();
             menus.slot = 1;
+            menus.editor_open = menu_editor;
+            menus.editor_folders = folders;
             menus
         },
         jobs: Vec::new(),
+        waiting: Vec::new(),
+        download_compiler: false,
         gui: None,
         backend: None,
         window: None,
         audio: None,
         mouse_down: false,
+        modifiers: winit::keyboard::ModifiersState::empty(),
         tilting_from: None,
+        idol_panning: false,
+        idol_orbit_from: None,
+        aim_captured: false,
+        released_for_pause: false,
+        battle_seen: false,
+        focused: true,
         cursor: (0.0, 0.0),
         last_title_update: Instant::now(),
         next_frame: Instant::now(),
         skipped: 0,
-        shown: 0,
+        shown: FrameRate::new(),
         spent: Spent::default(),
         paused: false,
         fast_forward_key: false,
         fast_forwarding: false,
         next_shown: Instant::now(),
+        display_step: Duration::from_nanos(1_000_000_000_000 / 60_000),
+        host_step: Duration::from_nanos(1_000_000_000_000 / 60_000),
+        next_host: Instant::now(),
+        host_epoch: Instant::now(),
+        frame_host: Duration::ZERO,
+        older_frame_host: Duration::ZERO,
+        shown_host: Duration::ZERO,
+        high_refresh_applied: false,
         stop: false,
         camera: None,
+        microphone: None,
+        blowing: std::sync::Arc::default(),
         room_server: None,
         room: None,
         dlp_guest: None,
@@ -112,6 +283,10 @@ pub fn run(linked: Option<Linked>) {
         maximized_before_full_screen: false,
         resize_after_full_screen: false,
     };
+
+    if let Some(error) = layout_error {
+        app.menus.message = Some(error);
+    }
 
     if let Some(frames) = app.options.headless {
         app.start();
@@ -138,7 +313,7 @@ pub fn run(linked: Option<Linked>) {
     }
 }
 
-/// opens a folder in the system's file manager.
+/// opens a folder in the system's file manager
 fn show_folder(folder: &Path) {
     let program = if cfg!(windows) {
         "explorer"
@@ -148,13 +323,13 @@ fn show_folder(folder: &Path) {
         "xdg-open"
     };
     match std::process::Command::new(program).arg(folder).spawn() {
-        // waited for so it leaves nothing behind when it closes
+        // waited for so it leaves nothing behind when it closes (no zombies here)
         Ok(mut child) => drop(std::thread::spawn(move || child.wait())),
         Err(error) => log::warn!("showing {}: {error}", folder.display()),
     }
 }
 
-/// the system's place for a program's data.
+/// the system's place for a program's data
 fn default_data_dir() -> Option<PathBuf> {
     let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from);
     let dir = if cfg!(windows) {
@@ -167,7 +342,7 @@ fn default_data_dir() -> Option<PathBuf> {
     dir.map(|dir| dir.join("zakuro"))
 }
 
-/// how long ago a state was saved, as a person would say it.
+/// how long ago a state was saved, like a person would say it
 fn ago(time: std::time::SystemTime) -> String {
     let seconds = time.elapsed().map_or(0, |elapsed| elapsed.as_secs());
     match seconds {
@@ -181,8 +356,7 @@ fn ago(time: std::time::SystemTime) -> String {
     }
 }
 
-/// saves Zakuro kept in the working directory before it had a place for
-/// them, copied there the first time. the old ones stay as they were.
+/// saves Zakuro kept in the cwd b4 it had a place for them, copied there the first time, the old ones stay as they were
 fn bring_saves(data: &Path) {
     let (old, new) = (Path::new("user"), data.join("user"));
     if new.exists() || !old.is_dir() {
@@ -214,13 +388,19 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// builds a System with no title loaded and both screens filled with a
-/// solid color, to check the presentation path (framebuffer config -> guest
-/// memory -> window) in isolation from any title's boot logic.
+/// builds a System w/ no title loaded and both screens filled w/ a solid color,
+/// to check the presentation path (framebuffer config => guest memory => window) apart from any title's boot
+/// logic, and that the GPU starts, a packed release gets tried w/ it
 fn paint_test_pattern(config: Config) -> System {
     use zakuro_core::memory::{MemoryRegion, MemoryState, Permission};
 
     let mut system = System::new(config);
+    if system.config.hardware_renderer {
+        match system.gpu.enable_hardware_renderer(system.config.resolution, system.config.device.clone(), None) {
+            Ok(name) => log::info!("the 3D draws on {name}"),
+            Err(error) => log::warn!("the 3D can't draw on the GPU, {error}"),
+        }
+    }
 
     // ABGR in memory for format 0 (Rgba8), red = 00 00 00 FF?
     let paint = |system: &mut System, screen: Screen, rgba: [u8; 4]| {
@@ -293,21 +473,20 @@ fn run_headless(system: &mut System, frames: u64) {
     }
 }
 
-/// a game being played.
+/// a game being played
 struct Running {
     system: System,
     path: PathBuf,
     name: String,
-    /// the inputs written down, ZAKURO_RECORD=file, for playing the run
-    /// back.
+    /// the inputs written down, ZAKURO_RECORD=file, for playing the run back
     recorder: Option<zakuro_core::replay::Recorder>,
-    /// the inputs a recording wrote down, ZAKURO_REPLAY=file, played back in
-    /// place of the keyboard's and the controllers', and the frames run.
+    /// the inputs a recording wrote down, ZAKURO_REPLAY=file,
+    /// played back in place of the keyboard's and the controllers', and the frames run
     replay: Option<zakuro_core::replay::Replay>,
     frame: u64,
-    /// frames run since counting_since, for the frame rate.
-    frames: u32,
-    counting_since: Instant,
+    /// the game's own frames a second, counted as they run.
+    rate: FrameRate,
+    /// the last rate the game's count read, kept for the menu.
     fps: f32,
 }
 
@@ -320,99 +499,166 @@ impl Running {
             recorder: None,
             replay: None,
             frame: 0,
-            frames: 0,
-            counting_since: Instant::now(),
+            rate: FrameRate::new(),
             fps: 0.0,
         }
     }
 
     fn count_frame(&mut self) {
-        self.frames += 1;
-        let elapsed = self.counting_since.elapsed();
-        if elapsed >= Duration::from_millis(500) {
-            self.fps = self.frames as f32 / elapsed.as_secs_f32();
-            self.frames = 0;
-            self.counting_since = Instant::now();
-        }
+        self.rate.count();
     }
 }
 
 struct App {
     options: cli::Options,
+    /// the settings as the user left them, those get saved
     settings: Settings,
+    /// the settings in force, what the running game has of its own over the general ones, which is all there is w/o a game
+    active: Settings,
     linked: Option<Linked>,
+    /// what the program built on Zakuro shows over the game, and the line it keeps in the corner now
+    overlay: Option<Box<dyn GameOverlay>>,
+    overlay_corner: Option<String>,
     data_dir: Option<PathBuf>,
+    layout_overrides: Vec<(usize, usize, [f32; 4])>,
+    /// the editor's Pause rules, kept across a game restart.
+    pause_rules: PauseRules,
+    /// the editor's Retreat Dialog rules, kept across a game restart.
+    dialog_rules: DialogRules,
+    /// the editor's Fiend's Cauldron rules, kept across a game restart.
+    cauldron_rules: CauldronRules,
+    /// the editor's Midstage Loading rules, kept across a game restart.
+    loading_rules: LoadingRules,
+    /// the editor's explicit navigation links, kept across a restart and a
+    /// console state load.
+    navigation: Vec<NavigationLink>,
+    /// the editor's hidden Scripted Menu parts, by screen and part, kept
+    /// across a restart and a console state load.
+    hidden: Vec<(usize, usize)>,
     game: Option<Running>,
     library: Library,
     menus: Menus,
     jobs: Vec<Job>,
+    /// the games waiting for their turn to recompile, the next one first
+    waiting: Vec<Wanted>,
+    /// the player said yes to downloading a compiler for the next recompile
+    download_compiler: bool,
     gui: Option<Gui>,
-    // backend must be declared (and therefore dropped) before window, Rust
-    // drops struct fields in declaration order, and the GL surface's Drop
-    // calls eglDestroySurface, which on Wayland does a protocol round-trip
-    // against the window's wl_surface.
+    // backend must be declared (and so dropped) b4 window, Rust drops struct fields in declaration order,
+    // and the GL surface's Drop calls eglDestroySurface,
+    // which on Wayland does a protocol round trip against the window's wl_surface
     backend: Option<Backend>,
     window: Option<Window>,
     keyboard: Keyboard,
     gamepads: gamepad::Gamepads,
+    /// a controller's gyroscope, for aiming with it.
+    gyro: gyro::Gyro,
+    /// the controller whose buttons the game's prompts show, none for the
+    /// keyboard and mouse: whichever the player used last.
+    prompt_faces: Option<gamepad::Faces>,
+    /// what the running game's prompts were last made for, none when they
+    /// are due again: a new game, or bindings changed.
+    prompts_shown: Option<Option<gamepad::Faces>>,
     audio: Option<audio::Audio>,
-    /// the window's size, times the console's.
+    /// the window's size, times the console's
     scale: u32,
-    /// how the screens are arranged.
+    /// how the screens are arranged
     layout: Screens,
-    /// how wide the top screen shows.
+    orientation: Orientation,
+    /// how wide the top screen shows
     top_shape: settings::TopShape,
-    /// the left button is down, and where the pointer is, in window pixels.
+    /// the left button is down, and where the pointer is, in window pixels
     mouse_down: bool,
+    modifiers: winit::keyboard::ModifiersState,
     /// where the pointer was when the right button went down, which tilts
     /// the console while held.
     tilting_from: Option<(f32, f32)>,
+    /// a right-drag Panning the Idol View on Idols, in place of the tilt.
+    idol_panning: bool,
+    /// while an Orbit holds the pointer: where it was pressed, in window
+    /// pixels. The pointer is hidden and held there; raw motion moves a
+    /// stand-in cursor that drives the drag, and the pointer comes back
+    /// where it was pressed.
+    idol_orbit_from: Option<(f32, f32)>,
+    /// the mouse aims in Kid Icarus: Uprising, F6 turns it on and off: the
+    /// pointer is held in the window, its movement moves the reticle, the
+    /// bottom screen is held touched in its middle and the left button
+    /// fires.
+    aim_captured: bool,
+    /// the mouse was let go for the pause menu on the top screen, and is
+    /// held again once it is gone.
+    released_for_pause: bool,
+    /// whether a battle was being played when last looked: mouse aiming is
+    /// taken up as one starts and let go as it ends. F6 still turns it off
+    /// and on in between; leaving the window or opening a menu forgets it,
+    /// so coming back to the battle takes the mouse again.
+    battle_seen: bool,
+    /// the window has the keyboard and pointer.
+    focused: bool,
     cursor: (f32, f32),
     last_title_update: Instant,
-    /// when the next frame is due. frames run to a schedule rather than one
-    /// after another, so that a slow one is made up by those after it and
-    /// the sound, made as the console runs, keeps up.
+    /// when the next frame is due
+    /// frames run to a schedule instead of one after another,
+    /// so a slow one gets made up by the ones after it and the sound (made as the console runs) keeps up
     next_frame: Instant,
-    /// frames in a row not shown while catching up.
+    /// frames in a row not shown while catching up
     skipped: u32,
-    /// frames shown since the title was last updated.
-    shown: u32,
+    /// the pictures shown a second, the host's in High Refresh Mode.
+    shown: FrameRate,
     /// how long emulating and showing frames took since the title was last
     /// updated, for the frame rate's log.
     spent: Spent,
-    /// stopped with F1, without the menu.
+    /// stopped w/ F1, w/o the menu
     paused: bool,
-    /// Tab is held down, for fast forward.
+    /// Tab is held down, for fast forward
     fast_forward_key: bool,
-    /// the game runs as fast as it can, its sound left out.
+    /// the game runs as fast as it can, its sound left out
     fast_forwarding: bool,
-    /// when fast forward shows its next frame, on a grid at the console's
-    /// frame rate.
+    /// when fast forward shows its next frame, on a grid at the console's frame rate
     next_shown: Instant,
+    /// the display's own refresh interval, before the High Refresh Mode cap.
+    display_step: Duration,
+    /// the refresh interval High Refresh Mode shows a picture at, the
+    /// display's own or the cap's, whichever is slower.
+    host_step: Duration,
+    /// when High Refresh Mode shows its next picture.
+    next_host: Instant,
+    /// the host time the picture clock counts from, so a picture in
+    /// between can be drawn at the fraction of the way it belongs at.
+    host_epoch: Instant,
+    /// the host time the last console frame started at, and the one before
+    /// it: the two a picture in between is drawn between.
+    frame_host: Duration,
+    older_frame_host: Duration,
+    /// the host time the next picture is drawn at, a console frame behind
+    /// the frames' own so both of the last two are there to draw between.
+    shown_host: Duration,
+    /// the High Refresh Mode setting last put to the running game.
+    high_refresh_applied: bool,
     stop: bool,
-    /// what the running game's cameras were given to see, to give them
-    /// another only when the settings change it.
+    /// what the running game's cameras were given to see, to give them another only when the settings change it
     camera: Option<(CameraSource, Option<PathBuf>)>,
-    /// the room this program holds open, and the one it is in.
+    /// what the running game's mic was given to hear, same way
+    microphone: Option<MicrophoneSource>,
+    /// set while the blowing key is held, the mic hears it
+    blowing: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// the room this program holds open, and the one it's in
     room_server: Option<zakuro_core::room::Server>,
     room: Option<zakuro_core::room::Connection>,
-    /// Download Play as a guest, while in a room with no game running.
+    /// Download Play as a guest, while in a room w/ no game running
     dlp_guest: Option<zakuro_core::download_play::Guest>,
-    /// the player's own copy of the child joined for, played in place of
-    /// one sent.
+    /// the player's own copy of the child joined for, played instead of one sent
     dlp_own: Option<PathBuf>,
-    /// the network the next game joins as it starts, the host's of a
-    /// Download Play child.
+    /// the network the next game joins as it starts, the host's of a Download Play child
     wireless_reboot: Option<[u8; 16]>,
-    /// the window was maximized when it went full screen, which leaving
-    /// full screen brings back.
+    /// the window was maximized when it went full screen, leaving full screen brings that back
     maximized_before_full_screen: bool,
-    /// the layout or the scale changed while the window was full screen,
-    /// which kept its size, so leaving full screen fits the window to them.
+    /// the layout or the scale changed while the window was full screen, which kept its size,
+    /// so leaving full screen fits the window to them
     resize_after_full_screen: bool,
 }
 
-/// how long each step of the loop took, its mean and its longest.
+/// how long each step of the loop took, its mean and its longest
 #[derive(Default)]
 struct Spent {
     emulating: Times,
@@ -441,20 +687,95 @@ impl std::fmt::Display for Times {
     }
 }
 
+/// how many of something go by a second, counted between reads, the game's
+/// own frames and the host's pictures kept apart.
+struct FrameRate {
+    /// counted since the last read.
+    counted: u32,
+    /// when the count started.
+    since: Instant,
+    /// what the last read gave a second.
+    rate: f32,
+}
+
+impl FrameRate {
+    fn new() -> FrameRate {
+        FrameRate { counted: 0, since: Instant::now(), rate: 0.0 }
+    }
+
+    /// one more went by.
+    fn count(&mut self) {
+        self.counted += 1;
+    }
+
+    /// what went by a second since the last read, once half a second has
+    /// gone by, and the last rate before that.
+    fn read(&mut self, now: Instant) -> f32 {
+        let elapsed = now.saturating_duration_since(self.since);
+        if elapsed < Duration::from_millis(500) {
+            return self.rate;
+        }
+        self.rate = self.counted as f32 / elapsed.as_secs_f32();
+        self.counted = 0;
+        self.since = now;
+        self.rate
+    }
+
+    /// the rate the last read gave.
+    fn rate(&self) -> f32 {
+        self.rate
+    }
+}
+
 /// one 3DS frame, about 16.71 ms.
 const FRAME_TIME: Duration =
     Duration::from_nanos(zakuro_core::CYCLES_PER_FRAME * 1_000_000_000 / zakuro_core::kernel::thread::CPU_CLOCK_HZ);
-/// how far behind the schedule may fall before it starts over instead of
-/// running fast to catch up, after a pause say.
+/// how far behind the schedule may fall b4 it starts over instead of running fast to catch up, after a pause say
 const CATCH_UP_LIMIT: Duration = Duration::from_millis(200);
-/// frames that may go unshown in a row while catching up.
+/// frames that may go unshown in a row while catching up
 const MAX_SKIPPED: u32 = 4;
+
+/// Winit reports content motion; menus take viewport motion, down/right positive.
+fn menu_wheel_delta(delta: MouseScrollDelta, shift: bool) -> [f32; 2] {
+    let (x, y) = match delta {
+        MouseScrollDelta::LineDelta(x, y) => (x, y),
+        MouseScrollDelta::PixelDelta(position) => (position.x as f32 / 40.0, position.y as f32 / 40.0),
+    };
+    if shift { [-x - y, 0.0] } else { [-x, -y] }
+}
 
 /// whether a frame goes unshown, the game running behind the schedule with
 /// a presenter that waits for the display, and fewer than MAX_SKIPPED
 /// unshown before it.
 fn skips_showing(playing: bool, behind: bool, waits: bool, skipped: u32) -> bool {
     playing && behind && waits && skipped < MAX_SKIPPED
+}
+
+/// whether a picture goes in between the title's own, one on every refresh
+/// of the display, rather than the title's own at the console's rate. fast
+/// forward shows real frames only, so no GPU time goes on pictures nobody
+/// needs.
+fn draws_in_between(high_refresh: bool, fast_forwarding: bool) -> bool {
+    high_refresh && !fast_forwarding
+}
+
+/// when the next picture is due, a display refresh after the one scheduled,
+/// or a refresh on from now when that has already passed: the refreshes a
+/// slow picture missed go unshown rather than pile up.
+fn next_host_time(scheduled: Instant, step: Duration, now: Instant) -> Instant {
+    let next = scheduled + step;
+    if next <= now { now + step } else { next }
+}
+
+/// the display's refresh interval, one picture a refresh in High Refresh
+/// Mode, 60 a second when it can't be read.
+fn monitor_step(window: &Window) -> Duration {
+    let millihertz = window
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .filter(|&millihertz| millihertz > 0)
+        .unwrap_or(60_000);
+    Duration::from_nanos((1_000_000_000_000 / u64::from(millihertz)).max(1))
 }
 
 /// what the player is told when the 3D can't be drawn on the GPU.
@@ -479,7 +800,7 @@ impl ApplicationHandler for App {
             if renderer != RendererKind::Vulkan {
                 return Err(error);
             }
-            // a machine without a working Vulkan driver still gets a window
+            // a machine w/o a working Vulkan driver still gets a window
             log::warn!("could not start the Vulkan backend, {error}, presenting with OpenGL instead");
             Backend::create(event_loop, attributes, RendererKind::OpenGl)
         });
@@ -487,14 +808,17 @@ impl ApplicationHandler for App {
             Ok((window, mut backend)) => {
                 log::info!("presenting with the {} backend", backend.name());
                 backend.set_layout(self.layout.screens());
-                backend.set_top_width(self.settings.top_shape.width());
-                backend.set_scaling(self.settings.filter.screens(), self.settings.integer_scale);
-                backend.set_stereo(self.settings.stereo());
+                backend.set_orientation(self.orientation.screen_orientation());
+                backend.set_top_width(self.top_width());
+                backend.set_scaling(self.active.filter.screens(), self.active.integer_scale);
+                backend.set_stereo(self.active.stereo());
                 self.gui = Some(Gui::new(&window));
+                self.display_step = monitor_step(&window);
+                self.host_step = self.settings.high_refresh_cap.step(self.display_step);
+                self.next_host = Instant::now();
                 self.window = Some(window);
                 self.backend = Some(backend);
-                // the game the command line names starts on the device the
-                // presenter may lend the renderer, once there is one
+                // the game the command line names starts on the device the presenter may lend the renderer, once there's one
                 self.start();
             }
             Err(error) => {
@@ -505,15 +829,13 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        // Tab is fast forward while a game runs, not a key for moving the
-        // interface's focus around
+        // Tab is fast forward while a game runs, not a key for moving the UI's focus around
         let (tab, repeat) = match &event {
             WindowEvent::KeyboardInput { event, .. } => (event.physical_key == PhysicalKey::Code(KeyCode::Tab), event.repeat),
             _ => (false, false),
         };
         let in_game = self.game.as_ref().is_some_and(|game| game.system.keyboard_request().is_none())
-            && !self.menus.menu_open
-            && !self.menus.settings_open;
+            && !self.menus.over_game();
         // a Tab held down keeps repeating over a message too
         let withheld = tab && (in_game || (repeat && self.game.is_some()));
         let consumed = match (&mut self.gui, &self.window) {
@@ -523,34 +845,104 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             // keys let go while another window has the keyboard never come
+            WindowEvent::Focused(true) => self.focused = true,
             WindowEvent::Focused(false) => {
+                self.focused = false;
+                self.battle_seen = false;
                 self.fast_forward_key = false;
+                self.released_for_pause = false;
+                self.set_aim_captured(false);
+                self.blow(false);
                 self.keyboard.release();
-            }
-            WindowEvent::Resized(size) => {
-                if let Some(backend) = &mut self.backend {
-                    backend.resize(size.width, size.height);
+                self.mouse_down = false;
+                self.modifiers = winit::keyboard::ModifiersState::empty();
+                if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    aim_mouse.cancel_menu_touch();
+                    aim_mouse.menu_touch(0, false);
                 }
             }
+            WindowEvent::Resized(size) => {
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.cancel_menu_touch();
+                }
+                let top_width = self.top_width();
+                if let Some(backend) = &mut self.backend {
+                    backend.resize(size.width, size.height);
+                    backend.set_top_width(top_width);
+                }
+            }
+            // another display can refresh at another rate, which High
+            // Refresh Mode follows
+            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => self.measure_host_step(),
             WindowEvent::KeyboardInput { event, .. } => self.key(event, consumed),
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::MouseWheel { delta, .. } if !self.aim_captured && !self.pointer_taken(consumed) => {
+                self.touch();
+                let delta = menu_wheel_delta(delta, self.modifiers.shift_key());
+                if let Some(game) = &mut self.game {
+                    if let Some(mouse) = &mut game.system.aim_mouse {
+                        mouse.scroll_menu(game.system.frames, delta);
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. }
+                if self.capture_binding(bindings::Source::Mouse(button)) => {}
+            WindowEvent::MouseInput { state, button, .. } if self.aim_captured => {
+                let pressed = state == ElementState::Pressed;
+                if self.keyboard.acting() {
+                    let started = self.keyboard.source(bindings::Source::Mouse(button), pressed);
+                    self.do_actions(started);
+                    self.prompt_faces = None;
+                } else if button == MouseButton::Left {
+                    self.keyboard.mouse_button(zakuro_core::services::hid::PadState::L, pressed);
+                    self.prompt_faces = None;
+                }
+            }
+            WindowEvent::CursorMoved { .. } if self.aim_captured => {}
+            // an Orbit holds the pointer still; raw motion drives it
+            WindowEvent::CursorMoved { .. } if self.idol_orbit_from.is_some() => {}
             WindowEvent::MouseInput { state, button, .. } => {
                 if button == MouseButton::Left {
-                    self.mouse_down = state == ElementState::Pressed && !self.pointer_taken(consumed);
+                    let pressed = state == ElementState::Pressed && !self.pointer_taken(consumed);
+                    self.mouse_down = pressed;
                     self.touch();
                 }
                 if button == MouseButton::Right {
                     let pressed = state == ElementState::Pressed && !self.pointer_taken(consumed);
-                    self.tilting_from = pressed.then_some(self.cursor);
-                    self.tilt();
+                    if (pressed || self.idol_panning) && self.idol_pan(pressed) {
+                        self.idol_panning = pressed;
+                    } else {
+                        self.idol_panning = false;
+                        self.tilting_from = pressed.then_some(self.cursor);
+                        self.tilt();
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as f32, position.y as f32);
                 self.touch();
+                if self.idol_panning { self.idol_pan(true); }
                 self.tilt();
             }
             WindowEvent::RedrawRequested => self.step(event_loop),
             _ => {}
+        }
+    }
+
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let (Some(_), DeviceEvent::MouseMotion { delta }) = (self.idol_orbit_from, &event) {
+            self.cursor = (self.cursor.0 + delta.0 as f32, self.cursor.1 + delta.1 as f32);
+            self.touch();
+            return;
+        }
+        if let (true, DeviceEvent::MouseMotion { delta }) = (self.aim_captured, event) {
+            let aim = &self.settings.pc.aim;
+            if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                // scaled as the game takes it, by the kind of battle then
+                aim_mouse.sensitivity = [aim.air_mouse_sensitivity, aim.land_mouse_sensitivity];
+                let flip = |invert: bool| if invert { -1.0 } else { 1.0 };
+                aim_mouse.add(delta.0 as f32 * flip(aim.mouse_invert_x), delta.1 as f32 * flip(aim.mouse_invert_y));
+            }
         }
     }
 
@@ -562,41 +954,43 @@ impl ApplicationHandler for App {
 }
 
 impl App {
-    /// the console's settings for a game, from the command line and the
-    /// settings.
-    fn config(&self) -> Config {
-        let interpret = self.options.interpreter || !self.settings.recompiled;
+    /// the id of the running game, none w/o one or w/ the test pattern
+    fn program_id(&self) -> Option<u64> {
+        Some(self.game.as_ref()?.system.title.as_ref()?.program_id())
+    }
+
+    /// the console's settings for a game, from the command line and the settings it plays w/
+    fn config(&self, settings: &Settings) -> Config {
+        let interpret = self.options.interpreter || !settings.recompiled;
         Config {
             new3ds: self.options.new3ds,
             data_dir: self.data_dir.clone(),
-            language: self.settings.language.code(),
+            language: settings.language.code(),
             recompiled: self.options.recompiled.clone().filter(|_| !interpret).map(Into::into),
             linked: self.linked.filter(|_| !interpret),
             find_recompiled: !interpret,
-            hardware_renderer: self.options.hardware_rasterizer.unwrap_or(self.settings.hardware_rasterizer),
-            texture_packs: self.settings.texture_packs,
-            interpolate: self.settings.frame_interpolation,
-            enhancements: self
-                .settings
+            hardware_renderer: self.options.hardware_rasterizer.unwrap_or(settings.hardware_rasterizer),
+            texture_packs: settings.texture_packs,
+            interpolate: self.settings.high_refresh_mode,
+            enhancements: settings
                 .enhancements
                 .iter()
                 .filter_map(|(id, names)| Some((u64::from_str_radix(id, 16).ok()?, names.clone())))
                 .collect(),
-            resolution: self.settings.resolution,
+            resolution: settings.resolution,
             device: self.backend.as_ref().and_then(Backend::shared_device),
             username: self.nickname(),
-            console_id: self.settings.console_id,
-            slider_3d: self.settings.slider_3d(),
+            console_id: settings.console_id,
+            slider_3d: settings.slider_3d(),
             ..Config::default()
         }
     }
 
-    /// starts what the command line asks for, the test pattern or a game.
+    /// starts what the command line asks for, the test pattern or a game
     fn start(&mut self) {
         if self.options.test_pattern {
-            // the test pattern has no CPU program to run, paused keeps just
-            // presenting what is there
-            let system = paint_test_pattern(self.config());
+            // the test pattern has no CPU program to run, paused keeps just presenting what's there
+            let system = paint_test_pattern(self.config(&self.settings));
             self.game = Some(Running::new(system, PathBuf::new(), "test pattern".to_owned()));
             self.paused = true;
         } else if let Some(rom) = self.options.rom.clone() {
@@ -612,26 +1006,40 @@ impl App {
         }
     }
 
-    /// starts the game at path, in place of any other.
+    /// starts the game at path in place of any other, w/ what it has of its own in the settings
     fn play(&mut self, path: &Path) -> Result<(), String> {
-        // the old game and what it holds on the GPU go first, its sound too
+        // the old game and what it holds on the GPU go first, its sound too, and the overlay's line about it
         self.game = None;
+        self.overlay_corner = None;
         if let Some(audio) = &self.audio {
             audio.clear();
         }
         // a Download Play guest goes with the game
         self.dlp_guest = None;
-        let mut config = self.config();
+        // one from the command line isn't in the library (or not yet),
+        // and a Download Play child listed apart from its game is there w/ no id
+        let known = self.library.games.iter().find(|game| game.path == path && game.problem.is_none()).map(|game| game.program_id);
+        let program_id = known.or_else(|| Some(zakuro_fs::Title::load(path).ok()?.program_id()));
+        self.active = self.settings.for_game(program_id);
+        let started = self.start_game(path);
+        if started.is_err() {
+            self.active = self.settings.clone();
+        }
+        self.apply_layout();
+        started
+    }
+
+    /// loads the game at path, the settings in force are for it
+    fn start_game(&mut self, path: &Path) -> Result<(), String> {
+        let mut config = self.config(&self.active);
         config.wireless_reboot = self.wireless_reboot.take();
-        // the update, DLC and Download Play child found with the game in
-        // the library
+        // the update, DLC and Download Play child found w/ the game in the library
         if let Some(game) = self.library.games.iter().find(|game| game.path == path) {
             config.update = game.update.as_ref().map(|update| update.path.clone());
             config.dlc = game.dlc.iter().map(|dlc| dlc.path.clone()).collect();
             config.dlp_child = game.dlp_child.as_ref().map(|child| child.path.clone());
         } else if let Some((update, dlc, dlp_child)) = library::addons_beside(path) {
-            // one from the command line starts before the library's scan is
-            // in, or isn't in its folder: what's next to it goes with it
+            // one from the command line starts b4 the library's scan is in, or isn't in its folder, what's next to it goes w/ it
             config.update = update.map(|update| update.path);
             config.dlc = dlc.into_iter().map(|dlc| dlc.path).collect();
             config.dlp_child = dlp_child.map(|child| child.path);
@@ -652,10 +1060,51 @@ impl App {
             }
             None => None,
         };
-        let system = loader::load(path, config).map_err(|error| format!("could not open {}, {error}", path.display()))?;
+        let mut system = loader::load(path, config).map_err(|error| format!("could not open {}, {error}", path.display()))?;
+        // the mouse aims through stops the interpreter makes, which the
+        // recompiled code doesn't: the functions they are in are left to it
+        if system.title.as_ref().is_some_and(|title| title.program_id() == zakuro_core::aim_mouse::PROGRAM_ID) {
+            if let Some(library) = &mut system.recompiled {
+                if !zakuro_core::aim_mouse::PLACES.iter().all(|&address| library.interpret_at(address) > 0) {
+                    log::warn!("the recompiled code lacks a function mouse aiming stops in, interpreting all of it");
+                    system.recompiled = None;
+                }
+            }
+            // the HUD, reticle and portraits at the PC Preferences' scales
+            let hud_scale = self.settings.pc.presentation.hud_scale;
+            // the narration drawn on the top screen as well, ZAKURO_NARRATION_TOP=0 leaves it below
+            let narration_on_top = std::env::var("ZAKURO_NARRATION_TOP").map_or(true, |value| value != "0");
+            let portrait_scale = self.settings.pc.presentation.portrait_scale;
+            // and the hearts, item box and power icon, ZAKURO_MIRROR_BOTTOM=0 leaves them below
+            let mirror_bottom = std::env::var("ZAKURO_MIRROR_BOTTOM").map_or(true, |value| value != "0");
+            // and the pause menu, where the mouse touches it, ZAKURO_PAUSE_TOP=0 leaves it below
+            let pause_on_top = std::env::var("ZAKURO_PAUSE_TOP").map_or(true, |value| value != "0");
+            // and its options lit by the mouse over them, as on a PC, ZAKURO_MENU_HOVER=0 as a stylus
+            let menu_hover = std::env::var("ZAKURO_MENU_HOVER").map_or(true, |value| value != "0");
+            let mut aim_mouse = zakuro_core::aim_mouse::AimMouse::new(hud_scale, narration_on_top, portrait_scale, mirror_bottom, pause_on_top, menu_hover);
+            // and the Fiend's Cauldron's two screens on the top screen, where
+            // the mouse touches them, ZAKURO_CAULDRON_TOP=0 leaves them as they are
+            aim_mouse.cauldron_on_top = std::env::var("ZAKURO_CAULDRON_TOP").map_or(true, |value| value != "0");
+            aim_mouse.menus_on_top = std::env::var("ZAKURO_MENUS_TOP").map_or(true, |value| value != "0");
+            aim_mouse.land_camera_distance = self.settings.pc.presentation.land_camera_distance();
+            system.aim_mouse = Some(aim_mouse);
+            if let Some(mouse) = system.aim_mouse.as_mut() {
+                mouse.set_editor_overrides(self.layout_overrides.clone());
+                mouse.set_pause_rules(self.pause_rules);
+                mouse.set_dialog_rules(self.dialog_rules);
+                mouse.set_cauldron_rules(self.cauldron_rules);
+                mouse.set_loading_rules(self.loading_rules);
+                mouse.set_editor_navigation(self.navigation.clone());
+                mouse.set_editor_hidden_layers(self.hidden.clone());
+            }
+            // at 60 FPS the game has half a 3DS's time for each frame, which
+            // its busiest scenes need more than: ZAKURO_OVERCLOCK times the
+            // instructions in the same time, 1 as the console
+            system.cpu.overclock = std::env::var("ZAKURO_OVERCLOCK").ok().and_then(|value| value.parse().ok()).unwrap_or(2).max(1);
+            log::info!("mouse aiming available, F6 captures the mouse, HUD drawn at {hud_scale}, CPU at {}x", system.cpu.overclock);
+        }
         let outdated = system.recompiled.as_ref().is_some_and(|code| code.outdated());
-        // the settings ask for the 3D on the GPU, but Vulkan didn't start:
-        // only the log said so, while the game ran slowly
+        // the settings ask for the 3D on the GPU but Vulkan didn't start, only the log said so while the game ran slow
         let in_software = system.config.hardware_renderer && !system.gpu.draws_on_gpu();
         let name = self
             .library
@@ -677,29 +1126,51 @@ impl App {
                 Err(error) => log::warn!("could not record to {}, {error}", record.display()),
             }
         }
-        if outdated {
-            self.menus.message = Some(format!(
-                "{} was recompiled by an older version of Zakuro. Recompile it again from the library to get the newest improvements.",
-                game.name
-            ));
-        } else if in_software {
-            self.menus.message = Some(GPU_FALLBACK.to_owned());
+        // both can be true, and the GPU's is what explains a slow game
+        let notes: Vec<String> = [
+            in_software.then(|| GPU_FALLBACK.to_owned()),
+            outdated.then(|| {
+                format!(
+                    "{} was recompiled by an older version of Zakuro. Recompile it again from the library to get the newest improvements.",
+                    game.name
+                )
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !notes.is_empty() {
+            self.menus.message = Some(notes.join("\n\n"));
         }
         self.game = Some(game);
+        self.prompts_shown = None;
         // the new game's cameras see what the settings say, and it plays
         // in the room the player is in
         self.camera = None;
         self.apply_camera();
+        self.microphone = None;
+        self.apply_microphone();
         self.link_room();
+        // nothing left open holds the game back
         self.menus.menu_open = false;
+        self.menus.settings_open = false;
+        self.menus.game_settings = None;
         self.keyboard.release();
+        self.apply_bindings();
         self.paused = false;
         self.next_frame = Instant::now();
+        if let Some(window) = &self.window {
+            self.display_step = monitor_step(window);
+            self.host_step = self.settings.high_refresh_cap.step(self.display_step);
+        }
+        self.high_refresh_applied = self.settings.high_refresh_mode;
+        self.reset_host_pace();
         Ok(())
     }
 
     fn back_to_library(&mut self) {
         self.game = None;
+        self.overlay_corner = None;
         if let Some(room) = &self.room {
             room.playing("");
         }
@@ -708,13 +1179,31 @@ impl App {
         }
         self.menus.menu_open = false;
         self.keyboard.release();
+        // what the game had of its own goes w/ it
+        self.active = self.settings.clone();
+        self.apply_layout();
+    }
+
+    /// arranges the screens another way, for the running game alone when it has an arrangement of its own
+    fn set_layout(&mut self, layout: Screens) {
+        let own = self.program_id().and_then(|id| self.settings.per_game.get_mut(&settings::game_key(id)));
+        match own.filter(|own| own.layout.is_some()) {
+            Some(own) => own.layout = Some(layout),
+            None => self.settings.layout = layout,
+        }
+        self.save_settings();
+        self.active = self.settings.for_game(self.program_id());
+        self.apply_layout();
     }
 
     fn key(&mut self, event: KeyEvent, consumed: bool) {
         let pressed = event.state == ElementState::Pressed;
         let PhysicalKey::Code(code) = event.physical_key else { return };
-        // Escape leaves a controller binding waiting for a button as it was
-        if pressed && code == KeyCode::Escape && self.menus.rebinding_pad.take().is_some() {
+        // Escape leaves a binding waiting for an input as it was
+        if pressed && code == KeyCode::Escape && (self.menus.rebinding_pad.take().is_some() || self.menus.rebinding_action.take().is_some()) {
+            return;
+        }
+        if pressed && !event.repeat && self.capture_binding(bindings::Source::Key(code)) {
             return;
         }
         // a binding waiting for a key takes it, Escape leaves it as it was
@@ -728,31 +1217,46 @@ impl App {
             }
             return;
         }
-        if code == KeyCode::Tab && !event.repeat && !self.settings.keys.binds(KeyCode::Tab) {
-            // fast forward while it is held
-            self.fast_forward_key = pressed && self.game.is_some();
+        let tab_bound = match self.keyboard.acting() {
+            true => self.settings.pc.bindings.binds(bindings::Source::Key(KeyCode::Tab)),
+            false => self.settings.keys.binds(KeyCode::Tab),
+        };
+        if code == KeyCode::Tab && !event.repeat && !tab_bound {
+            // fast forward while it is held; a Zakuro window owns the keyboard
+            self.fast_forward_key = pressed && self.game.is_some() && !self.menus.any_open();
         }
         if pressed && !event.repeat {
             match code {
-                KeyCode::Escape if self.game.is_some() => {
-                    self.menus.menu_open = !self.menus.menu_open;
+                KeyCode::F6 if !self.menus.any_open() && self.game.as_ref().is_some_and(|game| game.system.aim_mouse.is_some()) => {
+                    self.released_for_pause = false;
+                    self.set_aim_captured(!self.aim_captured);
+                    return;
+                }
+                KeyCode::F2 if self.options.menu_editor => {
+                    self.released_for_pause = false;
+                    self.set_aim_captured(false);
+                    self.menus.editor_open = !self.menus.editor_open;
+                    self.menus.toast = Some((format!("Layout editor {}", if self.menus.editor_open { "on" } else { "off" }), Instant::now()));
                     self.keyboard.release();
+                    return;
+                }
+                // the Frontend Menu: F12 always, Escape and Home too for a
+                // title whose Escape is the console's; Kid Icarus's Escape is
+                // its own Pause and Back
+                KeyCode::F12 if self.game.is_some() => {
+                    self.toggle_frontend_menu();
+                    return;
+                }
+                KeyCode::Escape if self.game.is_some() && !self.keyboard.acting() => {
+                    self.toggle_frontend_menu();
                     return;
                 }
                 KeyCode::F1 => {
                     self.paused = !self.paused;
                     log::info!("{}", if self.paused { "paused" } else { "resumed" });
                 }
-                KeyCode::F9 => {
-                    self.settings.layout = self.settings.layout.next();
-                    self.settings.save();
-                    self.apply_layout();
-                }
-                KeyCode::F10 if self.settings.layout.other_screen() != self.settings.layout => {
-                    self.settings.layout = self.settings.layout.other_screen();
-                    self.settings.save();
-                    self.apply_layout();
-                }
+                KeyCode::F9 => self.set_layout(self.active.layout.next()),
+                KeyCode::F10 if self.active.layout.other_screen() != self.active.layout => self.set_layout(self.active.layout.other_screen()),
                 KeyCode::F11 => self.toggle_fullscreen(),
                 KeyCode::F5 if self.game.is_some() => self.save_state(),
                 KeyCode::F8 if self.game.is_some() => self.load_state(),
@@ -760,58 +1264,402 @@ impl App {
             }
         }
         let to_game = self.game.is_some()
-            && !self.menus.menu_open
-            && !self.menus.settings_open
+            && !self.menus.any_open()
             && !consumed
             && !self.gui.as_ref().is_some_and(Gui::wants_keyboard);
+        // blowing into the mic while M is held
+        if code == KeyCode::KeyM && !event.repeat && !self.settings.keys.binds(KeyCode::KeyM) && (to_game || !pressed) {
+            self.blow(pressed);
+        }
+        if self.keyboard.acting() {
+            // letting go always gets through, so that no action stays held
+            if (to_game && !event.repeat) || !pressed {
+                let started = self.keyboard.key(event.physical_key, pressed);
+                self.do_actions(started);
+            }
+            if to_game && pressed {
+                self.prompt_faces = None;
+            }
+            return;
+        }
+        // the power key uses a power in a battle, and anywhere else does what
+        // else it is bound to, if anything. held, it uses no more than the one;
+        // a Zakuro window owns the keyboard, so typing there cannot use a power.
+        if pressed && code == self.settings.keys.power && !self.menus.any_open() {
+            if let Some(game) = &mut self.game {
+                let frame = game.system.frames;
+                if let Some(aim_mouse) = game.system.aim_mouse.as_mut().filter(|aim_mouse| aim_mouse.in_battle(frame)) {
+                    if !event.repeat {
+                        aim_mouse.use_power(frame);
+                    }
+                    return;
+                }
+            }
+        }
+        if to_game && pressed && !event.repeat {
+            let exit = if code == self.settings.keys.vehicle_ability {
+                Some(false)
+            } else if code == self.settings.keys.vehicle_exit {
+                Some(true)
+            } else {
+                None
+            };
+            if let (Some(exit), Some(game)) = (exit, &mut self.game) {
+                let frame = game.system.frames;
+                if game.system.aim_mouse.as_mut().is_some_and(|mouse| mouse.use_vehicle(frame, exit)) {
+                    self.prompt_faces = None;
+                    return;
+                }
+            }
+        }
         // letting go always gets through, so that no button stays held
         if to_game || !pressed {
             self.keyboard.key(event.physical_key, pressed);
         }
+        if to_game && pressed {
+            self.prompt_faces = None;
+        }
     }
 
-    /// takes in the controllers' buttons, a binding waiting for one takes
-    /// it, and Home opens and closes the menu over the game.
-    fn poll_gamepads(&mut self) {
-        for button in self.gamepads.poll() {
-            if let Some(index) = self.menus.rebinding_pad.take() {
-                if let Some((_, bound)) = self.settings.pad.all_mut().into_iter().nth(index) {
-                    *bound = button;
-                }
-                self.apply_settings();
-            } else if button == gilrs::Button::Mode && self.game.is_some() {
-                self.menus.menu_open = !self.menus.menu_open;
-                self.keyboard.release();
+    /// opens or closes the Frontend Menu over the game.
+    fn toggle_frontend_menu(&mut self) {
+        self.released_for_pause = false;
+        self.set_aim_captured(false);
+        // the game stands still under the menu and the windows it opens, so
+        // nothing looks at the battle meanwhile: forget it here, and the
+        // battle takes the mouse again once they are all closed and any
+        // pause menu is gone
+        self.battle_seen = false;
+        self.menus.menu_open = !self.menus.menu_open;
+        self.keyboard.release();
+    }
+
+    /// does what the actions a press started do outside the console's
+    /// buttons: a power, or a vehicle's ability or exit.
+    fn do_actions(&mut self, started: Vec<bindings::Action>) {
+        let Some(mouse) = self.game.as_mut().and_then(|game| {
+            let frame = game.system.frames;
+            game.system.aim_mouse.as_mut().map(|mouse| (mouse, frame))
+        }) else {
+            return;
+        };
+        let (mouse, frame) = mouse;
+        for action in started {
+            match action {
+                bindings::Action::UsePower => mouse.use_power(frame),
+                bindings::Action::VehicleAbility => _ = mouse.use_vehicle(frame, false),
+                bindings::Action::ExitVehicle => _ = mouse.use_vehicle(frame, true),
+                _ => {}
             }
         }
     }
 
-    /// whether the pointer is busy with something other than the game.
-    fn pointer_taken(&self, consumed: bool) -> bool {
-        consumed || self.game.is_none() || self.menus.menu_open || self.gui.as_ref().is_some_and(Gui::wants_pointer)
+    /// gives a Kid Icarus action waiting for an input this one, when it is
+    /// the device's, asking first when another action already uses it.
+    fn capture_binding(&mut self, source: bindings::Source) -> bool {
+        let Some((action, device, slot)) = self.menus.rebinding_action else { return false };
+        if source.device() != device {
+            return false;
+        }
+        self.menus.rebinding_action = None;
+        let conflicts = self.settings.pc.bindings.conflicts(action, source);
+        if conflicts.is_empty() {
+            if let Err(error) = self.settings.pc.bindings.assign(action, slot, source, bindings::Resolve::Replace) {
+                log::warn!("binding {} refused: {error:?}", action.name());
+            }
+            self.apply_settings();
+        } else {
+            self.menus.binding_conflict = Some((action, slot, source, conflicts));
+        }
+        true
     }
 
-    /// touches the bottom screen while the button is down over it.
-    fn touch(&mut self) {
+    /// takes in the controllers' buttons, a binding waiting for one takes it, and Home opens and closes the menu over the game
+    fn poll_gamepads(&mut self) {
+        if std::mem::take(&mut self.menus.calibrate_gyro) {
+            self.gyro.calibrate();
+        }
+        self.gyro.update();
+        self.menus.gyro_status = match (self.gyro.status(), self.gyro.controller()) {
+            (gyro::Status::Ready, Some(name)) => format!("Gyroscope: {name}"),
+            (gyro::Status::Calibrating, _) => "Gyroscope: calibrating, keep the controller still".to_owned(),
+            (gyro::Status::NoGyroscope, _) => "Gyro unavailable for this controller".to_owned(),
+            (gyro::Status::NoController, _) => "No controller connected".to_owned(),
+            (gyro::Status::Unavailable, _) | (gyro::Status::Ready, None) => "Controller gyroscopes can't be read on this system".to_owned(),
+        };
+        for (button, pressed) in self.gamepads.poll() {
+            if pressed && button == gilrs::Button::Mode && self.menus.rebinding_action.take().is_some() {
+                continue;
+            }
+            if pressed && self.capture_binding(bindings::Source::Pad(button)) {
+                continue;
+            }
+            if let (true, Some(index)) = (pressed, self.menus.rebinding_pad) {
+                self.menus.rebinding_pad = None;
+                if let Some((_, bound)) = self.settings.pad.all_mut().into_iter().nth(index) {
+                    *bound = button;
+                }
+                self.apply_settings();
+            } else if pressed && button == gilrs::Button::Mode && self.game.is_some() {
+                self.toggle_frontend_menu();
+            } else if self.keyboard.acting() {
+                let to_game = !self.menus.any_open();
+                if to_game || !pressed {
+                    let started = self.keyboard.source(bindings::Source::Pad(button), pressed);
+                    self.do_actions(started);
+                }
+            } else if pressed && !self.menus.any_open() {
+                let exit = if button == self.settings.pad.vehicle_ability {
+                    Some(false)
+                } else if button == self.settings.pad.vehicle_exit {
+                    Some(true)
+                } else {
+                    None
+                };
+                if let (Some(exit), Some(game)) = (exit, &mut self.game) {
+                    let frame = game.system.frames;
+                    if let Some(mouse) = &mut game.system.aim_mouse {
+                        mouse.use_vehicle(frame, exit);
+                    }
+                }
+            }
+        }
+        if self.gamepads.disconnected() {
+            self.keyboard.release_where(|source| matches!(source, bindings::Source::Pad(_)));
+        }
+        if let Some(faces) = self.gamepads.used() {
+            self.prompt_faces = Some(faces);
+        }
+    }
+
+    /// shows the game's button prompts as the keys, mouse or controller the
+    /// player used last, bound as the settings have them, when that changed.
+    fn update_prompts(&mut self) {
+        let Some(game) = &mut self.game else { return };
+        if self.prompts_shown == Some(self.prompt_faces) {
+            return;
+        }
+        let bindings = &self.settings.pc.bindings;
+        let prompts = match (self.prompt_faces, self.keyboard.acting()) {
+            // Kid Icarus shows the inputs on its actions
+            (Some(faces), true) => bindings.prompts(bindings::Device::Controller, |source| match source {
+                bindings::Source::Pad(button) => gamepad::label(button, faces),
+                other => input::label(other),
+            }),
+            (None, true) => bindings.prompts(bindings::Device::KeyboardMouse, input::label),
+            (Some(faces), false) => self.gamepads.prompts(faces),
+            (None, false) => input::prompts(&self.settings.keys),
+        };
+        game.system.set_prompts(prompts);
+        self.prompts_shown = Some(self.prompt_faces);
+    }
+
+    /// holds the pointer for aiming or lets it go back to touching.
+    fn set_aim_captured(&mut self, captured: bool) {
+        if captured == self.aim_captured {
+            return;
+        }
         let Some(window) = &self.window else { return };
-        let size = window.inner_size();
-        let (_, bottom) = layout(size.width, size.height, self.layout.screens(), self.top_shape.width(), self.settings.integer_scale);
-        // with the top screen alone there is nothing to touch
-        let Some(bottom) = bottom else {
+        if captured {
+            if window.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined)).is_err() {
+                log::warn!("could not hold the pointer in the window");
+                return;
+            }
+            window.set_cursor_visible(false);
+            // held still, the touch moves nothing, but the game keeps the
+            // reticle where the mouse put it instead of easing it back
+            self.keyboard.touch(Some((160, 120)));
+        } else {
+            let _ = window.set_cursor_grab(CursorGrabMode::None);
+            window.set_cursor_visible(true);
+            self.keyboard.touch(None);
+            self.keyboard.mouse_button(zakuro_core::services::hid::PadState::L, false);
+            // a mouse button held into the release lets go of its actions
+            // now, as its own release no longer reaches them
+            self.keyboard.release_where(|source| matches!(source, bindings::Source::Mouse(_)));
+        }
+        self.aim_captured = captured;
+        self.mouse_down = false;
+        if let Some(aim_mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+            aim_mouse.cancel_menu_touch();
+            aim_mouse.menu_touch(0, false);
+            aim_mouse.pending = [0.0; 2];
+            aim_mouse.captured = captured;
+        }
+        log::info!("mouse aiming {}", if captured { "on, F6 lets go" } else { "off" });
+    }
+
+    /// whether Kid Icarus: Uprising shows its pause menu, or the Fiend's
+    /// Cauldron, on the top screen, for the mouse to touch there.
+    fn pause_menu_shown(&self) -> bool {
+        self.game.as_ref().is_some_and(|game| {
+            let frames = game.system.frames;
+            game.system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.pause_menu_shown(frames) || aim_mouse.cauldron_on_top_shown(frames) || aim_mouse.menus_on_top_shown(frames))
+        })
+    }
+
+    /// lets the mouse go while the pause menu is on the top screen, for
+    /// touching it there, and holds it again once the menu is gone, when it
+    /// was let go for it.
+    fn follow_pause_menu(&mut self) {
+        // a Zakuro window has the mouse: aiming lets go of it until the
+        // window closes, and a battle under it takes the mouse again then
+        if self.menus.any_open() {
+            if self.aim_captured { self.set_aim_captured(false); }
+            self.released_for_pause = false;
+            self.battle_seen = false;
+            return;
+        }
+        let shown = self.pause_menu_shown();
+        self.follow_battle(shown);
+        if shown && self.aim_captured {
+            self.set_aim_captured(false);
+            self.released_for_pause = true;
+        } else if !shown && self.released_for_pause {
+            self.released_for_pause = false;
+            // the click that closed it is not still touching
+            self.mouse_down = false;
+            self.set_aim_captured(true);
+        }
+    }
+
+    /// takes the mouse for aiming as a battle starts and lets it go as the
+    /// battle ends; a pause is neither.
+    fn follow_battle(&mut self, paused: bool) {
+        if paused || self.released_for_pause { return; }
+        if !self.focused || self.menus.any_open() {
+            self.battle_seen = false;
+            return;
+        }
+        let battle = self.game.as_ref().is_some_and(|game| {
+            game.system.aim_mouse.as_ref().is_some_and(|aim_mouse| aim_mouse.in_battle(game.system.frames))
+        });
+        if battle && !self.battle_seen {
+            self.mouse_down = false;
+            self.set_aim_captured(true);
+        } else if !battle && self.battle_seen && self.aim_captured {
+            self.set_aim_captured(false);
+        }
+        self.battle_seen = battle;
+    }
+
+    /// is the pointer busy w/ something other than the game
+    fn pointer_taken(&self, consumed: bool) -> bool {
+        consumed || self.game.is_none() || self.menus.any_open() || self.gui.as_ref().is_some_and(Gui::wants_pointer)
+    }
+
+    /// touches the bottom screen while the button is down over it, and
+    /// tells the game's menus where over it the mouse is, for them to light
+    /// what is under it.
+    fn touch(&mut self) {
+        if self.pointer_taken(false) {
+            if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                mouse.cancel_menu_touch();
+                mouse.clear_menus_top_pointer();
+                if !self.mouse_down { mouse.menu_touch(0, false); }
+            }
             self.keyboard.touch(None);
             return;
+        }
+        let Some(window) = &self.window else { return };
+        let size = window.inner_size();
+        let (top, bottom) = layout(size.width, size.height, self.layout.screens(), self.orientation.screen_orientation(), self.top_width(), self.active.integer_scale);
+        if top.is_none() {
+            if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                mouse.clear_menus_top_pointer();
+            }
+        }
+        let orbit = self.settings.pc.aim.idol_view_sensitivity;
+        let top_pointer = top.and_then(|top| {
+            let x = (self.cursor.0 - top.x) / top.width * 400.0;
+            let y = (self.cursor.1 - top.y) / top.height * 240.0;
+            let game = self.game.as_mut()?;
+            let frames = game.system.frames;
+            let mouse = game.system.aim_mouse.as_mut()?;
+            // 0.3° a window pixel; a top-screen pixel is height / 240 of them.
+            mouse.idol_orbit_gain = 0.3 * orbit * top.height / 240.0;
+            let dragging = self.mouse_down && mouse.menus_top_dragging();
+            if !dragging && (!(0.0..400.0).contains(&x) || !(0.0..240.0).contains(&y)) {
+                mouse.clear_menus_top_pointer();
+                return None;
+            }
+            mouse.top_screen_touch(frames, x, y, self.mouse_down)
+        });
+        let top_dragging = self.mouse_down && self.game.as_ref().and_then(|game| game.system.aim_mouse.as_ref()).is_some_and(|mouse| mouse.menus_top_dragging());
+        let pointer = top_pointer.or_else(|| {
+            if top_dragging { return None; }
+            let bottom = bottom?;
+            let x = (self.cursor.0 - bottom.x) / bottom.width * 320.0;
+            let y = (self.cursor.1 - bottom.y) / bottom.height * 240.0;
+            ((0.0..320.0).contains(&x) && (0.0..240.0).contains(&y)).then_some((x, y))
+        });
+        let pointer = pointer.filter(|_| !self.pointer_taken(false));
+        let touch = if let Some(game) = &mut self.game {
+            if let Some(aim_mouse) = &mut game.system.aim_mouse {
+                aim_mouse.hover(pointer);
+                aim_mouse.menu_touch(game.system.frames, self.mouse_down)
+            } else {
+                pointer.filter(|_| self.mouse_down)
+            }
+        } else {
+            None
         };
-        let x = self.cursor.0 - bottom.x;
-        let y = self.cursor.1 - bottom.y;
-        let inside = x >= 0.0 && y >= 0.0 && x < bottom.width && y < bottom.height;
-        self.keyboard.touch((self.mouse_down && inside).then(|| {
-            ((x / bottom.width * 320.0) as u16, (y / bottom.height * 240.0) as u16)
-        }));
+        self.keyboard.touch(touch.map(|(x, y)| (x.clamp(0.0, 319.0) as u16, y.clamp(0.0, 239.0) as u16)));
     }
 
     /// tilts the console while the right button is held, toward where the
     /// pointer went and by how far, as Citra's motion emulation does,
     /// which titles were tried with. letting go stands it upright again.
+    /// the right button at the cursor, to the Idol View's Pan; whether the
+    /// Pan took it.
+    fn idol_pan(&mut self, pressed: bool) -> bool {
+        let Some(window) = &self.window else { return false };
+        let size = window.inner_size();
+        let (Some(top), _) = layout(size.width, size.height, self.layout.screens(), self.orientation.screen_orientation(), self.top_width(), self.active.integer_scale) else { return false };
+        let x = (self.cursor.0 - top.x) / top.width * 400.0;
+        let y = (self.cursor.1 - top.y) / top.height * 240.0;
+        let Some(game) = self.game.as_mut() else { return false };
+        let frames = game.system.frames;
+        game.system.aim_mouse.as_mut().is_some_and(|mouse| mouse.idol_view_pan(frames, x, y, pressed))
+    }
+
+    /// the pointer's look over the Idol View: a grab hand over it, hidden
+    /// and held while Orbiting, a held hand while Panning. Starts and ends
+    /// the Orbit's hold of the pointer.
+    fn idol_pointer_look(&mut self) -> Option<egui::CursorIcon> {
+        use zakuro_core::aim_mouse::IdolPointer;
+        let look = (!self.pointer_taken(false)).then(|| {
+            let game = self.game.as_ref()?;
+            game.system.aim_mouse.as_ref()?.idol_view_pointer(game.system.frames)
+        }).flatten();
+        let window = self.window.as_ref()?;
+        let orbiting = look == Some(IdolPointer::Orbit) && self.mouse_down;
+        match (orbiting, self.idol_orbit_from) {
+            (true, None) => {
+                if window.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined)).is_ok() {
+                    self.idol_orbit_from = Some(self.cursor);
+                }
+            }
+            (false, Some(from)) => {
+                let _ = window.set_cursor_grab(CursorGrabMode::None);
+                let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(from.0 as f64, from.1 as f64));
+                self.idol_orbit_from = None;
+                self.cursor = from;
+            }
+            _ => {}
+        }
+        // a confined pointer would stop at the window's edge: keep it put
+        if let Some(from) = self.idol_orbit_from {
+            let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(from.0 as f64, from.1 as f64));
+        }
+        if !orbiting && look == Some(IdolPointer::Orbit) { self.touch(); }
+        match look? {
+            IdolPointer::Hover => Some(egui::CursorIcon::Grab),
+            IdolPointer::Orbit => Some(egui::CursorIcon::None),
+            IdolPointer::Pan => Some(egui::CursorIcon::Grabbing),
+        }
+    }
+
     fn tilt(&mut self) {
         // radians a pixel, and the furthest it goes, a quarter turn
         const PER_PIXEL: f32 = 0.01;
@@ -836,9 +1684,8 @@ impl App {
                 self.resize_after_full_screen = false;
             }
             window.set_fullscreen((!full).then_some(Fullscreen::Borderless(None)));
-            // the layout may have changed meanwhile, which full screen kept
-            // the window's size through. a window maximized before comes
-            // back maximized, resizing it would take it out of that
+            // the layout may have changed meanwhile, full screen kept the window's size thru it
+            // a window maximized b4 comes back maximized, resizing it would take it out of that
             if full && self.resize_after_full_screen && !self.maximized_before_full_screen {
                 let _ = window.request_inner_size(self.window_size());
             }
@@ -851,25 +1698,90 @@ impl App {
         }
     }
 
+    /// whether the running game shows a picture on every refresh of the
+    /// display.
+    fn high_refresh(&self) -> bool {
+        self.game.as_ref().is_some_and(|game| game.system.gpu.interpolates())
+    }
+
+    /// the host time now, on the clock the console's frames are timed by.
+    fn host_time(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.host_epoch)
+    }
+
+    /// reads the display's refresh rate again, after moving to another.
+    fn measure_host_step(&mut self) {
+        let Some(window) = &self.window else { return };
+        self.display_step = monitor_step(window);
+        self.host_step = self.settings.high_refresh_cap.step(self.display_step);
+        self.next_host = Instant::now();
+    }
+
+    /// starts the pictures and the frame pair over, a toggle's say.
+    fn reset_host_pace(&mut self) {
+        self.next_host = Instant::now();
+        self.shown_host = self.older_frame_host;
+        self.frame_host = Duration::ZERO;
+        self.older_frame_host = Duration::ZERO;
+    }
+
+    /// saves the settings, telling the player when they could not be.
+    fn save_settings(&mut self) {
+        if let Err(error) = self.settings.save() {
+            self.menus.message = Some(format!("The settings can't be saved: {error}"));
+        }
+    }
+
     /// saves the settings and puts to use what can change right away.
     fn apply_settings(&mut self) {
-        self.settings.save();
-        if let Some(game) = &mut self.game {
-            if game.system.gpu.interpolates() != self.settings.frame_interpolation {
-                let on = game.system.set_interpolation(self.settings.frame_interpolation);
-                log::info!("frame interpolation {}", if on { "on" } else { "off" });
+        self.save_settings();
+        self.active = self.settings.for_game(self.program_id());
+        // a cap change takes effect at once, and the pacer starts over so
+        // no picture keeps the old pace
+        let host_step = self.settings.high_refresh_cap.step(self.display_step);
+        if host_step != self.host_step {
+            self.host_step = host_step;
+            self.reset_host_pace();
+            log::info!("High Refresh Mode cap {}", self.settings.high_refresh_cap.name());
+        }
+        if self.high_refresh_applied != self.settings.high_refresh_mode {
+            self.high_refresh_applied = self.settings.high_refresh_mode;
+            self.reset_host_pace();
+            if let Some(game) = &mut self.game {
+                // a fresh pacer and matcher history, so pictures in between
+                // never come from before the switch
+                let on = game.system.set_interpolation(self.settings.high_refresh_mode);
+                log::info!("High Refresh Mode {}", if on { "on" } else { "off" });
             }
+        }
+        if let Some(game) = &mut self.game {
             // games read the 3D slider every frame
-            let slider = self.settings.slider_3d();
+            let slider = self.active.slider_3d();
             if game.system.config.slider_3d != slider {
                 game.system.set_slider_3d(slider);
             }
+            if let Some(mouse) = game.system.aim_mouse.as_mut() {
+                let shown = &self.settings.pc.presentation;
+                mouse.hud_scale = shown.hud_scale;
+                mouse.portrait_scale = shown.portrait_scale;
+                mouse.land_camera_distance = shown.land_camera_distance();
+            }
         }
         self.apply_camera();
+        self.apply_microphone();
         self.keyboard.set_keys(self.settings.keys.clone());
+        self.apply_bindings();
         self.gamepads.set_buttons(self.settings.pad.clone());
+        self.prompts_shown = None;
         self.apply_volume();
         self.apply_layout();
+    }
+
+    /// Kid Icarus takes its input through its Action Bindings; any other
+    /// title through the console's buttons.
+    fn apply_bindings(&mut self) {
+        let kiu = self.game.as_ref().is_some_and(|game| game.system.aim_mouse.is_some());
+        self.keyboard.set_bindings(kiu.then(|| self.settings.pc.bindings.clone()));
     }
 
     /// gives the running game's cameras what the settings say they see,
@@ -897,24 +1809,47 @@ impl App {
         self.camera = Some(wanted);
     }
 
-    /// puts the screens' arrangement and the window scale to use, sizing
-    /// the window to them.
+    /// gives the running game's mic what the settings say it hears, when it isn't what it has
+    fn apply_microphone(&mut self) {
+        let wanted = self.settings.microphone;
+        let Some(game) = &mut self.game else { return };
+        if self.microphone == Some(wanted) {
+            return;
+        }
+        let device = wanted == MicrophoneSource::Computer;
+        let mut microphone = microphone::HostMicrophone::new(device, self.blowing.clone());
+        // a game already listening goes on listening to the new one
+        if game.system.services.mic.is_sampling() {
+            zakuro_core::microphone::Microphone::sampling(&mut microphone, true);
+        }
+        game.system.microphone = Some(Box::new(microphone));
+        self.microphone = Some(wanted);
+    }
+
+    /// starts or stops blowing into the mic
+    fn blow(&mut self, on: bool) {
+        if self.blowing.swap(on, std::sync::atomic::Ordering::Relaxed) != on {
+            log::debug!("{} into the microphone", if on { "blowing" } else { "no longer blowing" });
+        }
+    }
+
+    /// puts the screens' arrangement and the window scale to use, sizing the window to them
     fn apply_layout(&mut self) {
         if let Some(backend) = &mut self.backend {
-            backend.set_top_width(self.settings.top_shape.width());
-            backend.set_scaling(self.settings.filter.screens(), self.settings.integer_scale);
-            backend.set_stereo(self.settings.stereo());
+            backend.set_scaling(self.active.filter.screens(), self.active.integer_scale);
+            backend.set_stereo(self.active.stereo());
         }
-        let scale = if self.options.scale.is_none() { self.settings.scale.max(1) } else { self.scale };
-        if scale != self.scale || self.settings.layout != self.layout || self.settings.top_shape != self.top_shape {
+        let scale = if self.options.scale.is_none() { self.active.scale.max(1) } else { self.scale };
+        if scale != self.scale || self.active.layout != self.layout || self.active.orientation != self.orientation || self.active.top_shape != self.top_shape {
             self.scale = scale;
-            self.layout = self.settings.layout;
-            self.top_shape = self.settings.top_shape;
+            self.layout = self.active.layout;
+            self.orientation = self.active.orientation;
+            self.top_shape = self.active.top_shape;
             if let Some(backend) = &mut self.backend {
                 backend.set_layout(self.layout.screens());
+                backend.set_orientation(self.orientation.screen_orientation());
             }
-            // a full screen or maximized window keeps its size, resizing
-            // it would take it out of that, full screen fits it on leaving
+            // a full screen or maximized window keeps its size, resizing it would take it out of that, full screen fits it on leaving
             match &self.window {
                 Some(window) if window.fullscreen().is_some() => self.resize_after_full_screen = true,
                 Some(window) if !window.is_maximized() => {
@@ -923,58 +1858,102 @@ impl App {
                 _ => {}
             }
         }
+        let top_width = self.top_width();
+        if let Some(backend) = &mut self.backend {
+            backend.set_top_width(top_width);
+        }
     }
 
-    /// the window size that fits the screens at the chosen scale.
+    /// the top screen's width at its height of 240: the shape chosen, or
+    /// with the top screen alone fitting the window, the window's, from the
+    /// console's 5:3 to 32:9.
+    fn top_width(&self) -> f32 {
+        if self.top_shape != settings::TopShape::Fit {
+            return self.top_shape.width();
+        }
+        let Some(size) = self.window.as_ref().map(|window| window.inner_size()) else { return 400.0 };
+        if self.layout != Screens::TopOnly || size.width == 0 || size.height == 0 {
+            return 400.0;
+        }
+        (240.0 * size.width as f32 / size.height as f32).clamp(400.0, 240.0 * 32.0 / 9.0)
+    }
+
+    /// the window size that fits the screens at the chosen scale
     fn window_size(&self) -> winit::dpi::Size {
         let (width, height) = self.layout.screens().size(self.top_shape.width());
-        // scaled by whole numbers, a desktop scaled by 125% say would leave a
-        // border, so the window gets whole multiples of the screens' pixels
-        if let (true, Some(window)) = (self.settings.integer_scale, &self.window) {
+        let (width, height) = match self.orientation.screen_orientation().is_portrait() {
+            true => (height, width),
+            false => (width, height)
+        };
+        // scaled by whole numbers, a desktop scaled by 125% say would leave a border,
+        // so the window gets whole multiples of the screens' pixels
+        if let (true, Some(window)) = (self.active.integer_scale, &self.window) {
             let times = (self.scale as f64 * window.scale_factor()).round().max(1.0) as u32;
             return winit::dpi::PhysicalSize::new(width * times, height * times).into();
         }
         winit::dpi::LogicalSize::new(width * self.scale, height * self.scale).into()
     }
 
-    /// recompiles the library's game at index, with the computer's C
-    /// compiler, or the Zig Zakuro downloaded, or else, when download is
-    /// set, with Zig downloaded first. with none of those it asks whether
-    /// to download it.
-    fn recompile(&mut self, index: usize, download: bool) {
-        let Some(game) = self.library.games.get(index) else { return };
-        self.jobs.retain(|job| job.program_id != game.program_id || !job.stage().finished());
-        if self.jobs.iter().any(|job| job.program_id == game.program_id) {
-            return;
-        }
+    /// what to recompile w/, the computer's C compiler, or the Zig Zakuro downloaded,
+    /// or else Zig downloaded first when the player said yes to it
+    /// w/ none of those there's none, it asks whether to download Zig for games, or says what's missing
+    fn toolchain(&mut self, games: &[Wanted]) -> Option<Toolchain> {
         let tools = zig::tools_dir(self.data_dir.as_deref());
-        let toolchain = match recomp3ds::compile::check(None) {
-            Ok(compiler) => Toolchain::Ready(compiler),
-            Err(error) => match tools.as_deref().and_then(zig::installed) {
-                Some(compiler) => Toolchain::Ready(compiler),
-                None => match tools {
-                    Some(tools) if download && zig::download_size().is_some() && zig::can_download() => Toolchain::Download(tools),
-                    Some(_) if zig::download_size().is_some() && zig::can_download() => {
-                        self.menus.compiler_offer = Some(index);
-                        return;
-                    }
-                    Some(_) if zig::download_size().is_some() => {
-                        self.menus.message =
-                            Some(format!("Recompiling needs a C compiler, gcc or clang, or curl or wget for Zakuro to download one: {error}."));
-                        return;
-                    }
-                    _ => {
-                        self.menus.message = Some(format!("Recompiling needs a C compiler: {error}."));
-                        return;
-                    }
-                },
-            },
+        let error = match recomp3ds::compile::check(None) {
+            Ok(compiler) => return Some(Toolchain::Ready(compiler)),
+            Err(error) => error,
         };
-        let update = game.update.as_ref().map(|update| update.path.as_path());
-        self.jobs.push(Job::start(&game.path, update, game.program_id, &game.name, self.data_dir.as_deref(), toolchain));
+        if let Some(compiler) = tools.as_deref().and_then(zig::installed) {
+            return Some(Toolchain::Ready(compiler));
+        }
+        match tools {
+            Some(tools) if self.download_compiler && zig::download_size().is_some() && zig::can_download() => return Some(Toolchain::Download(tools)),
+            Some(_) if zig::download_size().is_some() && zig::can_download() => self.menus.compiler_offer = Some(games.to_vec()),
+            Some(_) if zig::download_size().is_some() => {
+                self.menus.message = Some(format!("Recompiling needs a C compiler, gcc or clang, or curl or wget for Zakuro to download one: {error}."));
+            }
+            _ => self.menus.message = Some(format!("Recompiling needs a C compiler: {error}.")),
+        }
+        None
     }
 
-    /// tells about recompiles as they finish.
+    /// puts games in line to recompile after the ones already there, each getting its turn once the one b4 it is done
+    /// download says the player agreed to download a compiler if there's none
+    fn recompile(&mut self, games: Vec<Wanted>, download: bool) {
+        self.download_compiler = download;
+        if self.toolchain(&games).is_none() {
+            return;
+        }
+        for game in games {
+            let running = self.jobs.iter().any(|job| job.program_id == game.program_id && !job.stage().finished());
+            if !running && !self.waiting.iter().any(|waiting| waiting.program_id == game.program_id) {
+                self.waiting.push(game);
+            }
+        }
+        self.next_recompile();
+    }
+
+    /// starts the game next in line, when none is recompiling
+    fn next_recompile(&mut self) {
+        if self.waiting.is_empty() || self.jobs.iter().any(|job| !job.stage().finished()) {
+            return;
+        }
+        // a compiler can have stopped being there (its download failed or got cancelled), and it asks again for the ones left
+        let Some(toolchain) = self.toolchain(&self.waiting.clone()) else {
+            self.waiting.clear();
+            return;
+        };
+        self.download_compiler = false;
+        let wanted = self.waiting.remove(0);
+        self.jobs.retain(|job| job.program_id != wanted.program_id);
+        // a scan may have taken it out of the library meanwhile
+        if let Some(game) = self.library.games.iter().find(|game| game.path == wanted.path) {
+            let update = game.update.as_ref().map(|update| update.path.as_path());
+            self.jobs.push(Job::start(&game.path, update, game.program_id, &game.name, self.data_dir.as_deref(), toolchain));
+        }
+    }
+
+    /// tells about recompiles as they finish, and starts the next
     fn poll_jobs(&mut self) {
         let mut finished = Vec::new();
         for job in &mut self.jobs {
@@ -986,8 +1965,11 @@ impl App {
         for (program_id, name, stage) in finished {
             match stage {
                 Stage::Done => {
-                    self.library.refresh_recompiled();
-                    let playing = self.game.as_ref().is_some_and(|game| game.system.title.as_ref().is_some_and(|title| title.program_id() == program_id));
+                    self.library.recompiled(program_id);
+                    // a game told to run on the interpreter stays on it
+                    let playing = self.game.as_ref().is_some_and(|game| {
+                        game.system.config.find_recompiled && game.system.title.as_ref().is_some_and(|title| title.program_id() == program_id)
+                    });
                     let installed = zakuro_core::recompiled::installed(program_id);
                     if let (true, Some(game), Some(path)) = (playing, self.game.as_mut(), installed) {
                         // from here on the game runs on the new code, no reset needed
@@ -1000,23 +1982,98 @@ impl App {
                         }
                     }
                 }
+                // others can fail b4 anyone reads this, in a long line
                 Stage::Failed(error) if error != "cancelled" => {
-                    self.menus.message = Some(format!("Recompiling {name} failed, {error}"));
+                    let failed = format!("Recompiling {name} failed, {error}");
+                    self.menus.message = Some(self.menus.message.take().map_or(failed.clone(), |earlier| format!("{earlier}\n\n{failed}")));
                 }
                 _ => {}
             }
         }
+        self.next_recompile();
     }
 
     fn act(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         match action {
+            Action::SaveLayout => {
+                let (layers, pause, dialog, cauldron, loading, navigation, hidden) = match self.game.as_ref().and_then(|game| game.system.aim_mouse.as_ref()) {
+                    Some(mouse) => (mouse.editor_overrides(), mouse.pause_rules(), mouse.dialog_rules(), mouse.cauldron_rules(), mouse.loading_rules(), mouse.editor_navigation(), mouse.editor_hidden_layers()),
+                    None => (self.layout_overrides.clone(), self.pause_rules, self.dialog_rules, self.cauldron_rules, self.loading_rules, self.navigation.clone(), self.hidden.clone()),
+                };
+                let written = save_layout(&self.data_dir, &layers, pause, dialog, cauldron, loading, navigation.clone(), hidden.clone(), &self.menus.editor_folders);
+                let path = layout_path(&self.data_dir);
+                self.menus.message = Some(match written {
+                    Ok(path) => {
+                        self.layout_overrides = layers;
+                        self.pause_rules = pause;
+                        self.dialog_rules = dialog;
+                        self.cauldron_rules = cauldron;
+                        self.loading_rules = loading;
+                        self.navigation = navigation;
+                        self.hidden = hidden;
+                        format!("Saved the layout to {}", path.display())
+                    }
+                    Err(error) => format!("Could not save {}: {error}", path.display()),
+                });
+            }
+            Action::EditorNavigationLink(from, direction, to) => {
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.set_editor_navigation_link(from, direction, to);
+                    self.navigation = mouse.editor_navigation();
+                }
+            }
+            Action::EditorLayer(index, to) => {
+                let overrides = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()).map(|mouse| {
+                    mouse.set_editor_layer(index, to);
+                    self.cauldron_rules = mouse.cauldron_rules();
+                    self.loading_rules = mouse.loading_rules();
+                    mouse.editor_overrides()
+                });
+                if let Some(overrides) = overrides {
+                    self.layout_overrides = overrides;
+                }
+            }
+            Action::EditorLayerVisible(index, visible) => {
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.set_editor_layer_visible(index, visible);
+                    self.cauldron_rules = mouse.cauldron_rules();
+                    self.loading_rules = mouse.loading_rules();
+                    self.hidden = mouse.editor_hidden_layers();
+                }
+            }
+            Action::LoadingRules(rules) => {
+                self.loading_rules = rules;
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.set_loading_rules(rules);
+                }
+            }
+            Action::CauldronRules(rules) => {
+                self.cauldron_rules = rules;
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.set_cauldron_rules(rules);
+                }
+            }
+            Action::DialogRules(rules) => {
+                self.dialog_rules = rules;
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.set_dialog_rules(rules);
+                }
+            }
+            Action::PauseRules(rules) => {
+                self.pause_rules = rules;
+                if let Some(game) = &mut self.game {
+                    if let Some(mouse) = game.system.aim_mouse.as_mut() {
+                        mouse.set_pause_rules(rules);
+                    }
+                }
+            }
             Action::Play(path) => {
                 if let Err(error) = self.play(&path) {
                     self.menus.message = Some(error);
                 }
             }
-            Action::Recompile(index) => self.recompile(index, false),
-            Action::DownloadCompiler(index) => self.recompile(index, true),
+            Action::Recompile(games) => self.recompile(games, false),
+            Action::DownloadCompiler(games) => self.recompile(games, true),
             Action::Mods(program_id) => {
                 if let Some(data_dir) = &self.data_dir {
                     let folder = zakuro_core::mods::dir(data_dir, program_id);
@@ -1028,14 +2085,16 @@ impl App {
                 }
             }
             Action::CancelRecompile(program_id) => {
+                self.waiting.retain(|waiting| waiting.program_id != program_id);
                 for job in self.jobs.iter().filter(|job| job.program_id == program_id) {
                     job.cancel();
                 }
             }
+            Action::CancelWaiting => self.waiting.clear(),
             Action::ChooseFolder => {
                 if let Some(folder) = rfd::FileDialog::new().set_title("Where your games are").pick_folder() {
                     self.settings.games = Some(folder.clone());
-                    self.settings.save();
+                    self.save_settings();
                     self.library.scan(&folder);
                 }
             }
@@ -1072,7 +2131,7 @@ impl App {
                     .pick_file();
                 if let Some(file) = picked {
                     self.settings.background = Some(file);
-                    self.settings.save();
+                    self.save_settings();
                 }
             }
             Action::Rescan => {
@@ -1112,7 +2171,7 @@ impl App {
                     if on {
                         names.push(cheat.name.clone());
                     }
-                    self.settings.save();
+                    self.save_settings();
                 } else {
                     self.save_cheats();
                 }
@@ -1170,6 +2229,7 @@ impl App {
         self.library.poll();
         self.poll_jobs();
         self.poll_gamepads();
+        self.update_prompts();
         // a room that went away takes the game's local wireless with it
         if self.room.as_ref().is_some_and(|room| !room.open()) {
             self.leave_room();
@@ -1180,14 +2240,17 @@ impl App {
         // a game waiting on its keyboard waits for the user, not running
         let typing = self.game.as_ref().is_some_and(|game| game.system.keyboard_request().is_some());
         let playing =
-            self.game.is_some() && !self.paused && !self.menus.menu_open && !self.menus.settings_open && !typing;
+            self.game.is_some() && !self.paused && !self.menus.over_game() && !typing;
         // Tab or a controller's right trigger, or the right stick's click
-        // while ZR has the trigger, whichever no button of the console's is on
-        let free = |button: gilrs::Button| self.settings.pad.map().iter().all(|&(_, bound)| bound != button);
+        // while ZR has the trigger, whichever no binding is on
+        let free = |button: gilrs::Button| match self.keyboard.acting() {
+            true => !self.settings.pc.bindings.binds(bindings::Source::Pad(button)),
+            false => self.settings.pad.map().iter().all(|&(_, bound)| bound != button),
+        };
         let trigger = [gilrs::Button::RightTrigger2, gilrs::Button::RightThumb].into_iter().find(|&button| free(button));
         let fast = playing && (self.fast_forward_key || trigger.is_some_and(|trigger| self.gamepads.holding(trigger)));
         if fast {
-            // the output waits out fast forward rather than run dry
+            // the output waits out fast forward instead of running dry
             if let Some(audio) = &self.audio {
                 audio.hold();
             }
@@ -1195,19 +2258,44 @@ impl App {
         if fast != self.fast_forwarding {
             self.fast_forwarding = fast;
             if !fast {
-                // back at the console's pace, with no sound piled up
+                // back at the console's pace, w/ no sound piled up
                 if let Some(audio) = &self.audio {
                     audio.clear();
                 }
                 self.next_frame = Instant::now();
+                self.next_host = Instant::now();
             }
         }
+
+        // a picture on every refresh of the display, or one a console frame
+        let host_rate = playing && draws_in_between(self.high_refresh(), fast);
+        if host_rate {
+            self.step_at_host_rate(event_loop);
+        } else {
+            self.step_at_console_rate(event_loop, playing, fast);
+        }
+        self.report(playing);
+
+        let now = Instant::now();
+        let due = if host_rate { self.next_frame.min(self.next_host) } else { self.next_frame };
+        if now < due {
+            std::thread::sleep(due - now);
+        }
+    }
+
+    /// the console's own pace, one picture a console frame, a few skipped
+    /// while the game runs behind a presenter that waits for the display.
+    fn step_at_console_rate(&mut self, event_loop: &ActiveEventLoop, playing: bool, fast: bool) {
         if playing {
+            if self.mouse_down && !self.aim_captured {
+                self.touch();
+            }
             let start = Instant::now();
             self.emulate();
             self.spent.emulating.add(start.elapsed());
+            self.follow_pause_menu();
         } else if let Some(audio) = &self.audio {
-            // the sound stops with the game, which is not falling behind
+            // the sound stops w/ the game, which isn't falling behind
             audio.hold();
         }
 
@@ -1216,11 +2304,9 @@ impl App {
             // nothing to wait for
             self.next_frame = Instant::now();
         }
-        // behind the schedule, showing the frame would wait on the display,
-        // so it goes unshown, a few at most. a presenter that does not wait,
-        // in mailbox mode, shows them all, a game that could not keep up
-        // showed a fifth of its frames. fast forward shows them at the
-        // console's frame rate, waiting on the display for no more
+        // behind the schedule, showing the frame would wait on the display, so it goes unshown, a few at most
+        // a presenter that doesn't wait (mailbox mode) shows them all, a game that couldn't keep up showed a fifth of its frames
+        // fast forward shows them at the console's frame rate, waiting on the display for no more
         let behind = Instant::now() > self.next_frame;
         let waits = self.backend.as_ref().is_some_and(Backend::waits_for_display);
         let unshown = if fast { Instant::now() < self.next_shown } else { skips_showing(playing, behind, waits, self.skipped) };
@@ -1229,61 +2315,140 @@ impl App {
         } else {
             self.skipped = 0;
             let start = Instant::now();
-            self.present(event_loop);
+            self.present(event_loop, false);
             // the next one a frame later, or right away after falling
             // behind, at the console's rate on average
             self.next_shown = (self.next_shown + FRAME_TIME).max(Instant::now() - FRAME_TIME);
             self.spent.showing.add(start.elapsed());
-            self.shown += 1;
-        }
-
-        if self.last_title_update.elapsed() >= Duration::from_millis(500) {
-            let shown = self.shown as f32 / self.last_title_update.elapsed().as_secs_f32();
-            self.shown = 0;
-            self.last_title_update = Instant::now();
-            if let Some(game) = &self.game {
-                let Spent { emulating, showing } = std::mem::take(&mut self.spent);
-                log::debug!(
-                    target: "zakuro::fps",
-                    "{:.1} frames emulated and {shown:.1} shown a second, emulating took {emulating}, showing {showing}",
-                    game.fps
-                );
-            }
-            if let Some(window) = &self.window {
-                let title = match &self.game {
-                    Some(game) => format!("Zakuro - {} - {}", game.name, game.system.status_line()),
-                    None => "Zakuro".to_owned(),
-                };
-                window.set_title(&title);
-            }
-            let underruns = self.audio.as_ref().map_or(0, |audio| audio.take_underruns());
-            if underruns > 0 && playing {
-                log::warn!("the sound ran dry {underruns} times, the emulation is falling behind");
-            }
-        }
-
-        let now = Instant::now();
-        if now < self.next_frame {
-            std::thread::sleep(self.next_frame - now);
+            self.shown.count();
         }
     }
 
-    /// runs one frame of the game.
+    /// High Refresh Mode's pace: the console keeps its 59.83 Hz schedule,
+    /// and the display gets a picture on every one of its own refreshes.
+    fn step_at_host_rate(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        if now >= self.next_frame {
+            if self.mouse_down && !self.aim_captured {
+                self.touch();
+            }
+            let start = Instant::now();
+            self.emulate();
+            self.spent.emulating.add(start.elapsed());
+            self.follow_pause_menu();
+            // the picture clock goes on across the console's frames, a
+            // host refresh at a time, so an interval that is not a whole
+            // number of refreshes keeps its phase instead of starting over
+            // at the older frame on every frame.
+            self.next_frame += FRAME_TIME;
+        }
+        let now = Instant::now();
+        if now >= self.next_host {
+            let start = Instant::now();
+            self.present(event_loop, true);
+            self.spent.showing.add(start.elapsed());
+            self.shown.count();
+            self.next_host = next_host_time(self.next_host, self.host_step, Instant::now());
+        }
+    }
+
+    /// the frame rate's log and the window's title, every half second.
+    fn report(&mut self, playing: bool) {
+        let now = Instant::now();
+        if now.saturating_duration_since(self.last_title_update) < Duration::from_millis(500) {
+            return;
+        }
+        let shown = self.shown.read(now);
+        self.last_title_update = now;
+        if let Some(game) = &mut self.game {
+            // read even when no frame ran, so a stall drops the game's rate
+            game.fps = game.rate.read(now);
+            let Spent { emulating, showing } = std::mem::take(&mut self.spent);
+            log::debug!(
+                target: "zakuro::fps",
+                "{:.1} frames emulated and {shown:.1} shown a second, emulating took {emulating}, showing {showing}",
+                game.fps
+            );
+        }
+        if let Some(window) = &self.window {
+            let title = match &self.game {
+                Some(game) => format!("Zakuro - {} - {}", game.name, game.system.status_line()),
+                None => "Zakuro".to_owned(),
+            };
+            window.set_title(&title);
+        }
+        let underruns = self.audio.as_ref().map_or(0, |audio| audio.take_underruns());
+        if underruns > 0 && playing {
+            log::warn!("the sound ran dry {underruns} times, the emulation is falling behind");
+        }
+    }
+
+    /// runs one frame of the game
     fn emulate(&mut self) {
+        let top_width = self.top_width();
+        // when the frame started on the host's clock, which the pictures in
+        // between the last two are drawn at a fraction of
+        let host_clock = self.host_time(Instant::now());
+        self.older_frame_host = self.frame_host;
+        self.frame_host = host_clock;
+        let high_refresh = self.high_refresh();
         let Some(game) = &mut self.game else { return };
+        game.system.host_clock = host_clock;
+        // Kid Icarus: Uprising draws a view as wide as the top screen shows
+        // and its inputs act in the context it is in, a battle or a Screen
+        let mut battle = false;
+        if let Some(aim_mouse) = &mut game.system.aim_mouse {
+            aim_mouse.widen = top_width / 400.0;
+            battle = aim_mouse.in_battle(game.system.frames);
+            self.keyboard.set_context(if battle { bindings::Context::Gameplay } else { bindings::Context::Screens });
+            let movement = &self.settings.pc.movement;
+            self.keyboard.set_walk(movement.walk_lean(), movement.walk_by_default);
+        }
+        let aim = &self.settings.pc.aim;
+        let sticks = match self.keyboard.acting() {
+            true => gamepad::Sticks {
+                dead_zone: aim.dead_zone,
+                right_scale: aim.stick_sensitivity,
+                right_invert: [aim.stick_invert_x, aim.stick_invert_y],
+            },
+            false => gamepad::Sticks::default(),
+        };
         let input = match &mut game.replay {
             Some(replay) => replay.input(game.frame),
-            None => self.gamepads.apply(self.keyboard.state()),
+            None => {
+                let mut input = self.gamepads.apply(self.keyboard.state(), sticks, self.keyboard.acting());
+                // Kid Icarus's gyro aims only in a battle, as its preferences say
+                if self.keyboard.acting() {
+                    input.gyro = self.gyro.turning(aim, battle, self.keyboard.gyro_held());
+                }
+                input
+            }
         };
         game.frame += 1;
         if let Some(recorder) = &mut game.recorder {
             recorder.record(input);
         }
         game.system.set_input(input);
+        let pictures = game.system.pictures();
         let outcome = game.system.run_frame();
-        game.count_frame();
+        // the overlay reads the game the program was built on, not another one its library opened
+        let ours = self.linked.as_ref().is_none_or(|linked| game.system.title.as_ref().is_some_and(|title| title.program_id() == linked.program_id()));
+        if let Some(overlay) = self.overlay.as_mut().filter(|_| ours) {
+            let text = overlay.frame(&mut game.system.memory);
+            self.overlay_corner = text.corner;
+            if let Some(notice) = text.notice {
+                self.menus.toast = Some((notice, Instant::now()));
+            }
+        }
+        // the game's own frames are the pictures it drew, which a title
+        // drawing every other console refresh has half as often. without
+        // High Refresh Mode the console's frames are all the readout counts,
+        // as they always have been.
+        if !high_refresh || game.system.pictures() != pictures {
+            game.count_frame();
+        }
         let sound = game.system.take_audio();
-        // fast forward plays no sound, there is too much of it too soon
+        // fast forward plays no sound, there's too much of it too soon
         if let (Some(audio), false) = (&self.audio, self.fast_forwarding) {
             audio.push(&sound);
         }
@@ -1307,7 +2472,7 @@ impl App {
         }
     }
 
-    /// the name the player goes by, the console's too.
+    /// the name the player goes by, the console's too
     fn nickname(&self) -> String {
         match self.settings.nickname.trim() {
             "" => "Player".into(),
@@ -1315,8 +2480,7 @@ impl App {
         }
     }
 
-    /// gives the running game the room the player is in, and tells the room
-    /// the game.
+    /// gives the running game the room the player's in, and tells the room the game
     fn link_room(&mut self) {
         let Some(game) = &mut self.game else { return };
         game.system.room = self.room.as_ref().map(|room| room.link());
@@ -1325,7 +2489,7 @@ impl App {
         }
     }
 
-    /// opens a room on the port chosen, and joins it.
+    /// opens a room on the port chosen, and joins it
     fn host_room(&mut self) {
         let name = match self.settings.room_name.trim() {
             "" => format!("{}'s room", self.nickname()),
@@ -1345,7 +2509,7 @@ impl App {
         }
     }
 
-    /// joins the room at address.
+    /// joins the room at address
     fn join_room(&mut self, address: &str) {
         let password = self.menus.room_password.clone();
         match zakuro_core::room::Connection::join(address.trim(), &self.nickname(), &password) {
@@ -1357,7 +2521,7 @@ impl App {
         }
     }
 
-    /// leaves the room, and closes it when it is this program's.
+    /// leaves the room, and closes it when it's this program's
     fn leave_room(&mut self) {
         self.dlp_guest = None;
         self.room = None;
@@ -1367,8 +2531,7 @@ impl App {
         }
     }
 
-    /// Download Play as a guest: hears the offers in the room while no game
-    /// runs, and starts the child once the host's game begins.
+    /// Download Play as a guest, hears the offers in the room while no game runs and starts the child once the host's game begins
     fn download_play(&mut self) {
         let Some(room) = self.room.as_ref().filter(|_| self.game.is_none()) else {
             self.dlp_guest = None;
@@ -1400,8 +2563,7 @@ impl App {
         }
     }
 
-    /// takes part in the Download Play offer at index, with the player's own
-    /// copy of the child when the folder has one.
+    /// takes part in the Download Play offer at index, w/ the player's own copy of the child when the folder has one
     fn join_download_play(&mut self, index: usize) {
         let node = zakuro_core::download_play::node(self.settings.console_id, &self.nickname());
         let Some(guest) = &mut self.dlp_guest else { return };
@@ -1411,7 +2573,7 @@ impl App {
         guest.join(host, node, self.dlp_own.is_some());
     }
 
-    /// keeps a child the host sent, for it to run from.
+    /// keeps a child the host sent, for it to run from
     fn keep_child(&self, child: &[u8]) -> Result<PathBuf, String> {
         let cia = zakuro_fs::Cia::read(child).map_err(|_| "the host sent something that isn't a game".to_owned())?;
         let folder = self.data_dir.clone().unwrap_or_else(std::env::temp_dir).join("dlp");
@@ -1420,13 +2582,13 @@ impl App {
         Ok(path)
     }
 
-    /// the file of a slot of the running game's saved states.
+    /// the file of a slot of the running game's save states
     fn state_path(&self, slot: u8) -> Option<PathBuf> {
         let program_id = self.game.as_ref()?.system.title.as_ref()?.program_id();
         Some(self.data_dir.as_ref()?.join("states").join(format!("{program_id:016X}")).join(format!("{slot}.state")))
     }
 
-    /// saves the running game's state to the slot chosen.
+    /// saves the running game's state to the slot chosen
     fn save_state(&mut self) {
         let slot = self.menus.slot;
         let Some(path) = self.state_path(slot) else { return };
@@ -1435,8 +2597,7 @@ impl App {
         let saved = game.system.save_state().and_then(|bytes| {
             let parent = path.parent().expect("a state's file is in a folder");
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-            // written beside it first, a state cut short never takes the
-            // place of a whole one
+            // written beside it first, so a state cut short never replaces a whole one
             let partial = path.with_extension("state.new");
             std::fs::write(&partial, &bytes).and_then(|()| std::fs::rename(&partial, &path)).map_err(|error| error.to_string())
         });
@@ -1447,11 +2608,11 @@ impl App {
             }
             Err(error) => self.menus.message = Some(format!("The state could not be saved, {error}")),
         }
-        // the time it took is not the game's to make up
+        // the time it took isn't the game's to make up
         self.next_frame = Instant::now();
     }
 
-    /// loads the running game's state from the slot chosen.
+    /// loads the running game's state from the slot chosen
     fn load_state(&mut self) {
         let slot = self.menus.slot;
         let Some(path) = self.state_path(slot) else { return };
@@ -1465,8 +2626,16 @@ impl App {
         match loaded {
             Ok(()) => {
                 log::info!("loaded the state from {}", path.display());
+                if self.options.menu_editor {
+                    if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                        mouse.set_editor_navigation(self.navigation.clone());
+                        mouse.set_editor_hidden_layers(self.hidden.clone());
+                    }
+                }
                 self.menus.toast = Some((format!("Loaded slot {slot}"), Instant::now()));
                 self.menus.menu_open = false;
+                // the overlay's line was about the memory b4, the next frame gives the one about the state
+                self.overlay_corner = None;
                 if let Some(audio) = &self.audio {
                     audio.clear();
                 }
@@ -1476,13 +2645,13 @@ impl App {
         self.next_frame = Instant::now();
     }
 
-    /// the file of the running game's cheats.
+    /// the file of the running game's cheats
     fn cheats_path(&self) -> Option<PathBuf> {
         let program_id = self.game.as_ref()?.system.title.as_ref()?.program_id();
         Some(zakuro_core::cheats::path(self.data_dir.as_ref()?, program_id))
     }
 
-    /// writes the running game's cheats to their file.
+    /// writes the running game's cheats to their file
     fn save_cheats(&mut self) {
         let (Some(path), Some(game)) = (self.cheats_path(), &self.game) else { return };
         if let Err(error) = zakuro_core::cheats::save(&path, &game.system.cheats) {
@@ -1490,8 +2659,11 @@ impl App {
         }
     }
 
-    /// the menus, and the actions they asked for, done.
+    /// the menus, and the actions they asked for, done
     fn interface(&mut self, event_loop: &ActiveEventLoop) -> Overlay {
+        // while the mouse aims the pointer stays hidden; the overlay would
+        // otherwise show it again whenever it sets its own cursor
+        let idol_icon = if self.aim_captured { Some(egui::CursorIcon::None) } else { self.idol_pointer_look() };
         // when the slot chosen was saved to, while the menu shows it
         let saved = self
             .menus
@@ -1500,9 +2672,47 @@ impl App {
             .flatten()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
             .map(ago);
+        // the host's pictures read apart from the game's own frames, so a
+        // dropped picture and a dropped frame can be told apart
+        let high_refresh = self.high_refresh();
+        let shown = self.shown.rate();
+        let canvas = {
+            let layout_kind = self.layout;
+            let top_width = self.top_width();
+            let integer = self.active.integer_scale;
+            let orientation = self.orientation.screen_orientation();
+            self.window.as_ref().and_then(|window| {
+                let size = window.inner_size();
+                let (top, _) = layout(size.width, size.height, layout_kind.screens(), orientation, top_width, integer);
+                top.map(|top| [top.x, top.y, top.width, top.height])
+            })
+        };
+        let program_id = self.program_id();
         let (Some(gui), Some(window)) = (&mut self.gui, &self.window) else { return Overlay::default() };
         let show_fps = self.settings.show_fps;
-        let game = self.game.as_ref().map(|game| (game.name.clone(), game.fps, game.system.recompiled.is_some()));
+        let editor_open = self.menus.editor_open;
+        // folders and undo follow the Scripted Menu being edited
+        self.menus.editor_screen = self.game.as_ref().and_then(|game| game.system.aim_mouse.as_ref()).and_then(|mouse| mouse.editor_scripted_index());
+        let editor_enabled = self.options.menu_editor;
+        let (editor_layers, editor_visibility, navigation_controls, navigation_directions, editor_widen) = self.game.as_ref().filter(|_| editor_open).and_then(|game| game.system.aim_mouse.as_ref())
+            .map_or((Vec::new(), Vec::new(), Vec::new(), [true; 4], 1.0), |mouse| (mouse.editor_layers(), mouse.editor_layer_visibility(), mouse.editor_navigation_controls(), mouse.editor_navigation_directions(), mouse.widen()));
+        let game = self.game.as_ref().map(|game| {
+            let fps = menus::FpsReadout::new(high_refresh, shown, game.fps);
+            // the window of the Screen the editor edits: the Cauldron, the
+            // Retreat Dialog, or Pause's rules for anything else
+            let rules = game.system.aim_mouse.as_ref().map(|mouse| {
+                if let Some(cauldron) = mouse.editor_cauldron_rules() {
+                    menus::EditorRules::Cauldron(cauldron)
+                } else if let Some(loading) = mouse.editor_loading_rules() {
+                    menus::EditorRules::Loading(loading)
+                } else if let Some(dialog) = mouse.editor_dialog_rules() {
+                    menus::EditorRules::RetreatDialog(dialog)
+                } else {
+                    menus::EditorRules::Pause(mouse.pause_rules())
+                }
+            });
+            (game.name.clone(), fps, game.system.recompiled.is_some(), rules)
+        });
         let fast = self.fast_forwarding;
         let keyboard = self.game.as_ref().and_then(|game| game.system.keyboard_request().cloned());
         let room = self.room.as_ref().filter(|_| self.menus.multiplayer_open).map(|connection| {
@@ -1517,16 +2727,26 @@ impl App {
         let cheats = self.game.as_ref().filter(|_| self.menus.cheats_open).map(|game| {
             game.system.cheats.iter().map(|cheat| (cheat.name.clone(), cheat.enabled, cheat.notes.join("\n"), cheat.builtin)).collect::<Vec<_>>()
         });
-        let (menus, library, settings, jobs) = (&mut self.menus, &self.library, &mut self.settings, &self.jobs);
+        let corner = self.overlay_corner.clone().filter(|_| game.is_some());
+        let (menus, library, settings, jobs, waiting) = (&mut self.menus, &self.library, &mut self.settings, &self.jobs, &self.waiting);
         let mut actions = Vec::new();
         let overlay = gui.frame(window, |ui| {
             match &game {
-                Some((name, fps, recompiled)) => {
-                    actions.extend(menus.game(ui, name, show_fps.then_some(*fps), *recompiled, fast, jobs, saved.as_deref()))
+                Some((name, fps, recompiled, rules)) => {
+                    actions.extend(menus.game(
+                    ui, name, program_id, show_fps.then_some(*fps), *recompiled, fast, jobs, waiting.len(), saved.as_deref(), *rules,
+                    editor_layers.clone(), editor_visibility.clone(), navigation_controls.clone(), navigation_directions, editor_widen, canvas, editor_open, editor_enabled,
+                ));
+                    if let Some(text) = &corner {
+                        menus::corner(ui.ctx(), text);
+                    }
                 }
-                None => actions.extend(menus.library(ui, library, settings, jobs)),
+                None => actions.extend(menus.library(ui, library, settings, jobs, waiting)),
             }
-            actions.extend(menus.settings(ui.ctx(), settings));
+            let own = program_id.is_some_and(|id| settings.has_own(id));
+            actions.extend(menus.settings(ui.ctx(), settings, own));
+            actions.extend(menus.uprising(ui.ctx(), settings));
+            actions.extend(menus.game_settings(ui.ctx(), settings));
             if menus.multiplayer_open {
                 actions.extend(menus.multiplayer(ui.ctx(), settings, room.as_ref()));
             }
@@ -1538,6 +2758,7 @@ impl App {
             }
             actions.extend(menus.compiler_offer(ui.ctx()));
             menus.message(ui.ctx());
+            if let Some(icon) = idol_icon { ui.ctx().set_cursor_icon(icon); }
         });
         self.library.changed = false;
         for action in actions {
@@ -1546,12 +2767,29 @@ impl App {
         overlay
     }
 
-    fn present(&mut self, event_loop: &ActiveEventLoop) {
+    fn present(&mut self, event_loop: &ActiveEventLoop, host_rate: bool) {
         let overlay = self.interface(event_loop);
         let blank = |screen: Screen| ((std::sync::Arc::new(Vec::new()), screen.width(), screen.height()), None);
         // the right eye's picture only while the 3D shows
-        let stereo = self.settings.stereo != settings::Stereo3d::Off;
+        let stereo = self.active.stereo != settings::Stereo3d::Off;
+        // the title's own at a frame's time, or one drawn in between the
+        // last two, on every refresh of the display; fast forward shows the
+        // title's own only
+        let high_refresh = self.high_refresh();
+        let in_between = host_rate;
+        let real_only = high_refresh && self.fast_forwarding;
+        let host_time = self.shown_host;
         let (top, bottom, right) = match &mut self.game {
+            Some(game) if in_between => (
+                shown_at_host_time(&mut game.system, Screen::Top, host_time),
+                shown_at_host_time(&mut game.system, Screen::Bottom, host_time),
+                stereo.then(|| shown_right_at_host_time(&mut game.system, host_time)).flatten(),
+            ),
+            Some(game) if real_only => (
+                shown_real(&mut game.system, Screen::Top),
+                shown_real(&mut game.system, Screen::Bottom),
+                stereo.then(|| shown_right_real(&mut game.system)).flatten(),
+            ),
             Some(game) => (
                 shown(&mut game.system, Screen::Top),
                 shown(&mut game.system, Screen::Bottom),
@@ -1559,6 +2797,11 @@ impl App {
             ),
             None => (blank(Screen::Top), blank(Screen::Bottom), None),
         };
+        if in_between {
+            // the next refresh a display's interval further through the
+            // last two frames
+            self.shown_host += self.host_step;
+        }
         let right = right.unwrap_or_else(|| blank(Screen::Top));
         let Some(backend) = &mut self.backend else { return };
         let (((top, top_width, top_height), top_gpu), ((bottom, bottom_width, bottom_height), bottom_gpu)) = (top, bottom);
@@ -1579,8 +2822,7 @@ impl App {
     }
 }
 
-/// what the multiplayer window shows of Download Play: the offers in the
-/// room, and where the guest is.
+/// what the multiplayer window shows of Download Play, the offers in the room and where the guest is
 fn download_play_view(guest: &zakuro_core::download_play::Guest, members: &[zakuro_core::room::Member], library: &Library) -> menus::DlpView {
     use zakuro_core::download_play::Phase;
     let offers = guest
@@ -1623,6 +2865,49 @@ fn download_play_view(guest: &zakuro_core::download_play::Guest, members: &[zaku
     menus::DlpView { offers, doing }
 }
 
+/// a screen's picture at a host time, straight from the GPU when it shares
+/// the renderer's device: the title's own at a frame's time, or one drawn in
+/// between the last two at the fraction of the way from the older.
+fn shown_at_host_time(system: &mut System, screen: Screen, host_time: Duration) -> (zakuro_core::Screen, Option<GpuScreen>) {
+    let (gpu, _) = system.gpu_picture_at_host_time(screen, false, host_time);
+    if let Some(gpu) = gpu {
+        let scale = system.gpu.scale();
+        return ((std::sync::Arc::new(Vec::new()), screen.width() * scale, screen.height() * scale), Some(gpu));
+    }
+    (system.read_screen_scaled(screen), None)
+}
+
+/// the top screen's picture at a host time for the right eye, when the
+/// title draws in 3D.
+fn shown_right_at_host_time(system: &mut System, host_time: Duration) -> Option<(zakuro_core::Screen, Option<GpuScreen>)> {
+    let (gpu, _) = system.gpu_picture_at_host_time(Screen::Top, true, host_time);
+    if let Some(gpu) = gpu {
+        let scale = system.gpu.scale();
+        return Some(((std::sync::Arc::new(Vec::new()), Screen::Top.width() * scale, Screen::Top.height() * scale), Some(gpu)));
+    }
+    system.read_right_eye_scaled().map(|screen| (screen, None))
+}
+
+/// a screen's own newest picture with none drawn in between, for fast
+/// forward, which shows the title's frames only.
+fn shown_real(system: &mut System, screen: Screen) -> (zakuro_core::Screen, Option<GpuScreen>) {
+    if let Some(gpu) = system.gpu_screen_real(screen) {
+        let scale = system.gpu.scale();
+        return ((std::sync::Arc::new(Vec::new()), screen.width() * scale, screen.height() * scale), Some(gpu));
+    }
+    (system.read_screen_scaled(screen), None)
+}
+
+/// the top screen's own newest picture for the right eye, with none drawn
+/// in between.
+fn shown_right_real(system: &mut System) -> Option<(zakuro_core::Screen, Option<GpuScreen>)> {
+    if let Some(gpu) = system.gpu_right_eye_real() {
+        let scale = system.gpu.scale();
+        return Some(((std::sync::Arc::new(Vec::new()), Screen::Top.width() * scale, Screen::Top.height() * scale), Some(gpu)));
+    }
+    system.read_right_eye_scaled().map(|screen| (screen, None))
+}
+
 /// a screen as the presenter takes it, straight from the GPU when it shares
 /// the renderer's device and the GPU drew what the screen shows, else its
 /// pixels.
@@ -1634,8 +2919,7 @@ fn shown(system: &mut System, screen: Screen) -> (zakuro_core::Screen, Option<Gp
     (system.read_screen_scaled(screen), None)
 }
 
-/// the top screen's picture for the right eye, as shown gives the screens,
-/// when the game draws in 3D.
+/// the top screen's picture for the right eye, like shown gives the screens, when the game draws in 3D
 fn shown_right(system: &mut System) -> Option<(zakuro_core::Screen, Option<GpuScreen>)> {
     if let Some(gpu) = system.gpu_right_eye() {
         let scale = system.gpu.scale();
@@ -1644,15 +2928,236 @@ fn shown_right(system: &mut System) -> Option<(zakuro_core::Screen, Option<GpuSc
     system.read_right_eye_scaled().map(|screen| (screen, None))
 }
 
-/// keeps the renderer kind referenced even when a backend feature is off.
+/// keeps the renderer kind referenced even when a backend feature is off
 const _: RendererKind = RendererKind::Software;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zakuro_core::aim_mouse::{NavigationDirection, NavigationLink, RuleScale};
 
-    /// a frame goes unshown only while the game runs behind with a
-    /// presenter that waits for the display, a few in a row at most.
+    /// a fresh folder for one test's `menu-layout.toml`.
+    fn temp_data_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("zakuro-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a folder for the test's layout");
+        dir
+    }
+
+    #[test]
+    fn saved_layout_round_trips_pause_rules_layers_navigation_and_hidden() {
+        let dir = temp_data_dir("layout-round-trip");
+        let mut rules = PauseRules::default();
+        rules.center.to[0] = 60.0;
+        rules.left.scale = RuleScale::Fixed;
+        rules.corner.anchor = 0.25;
+        let layers = vec![(13, 0, [7.0, 8.0, 90.0, 40.0]), (5, 2, [0.0, 1.0, 30.0, 20.0])];
+        let navigation = vec![
+            NavigationLink { screen: 13, from: 0, direction: NavigationDirection::Up, to: 2 },
+            NavigationLink { screen: 13, from: 2, direction: NavigationDirection::Left, to: 2 },
+            NavigationLink { screen: 5, from: 1, direction: NavigationDirection::Down, to: 0 },
+        ];
+        let hidden = vec![(13, 5), (5, 2)];
+        let mut cauldron = CauldronRules::default();
+        cauldron.rule_mut(zakuro_core::aim_mouse::CauldronRole::Back).visible = false;
+        cauldron.rule_mut(zakuro_core::aim_mouse::CauldronRole::Top).to = [20.0, 30.0, 150.0, 100.0];
+        let mut dialog = DialogRules::default();
+        dialog.panel.to = [200.0, 20.0, 160.0, 120.0];
+        dialog.span.visible = false;
+        let path = save_layout(&Some(dir.clone()), &layers, rules, dialog, cauldron, LoadingRules::default(), navigation.clone(), hidden.clone(), &[]).expect("the layout is written");
+        assert_eq!(path, layout_path(&Some(dir.clone())));
+        let loaded = load_layout(&Some(dir.clone())).expect("the layout is read");
+        let loaded_layers: Vec<_> = loaded.layers.into_iter().map(|layer| (layer.screen, layer.part, layer.to)).collect();
+        assert_eq!(loaded_layers, layers);
+        assert_eq!(loaded.pause, Some(rules));
+        assert_eq!(loaded.cauldron, Some(cauldron));
+        assert_eq!(loaded.dialog, Some(dialog));
+        assert_eq!(loaded.navigation, navigation);
+        assert_eq!(loaded.hidden, hidden);
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// the Midstage Loading's rules are kept with the layout, and a file
+    /// written before they were has none, so the defaults apply.
+    #[test]
+    fn a_layout_keeps_the_midstage_loading_rules() {
+        use zakuro_core::aim_mouse::LoadingRole;
+        let dir = temp_data_dir("layout-loading");
+        let mut loading = LoadingRules::default();
+        loading.rule_mut(LoadingRole::Orb).visible = false;
+        loading.rule_mut(LoadingRole::Progress).to = [10.0, 20.0, 200.0, 150.0];
+        let path = save_layout(&Some(dir.clone()), &[], PauseRules::default(), DialogRules::default(), CauldronRules::default(), loading, Vec::new(), Vec::new(), &[]).expect("the layout is written");
+        assert_eq!(load_layout(&Some(dir.clone())).expect("the layout is read").loading, Some(loading));
+        let mut file: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        file.remove("loading");
+        std::fs::write(&path, toml::to_string(&file).unwrap()).unwrap();
+        assert_eq!(load_layout(&Some(dir.clone())).expect("the older layout is read").loading, None);
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// a layout saved before the Cauldron's ring had a role keeps its
+    /// Cauldron rules, and the ring gets its default place.
+    #[test]
+    fn a_cauldron_layout_saved_without_the_ring_still_loads() {
+        use zakuro_core::aim_mouse::CauldronRole;
+        let dir = temp_data_dir("layout-before-ring");
+        let mut cauldron = CauldronRules::default();
+        cauldron.rule_mut(CauldronRole::Back).visible = false;
+        let path = save_layout(&Some(dir.clone()), &[], PauseRules::default(), DialogRules::default(), cauldron, LoadingRules::default(), Vec::new(), Vec::new(), &[]).expect("the layout is written");
+        let mut file: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        file["cauldron"].as_array_mut().expect("the Cauldron's rules are a list").pop();
+        std::fs::write(&path, toml::to_string(&file).unwrap()).unwrap();
+        let loaded = load_layout(&Some(dir.clone())).expect("the old layout is read").cauldron.expect("its Cauldron rules are kept");
+        assert!(!loaded.rule(CauldronRole::Back).visible);
+        assert_eq!(loaded.rule(CauldronRole::Ring), CauldronRules::default().rule(CauldronRole::Ring));
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// a layout saved before the Retreat Dialog had rules of its own keeps
+    /// everything else, and the dialog loads with none (the defaults).
+    #[test]
+    fn a_layout_saved_without_retreat_dialog_rules_still_loads() {
+        let dir = temp_data_dir("layout-before-dialog");
+        let mut pause = PauseRules::default();
+        pause.center.to[0] = 60.0;
+        let path = save_layout(&Some(dir.clone()), &[], pause, DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), Vec::new(), &[]).expect("the layout is written");
+        let mut file: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        file.remove("dialog").expect("the dialog's rules are written");
+        std::fs::write(&path, toml::to_string(&file).unwrap()).unwrap();
+        let loaded = load_layout(&Some(dir.clone())).expect("the old layout is read");
+        assert_eq!(loaded.pause, Some(pause));
+        assert_eq!(loaded.dialog, None);
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// a Scripted layer hidden without ever being moved is saved on its own.
+    #[test]
+    fn a_hidden_layer_is_saved_without_a_move() {
+        let dir = temp_data_dir("layout-hidden");
+        let hidden = vec![(11, 5), (4, 1)];
+        save_layout(&Some(dir.clone()), &[], PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), hidden.clone(), &[])
+            .expect("the layout with only a hidden layer is written");
+        let loaded = load_layout(&Some(dir.clone())).expect("the layout is read");
+        assert!(loaded.layers.is_empty(), "hiding a layer wrote a move");
+        assert_eq!(loaded.hidden, hidden, "the hidden layer did not come back");
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// the editor's layer folders come back with the layout they were saved in.
+    #[test]
+    fn layer_folders_are_saved_with_the_layout() {
+        let dir = temp_data_dir("layout-folders");
+        let folders = vec![
+            menus::EditorFolder { screen: 26, name: "Top".to_owned(), parts: vec![12, 15], linked: true, collapsed: false },
+            menus::EditorFolder { screen: 14, name: "Folder 1".to_owned(), parts: vec![3], linked: false, collapsed: true },
+        ];
+        save_layout(&Some(dir.clone()), &[(26, 15, [1.0, 2.0, 3.0, 4.0])], PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), vec![(26, 13)], &folders)
+            .expect("the layout with folders is written");
+        let loaded = load_layout(&Some(dir.clone())).expect("the layout is read");
+        assert_eq!(loaded.folders, folders, "the folders did not come back");
+        assert_eq!(loaded.hidden, vec![(26, 13)]);
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// a file written before Pause rules were kept still loads its layers.
+    #[test]
+    fn a_layout_without_pause_rules_still_loads() {
+        let dir = temp_data_dir("layout-legacy");
+        std::fs::write(
+            layout_path(&Some(dir.clone())),
+            "[[layers]]\nscreen = 13\npart = 0\nto = [1.0, 2.0, 3.0, 4.0]\n",
+        )
+        .expect("the old layout is written");
+        let loaded = load_layout(&Some(dir.clone())).expect("the old layout is read");
+        let loaded_layers: Vec<_> = loaded.layers.into_iter().map(|layer| (layer.screen, layer.part, layer.to)).collect();
+        assert_eq!(loaded_layers, vec![(13, 0, [1.0, 2.0, 3.0, 4.0])]);
+        assert_eq!(loaded.pause, None);
+        assert!(loaded.navigation.is_empty(), "a layout without links has none");
+        assert!(loaded.hidden.is_empty(), "a layout without hidden layers hides none");
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// Pause rules written before visibility existed load every rule shown.
+    #[test]
+    fn old_pause_rules_without_visibility_stay_visible() {
+        let dir = temp_data_dir("layout-legacy-pause");
+        let rule = "from = [0.0, 0.0, 320.0, 240.0]\nto = [0.0, 0.0, 400.0, 240.0]\nanchor = 0.5\nscale = \"Narrow\"\n";
+        let mut text = String::new();
+        for name in ["span", "center", "left", "right", "corner"] {
+            text.push_str(&format!("[pause.{name}]\n{rule}\n"));
+        }
+        std::fs::write(layout_path(&Some(dir.clone())), text).expect("the old layout is written");
+        let loaded = load_layout(&Some(dir.clone())).expect("the old layout is read");
+        let rules = loaded.pause.expect("the old Pause rules");
+        assert!([rules.span, rules.center, rules.left, rules.right, rules.corner].iter().all(|rule| rule.visible), "old rules were hidden");
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// the port's layout is built in and moves the Main Menu's buttons.
+    #[test]
+    fn the_ports_layout_is_the_default() {
+        let layout = default_layout();
+        assert!(layout.layers.iter().any(|layer| layer.screen == 2), "the Main Menu keeps its moves");
+        assert!(layout.pause.is_some() && layout.cauldron.is_some() && layout.loading.is_some());
+    }
+
+    /// an editor with no saved layout yet starts from the port's.
+    #[test]
+    fn a_missing_layout_is_the_ports() {
+        let dir = std::env::temp_dir().join(format!("zakuro-layout-missing-{}", std::process::id()));
+        let loaded = load_layout(&Some(dir)).expect("a missing layout is the default");
+        assert_eq!(loaded.layers.len(), default_layout().layers.len());
+        assert_eq!(loaded.hidden, default_layout().hidden);
+    }
+
+    /// a damaged layout is reported, not silently treated as the default.
+    #[test]
+    fn a_malformed_layout_is_reported() {
+        let dir = temp_data_dir("layout-malformed");
+        std::fs::write(layout_path(&Some(dir.clone())), "layers = [").expect("the damaged layout is written");
+        assert!(load_layout(&Some(dir.clone())).is_err());
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// a save that cannot be written says so instead of claiming success.
+    #[test]
+    fn a_layout_that_cannot_be_written_reports_an_error() {
+        let dir = temp_data_dir("layout-error");
+        let blocked = dir.join("not-a-folder");
+        std::fs::write(&blocked, b"").expect("a file stands where the folder would go");
+        assert!(save_layout(&Some(blocked), &[], PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), Vec::new(), &[]).is_err());
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    #[test]
+    fn wheel_scrolls_vertically_and_shift_scrolls_horizontally() {
+        assert_eq!(menu_wheel_delta(MouseScrollDelta::LineDelta(0.0, -1.0), false), [0.0, 1.0]);
+        assert_eq!(menu_wheel_delta(MouseScrollDelta::LineDelta(0.0, -1.0), true), [1.0, 0.0]);
+        assert_eq!(menu_wheel_delta(MouseScrollDelta::LineDelta(1.0, 0.0), false), [-1.0, 0.0]);
+        assert_eq!(menu_wheel_delta(MouseScrollDelta::PixelDelta((0.0, 10.0).into()), false), [0.0, -0.25]);
+    }
+
+    /// a picture on the refresh after the one scheduled, or a refresh on
+    /// from now when it is late, so missed refreshes never pile up.
+    #[test]
+    fn a_late_picture_does_not_show_a_burst_of_them() {
+        let now = Instant::now();
+        let step = Duration::from_millis(8);
+        assert_eq!(next_host_time(now, step, now), now + step);
+        assert_eq!(next_host_time(now - Duration::from_secs(1), step, now), now + step);
+    }
+
+    /// fast forward shows the title's own frames only, never a picture
+    /// drawn in between, whether the mode was on or off.
+    #[test]
+    fn fast_forward_shows_real_frames_only() {
+        assert!(draws_in_between(true, false));
+        assert!(!draws_in_between(true, true), "fast forward skips the pictures in between");
+        assert!(!draws_in_between(false, false));
+        assert!(!draws_in_between(false, true));
+    }
+
+    /// a frame only goes unshown while the game runs behind w/ a presenter that waits for the display, a few in a row at most
     #[test]
     fn frames_go_unshown_only_when_showing_would_wait() {
         assert!(skips_showing(true, true, true, 0));
@@ -1661,5 +3166,46 @@ mod tests {
         assert!(!skips_showing(true, true, false, 0), "mailbox shows every frame");
         assert!(!skips_showing(true, false, true, 0), "on time");
         assert!(!skips_showing(false, true, true, 0), "paused");
+    }
+
+    /// without High Refresh Mode the readout is the game's own rate.
+    #[test]
+    fn the_frame_rate_is_the_game_rate_with_high_refresh_off() {
+        assert_eq!(menus::FpsReadout::new(false, 144.0, 60.0).text(), "60 fps");
+    }
+
+    /// with High Refresh Mode on the readout keeps the shown pictures and
+    /// the game's frames apart.
+    #[test]
+    fn the_frame_rate_tells_shown_pictures_and_game_frames_apart() {
+        assert_eq!(menus::FpsReadout::new(true, 144.0, 60.0).text(), "144 shown / 60 game");
+    }
+
+    /// a stall runs no game frame while the display keeps its pictures
+    /// coming, so the game's number drops and the shown one stays.
+    #[test]
+    fn a_stall_drops_the_game_rate_and_keeps_the_shown_rate() {
+        let start = Instant::now();
+        let mut shown = FrameRate { counted: 0, since: start, rate: 0.0 };
+        let mut game = FrameRate { counted: 0, since: start, rate: 0.0 };
+        for _ in 0..144 {
+            shown.count();
+        }
+        for _ in 0..60 {
+            game.count();
+        }
+        assert_eq!(shown.read(start + Duration::from_secs(1)), 144.0);
+        assert_eq!(game.read(start + Duration::from_secs(1)), 60.0);
+
+        // the game stalls: a second goes by with no frame, the pictures
+        // carry on
+        for _ in 0..144 {
+            shown.count();
+        }
+        let second = start + Duration::from_secs(2);
+        assert_eq!(shown.read(second), 144.0);
+        assert_eq!(game.read(second), 0.0);
+        let readout = menus::FpsReadout::new(true, shown.rate(), game.rate());
+        assert_eq!(readout.text(), "144 shown / 0 game");
     }
 }
