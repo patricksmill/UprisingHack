@@ -4,7 +4,7 @@ PC recompilation and enhancement project for Kid Icarus: Uprising (USA, 00040000
 
 ## Key Directories & Components
 
-This repository is a fork of upstream Zakuro (`fearkov/zakuro`, remote `upstream`). Merge `upstream/main` regularly; keep port-only files in `kiu/` so merges stay clean. Upstream's `.github/workflows/ci.yml`, `release.yml` and `ISSUE_TEMPLATE/game-report.yml` stay deleted: `.github/workflows/build.yml` replaces them.
+This repository is a fork of upstream Zakuro (`fearkov/zakuro`, remote `upstream`). Merge `upstream/main` regularly; keep port-only files in `kiu/` so merges stay clean. Upstream's `.github/workflows/ci.yml`, `release.yml` and `ISSUE_TEMPLATE/game-report.yml` stay deleted: `.github/workflows/build.yml` replaces them. Upstream's `COMPATIBILITY.md`, `docs/screenshots/` and `packaging/` stay deleted too: the port ships only the Windows zip and Linux tarball, and has its own README. If a merge conflicts on any of these, `git rm` it again.
 
 - `crates/`: the Zakuro runtime, with the port's hooks (`zakuro-core/src/aim_mouse/`) and PC frontend (`zakuro/`).
 - `kiu/overrides/`: C overrides, embedded by `crates/zakuro/src/recompile.rs` and passed to `3dsrecomp port --overrides overrides/`.
