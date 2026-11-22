@@ -1207,8 +1207,8 @@ impl App {
             false => self.settings.keys.binds(KeyCode::Tab),
         };
         if code == KeyCode::Tab && !event.repeat && !tab_bound {
-            // fast forward while it is held; the editor owns the keyboard
-            self.fast_forward_key = pressed && self.game.is_some() && !self.menus.editor_open;
+            // fast forward while it is held; a Zakuro window owns the keyboard
+            self.fast_forward_key = pressed && self.game.is_some() && !self.menus.any_open();
         }
         if pressed && !event.repeat {
             match code {
@@ -1249,8 +1249,7 @@ impl App {
             }
         }
         let to_game = self.game.is_some()
-            && !self.menus.over_game()
-            && !self.menus.editor_open
+            && !self.menus.any_open()
             && !consumed
             && !self.gui.as_ref().is_some_and(Gui::wants_keyboard);
         // blowing into the mic while M is held
@@ -1270,8 +1269,8 @@ impl App {
         }
         // the power key uses a power in a battle, and anywhere else does what
         // else it is bound to, if anything. held, it uses no more than the one;
-        // the editor owns the keyboard, so typing there cannot use a power.
-        if pressed && code == self.settings.keys.power && !self.menus.editor_open {
+        // a Zakuro window owns the keyboard, so typing there cannot use a power.
+        if pressed && code == self.settings.keys.power && !self.menus.any_open() {
             if let Some(game) = &mut self.game {
                 let frame = game.system.frames;
                 if let Some(aim_mouse) = game.system.aim_mouse.as_mut().filter(|aim_mouse| aim_mouse.in_battle(frame)) {
@@ -1384,12 +1383,12 @@ impl App {
             } else if pressed && button == gilrs::Button::Mode && self.game.is_some() {
                 self.toggle_frontend_menu();
             } else if self.keyboard.acting() {
-                let to_game = !self.menus.menu_open && !self.menus.settings_shown() && !self.menus.editor_open;
+                let to_game = !self.menus.any_open();
                 if to_game || !pressed {
                     let started = self.keyboard.source(bindings::Source::Pad(button), pressed);
                     self.do_actions(started);
                 }
-            } else if pressed && !self.menus.menu_open && !self.menus.settings_shown() && !self.menus.editor_open {
+            } else if pressed && !self.menus.any_open() {
                 let exit = if button == self.settings.pad.vehicle_ability {
                     Some(false)
                 } else if button == self.settings.pad.vehicle_exit {
