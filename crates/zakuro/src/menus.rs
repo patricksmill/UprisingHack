@@ -359,6 +359,12 @@ impl Menus {
         self.menu_open || self.settings_open || self.uprising_open || self.game_settings.is_some()
     }
 
+    /// whether any Zakuro window is open over the game, the ones the game
+    /// keeps running under included: the mouse is theirs, not the aim's.
+    pub fn any_open(&self) -> bool {
+        self.over_game() || self.editor_open || self.cheats_open || self.multiplayer_open || self.message.is_some()
+    }
+
     /// the library, filling the window, waiting are the games waiting for their turn to recompile
     pub fn library(&mut self, ui: &mut egui::Ui, library: &Library, settings: &Settings, jobs: &[Job], waiting: &[Wanted]) -> Vec<Action> {
         let mut actions = Vec::new();

@@ -1212,7 +1212,7 @@ impl App {
         }
         if pressed && !event.repeat {
             match code {
-                KeyCode::F6 if !self.menus.editor_open && self.game.as_ref().is_some_and(|game| game.system.aim_mouse.is_some()) => {
+                KeyCode::F6 if !self.menus.any_open() && self.game.as_ref().is_some_and(|game| game.system.aim_mouse.is_some()) => {
                     self.released_for_pause = false;
                     self.set_aim_captured(!self.aim_captured);
                     return;
@@ -1483,8 +1483,11 @@ impl App {
     /// touching it there, and holds it again once the menu is gone, when it
     /// was let go for it.
     fn follow_pause_menu(&mut self) {
-        if self.menus.editor_open {
+        // a Zakuro window has the mouse: aiming lets go of it until the
+        // window closes, and a battle under it takes the mouse again then
+        if self.menus.any_open() {
             if self.aim_captured { self.set_aim_captured(false); }
+            self.released_for_pause = false;
             self.battle_seen = false;
             return;
         }
@@ -1505,7 +1508,7 @@ impl App {
     /// battle ends; a pause is neither.
     fn follow_battle(&mut self, paused: bool) {
         if paused || self.released_for_pause { return; }
-        if !self.focused || self.menus.menu_open {
+        if !self.focused || self.menus.any_open() {
             self.battle_seen = false;
             return;
         }
@@ -1523,7 +1526,7 @@ impl App {
 
     /// is the pointer busy w/ something other than the game
     fn pointer_taken(&self, consumed: bool) -> bool {
-        consumed || self.game.is_none() || self.menus.menu_open || self.menus.editor_open || self.gui.as_ref().is_some_and(Gui::wants_pointer)
+        consumed || self.game.is_none() || self.menus.any_open() || self.gui.as_ref().is_some_and(Gui::wants_pointer)
     }
 
     /// touches the bottom screen while the button is down over it, and
