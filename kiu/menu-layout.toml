@@ -1,0 +1,2153 @@
+hidden = [
+    [
+    0,
+    5,
+],
+    [
+    14,
+    4,
+],
+    [
+    26,
+    3,
+],
+    [
+    26,
+    6,
+],
+    [
+    26,
+    0,
+],
+    [
+    26,
+    11,
+],
+    [
+    23,
+    1,
+],
+]
+
+[[layers]]
+screen = 24
+part = 7
+to = [
+    25.333359,
+    150.66669,
+    90.100006,
+    58.300003,
+]
+
+[[layers]]
+screen = 24
+part = 1
+to = [
+    285.59882,
+    210.09767,
+    82.68001,
+    29.680002,
+]
+
+[[layers]]
+screen = 24
+part = 4
+to = [
+    218.76009,
+    157.96523,
+    57.24,
+    48.760002,
+]
+
+[[layers]]
+screen = 24
+part = 3
+to = [
+    160.7315,
+    157.96518,
+    58.300003,
+    48.760002,
+]
+
+[[layers]]
+screen = 24
+part = 2
+to = [
+    103.00002,
+    158.29854,
+    58.300003,
+    48.760002,
+]
+
+[[layers]]
+screen = 24
+part = 0
+to = [
+    272.42865,
+    150.6665,
+    68.9,
+    58.300003,
+]
+
+[[layers]]
+screen = 2
+part = 4
+to = [
+    83.35455,
+    192.29333,
+    102.93,
+    35.04,
+]
+
+[[layers]]
+screen = 2
+part = 2
+to = [
+    15.333334,
+    157.27434,
+    71.175,
+    53.655003,
+]
+
+[[layers]]
+screen = 2
+part = 7
+to = [
+    15.0,
+    107.333336,
+    114.975006,
+    54.75,
+]
+
+[[layers]]
+screen = 2
+part = 1
+to = [
+    110.833336,
+    146.60767,
+    109.5,
+    53.655003,
+]
+
+[[layers]]
+screen = 2
+part = 6
+to = [
+    332.62036,
+    206.38832,
+    27.375,
+    33.945,
+]
+
+[[layers]]
+screen = 2
+part = 3
+to = [
+    131.53838,
+    106.333336,
+    66.795,
+    47.085003,
+]
+
+[[layers]]
+screen = 12
+part = 3
+to = [
+    345.645,
+    3.5555558,
+    51.465,
+    41.61,
+]
+
+[[layers]]
+screen = 12
+part = 0
+to = [
+    1.3333331,
+    3.453334,
+    42.0,
+    32.76,
+]
+
+[[layers]]
+screen = 12
+part = 4
+to = [
+    342.47717,
+    193.3111,
+    77.745,
+    43.800003,
+]
+
+[[layers]]
+screen = 13
+part = 4
+to = [
+    35.22222,
+    16.222229,
+    108.40501,
+    59.13,
+]
+
+[[layers]]
+screen = 13
+part = 1
+to = [
+    7.222227,
+    76.16983,
+    112.785,
+    66.795,
+]
+
+[[layers]]
+screen = 13
+part = 0
+to = [
+    19.561108,
+    145.93,
+    98.55,
+    72.270004,
+]
+
+[[layers]]
+screen = 3
+part = 2
+to = [
+    11.883321,
+    166.63,
+    120.450005,
+    50.370003,
+]
+
+[[layers]]
+screen = 3
+part = 1
+to = [
+    -3.3333335,
+    122.42094,
+    145.63501,
+    55.845,
+]
+
+[[layers]]
+screen = 3
+part = 0
+to = [
+    7.888331,
+    77.333336,
+    143.445,
+    56.940002,
+]
+
+[[layers]]
+screen = 5
+part = 3
+to = [
+    6.3333282,
+    208.26666,
+    31.2,
+    26.4,
+]
+
+[[layers]]
+screen = 5
+part = 5
+to = [
+    109.666664,
+    19.0,
+    192.0,
+    34.8,
+]
+
+[[layers]]
+screen = 5
+part = 0
+to = [
+    3.836332,
+    71.86666,
+    137.87286,
+    26.712866,
+]
+
+[[layers]]
+screen = 5
+part = 7
+to = [
+    107.0,
+    53.13333,
+    192.0,
+    28.8,
+]
+
+[[layers]]
+screen = 5
+part = 1
+to = [
+    4.0867686,
+    98.818886,
+    137.87286,
+    26.712866,
+]
+
+[[layers]]
+screen = 5
+part = 4
+to = [
+    101.666664,
+    159.06667,
+    192.0,
+    27.6,
+]
+
+[[layers]]
+screen = 5
+part = 2
+to = [
+    4.0867686,
+    125.53175,
+    137.87286,
+    26.712866,
+]
+
+[[layers]]
+screen = 8
+part = 4
+to = [
+    7.666664,
+    209.26666,
+    31.2,
+    26.4,
+]
+
+[[layers]]
+screen = 8
+part = 3
+to = [
+    275.66666,
+    212.59999,
+    120.0,
+    26.4,
+]
+
+[[layers]]
+screen = 8
+part = 0
+to = [
+    -2.5491195,
+    95.53333,
+    128.6082,
+    19.648476,
+]
+
+[[layers]]
+screen = 8
+part = 1
+to = [
+    -2.8262973,
+    115.18179,
+    128.6082,
+    17.86225,
+]
+
+[[layers]]
+screen = 8
+part = 2
+to = [
+    -2.5491195,
+    132.79602,
+    128.6082,
+    19.648476,
+]
+
+[[layers]]
+screen = 4
+part = 3
+to = [
+    5.0,
+    210.59999,
+    31.2,
+    26.4,
+]
+
+[[layers]]
+screen = 4
+part = 0
+to = [
+    0.0,
+    70.33333,
+    192.0,
+    36.0,
+]
+
+[[layers]]
+screen = 4
+part = 1
+to = [
+    -0.33333588,
+    105.333336,
+    192.0,
+    36.0,
+]
+
+[[layers]]
+screen = 4
+part = 2
+to = [
+    -0.6666641,
+    141.0,
+    192.0,
+    36.0,
+]
+
+[[layers]]
+screen = 9
+part = 1
+to = [
+    6.0,
+    208.26666,
+    31.2,
+    26.4,
+]
+
+[[layers]]
+screen = 24
+part = 5
+to = [
+    4.6666665,
+    213.68,
+    26.500002,
+    23.320002,
+]
+
+[[layers]]
+screen = 21
+part = 3
+to = [
+    111.55556,
+    115.888885,
+    120.83401,
+    47.676003,
+]
+
+[[layers]]
+screen = 21
+part = 4
+to = [
+    131.11111,
+    202.11111,
+    168.0,
+    45.36,
+]
+
+[[layers]]
+screen = 21
+part = 0
+to = [
+    184.05266,
+    164.24281,
+    112.614006,
+    50.142002,
+]
+
+[[layers]]
+screen = 21
+part = 2
+to = [
+    1.3333334,
+    219.916,
+    20.550001,
+    18.084,
+]
+
+[[layers]]
+screen = 0
+part = 7
+to = [
+    -8.35835,
+    -19.552237,
+    421.94278,
+    261.93182,
+]
+
+[[layers]]
+screen = 0
+part = 0
+to = [
+    99.26667,
+    138.53333,
+    66.75,
+    95.43334,
+]
+
+[[layers]]
+screen = 0
+part = 1
+to = [
+    167.6,
+    138.33334,
+    69.85,
+    95.63334,
+]
+
+[[layers]]
+screen = 0
+part = 3
+to = [
+    11.26667,
+    215.91667,
+    19.5,
+    17.550001,
+]
+
+[[layers]]
+screen = 0
+part = 4
+to = [
+    335.75,
+    212.74667,
+    52.65,
+    18.720001,
+]
+
+[[layers]]
+screen = 0
+part = 2
+to = [
+    239.21666,
+    137.66667,
+    71.85,
+    96.63334,
+]
+
+[[layers]]
+screen = 0
+part = 6
+to = [
+    65.33333,
+    4.333333,
+    287.0,
+    162.0,
+]
+
+[[layers]]
+screen = 21
+part = 1
+to = [
+    328.9415,
+    200.272,
+    112.614006,
+    19.728,
+]
+
+[[layers]]
+screen = 14
+part = 0
+to = [
+    -0.1405487,
+    131.08665,
+    194.96028,
+    86.51362,
+]
+
+[[layers]]
+screen = 14
+part = 3
+to = [
+    134.66667,
+    227.33333,
+    168.0,
+    12.6,
+]
+
+[[layers]]
+screen = 14
+part = 2
+to = [
+    3.6266785,
+    218.69667,
+    22.14,
+    18.45,
+]
+
+[[layers]]
+screen = 14
+part = 1
+to = [
+    239.35367,
+    167.52065,
+    100.67493,
+    54.532253,
+]
+
+[[layers]]
+screen = 20
+part = 10
+to = [
+    8.293335,
+    216.69667,
+    22.14,
+    18.45,
+]
+
+[[layers]]
+screen = 19
+part = 2
+to = [
+    284.24042,
+    191.77133,
+    118.079994,
+    47.969997,
+]
+
+[[layers]]
+screen = 12
+part = 9
+to = [
+    -0.6250003,
+    0.35062218,
+    400.0,
+    240.0,
+]
+
+[[layers]]
+screen = 1
+part = 1
+to = [
+    47.666664,
+    107.45778,
+    192.0,
+    48.0,
+]
+
+[[layers]]
+screen = 1
+part = 0
+to = [
+    94.518394,
+    33.084446,
+    216.07408,
+    25.928888,
+]
+
+[[layers]]
+screen = 1
+part = 2
+to = [
+    198.54547,
+    117.23556,
+    192.0,
+    35.52,
+]
+
+[[layers]]
+screen = 1
+part = 3
+to = [
+    5.0570445,
+    211.64444,
+    30.72,
+    24.0,
+]
+
+[[layers]]
+screen = 1
+part = 4
+to = [
+    285.4235,
+    221.72444,
+    43.2,
+    12.48,
+]
+
+[[layers]]
+screen = 0
+part = 15
+to = [
+    0.0038533222,
+    -0.5093864,
+    399.99,
+    241.5226,
+]
+
+[[layers]]
+screen = 0
+part = 14
+to = [
+    8.7296295,
+    -1.7672842,
+    399.99,
+    241.5226,
+]
+
+[[layers]]
+screen = 0
+part = 8
+to = [
+    0.0051623587,
+    -29.880428,
+    419.87988,
+    270.4347,
+]
+
+[[layers]]
+screen = 0
+part = 9
+to = [
+    0.0000020661876,
+    0.11957204,
+    399.99,
+    241.5226,
+]
+
+[[layers]]
+screen = 0
+part = 10
+to = [
+    0.000002066159,
+    0.11957204,
+    399.99,
+    241.5226,
+]
+
+[[layers]]
+screen = 0
+part = 11
+to = [
+    0.000002066159,
+    0.11957204,
+    399.99,
+    241.5226,
+]
+
+[[layers]]
+screen = 0
+part = 12
+to = [
+    0.33888435,
+    -0.8804283,
+    399.99,
+    241.5226,
+]
+
+[[layers]]
+screen = 0
+part = 13
+to = [
+    0.33887863,
+    0.11957204,
+    399.99,
+    241.5226,
+]
+
+[[layers]]
+screen = 5
+part = 11
+to = [
+    4.193692,
+    151.53714,
+    137.87286,
+    26.712866,
+]
+
+[[layers]]
+screen = 3
+part = 5
+to = [
+    0.0,
+    0.0,
+    400.0,
+    240.0,
+]
+
+[[layers]]
+screen = 20
+part = 0
+to = [
+    46.73427,
+    180.70343,
+    74.363815,
+    22.534489,
+]
+
+[[layers]]
+screen = 20
+part = 1
+to = [
+    108.31738,
+    180.70343,
+    70.98364,
+    22.534489,
+]
+
+[[layers]]
+screen = 20
+part = 2
+to = [
+    46.73427,
+    200.98447,
+    74.363815,
+    21.407766,
+]
+
+[[layers]]
+screen = 20
+part = 3
+to = [
+    108.31738,
+    200.98447,
+    70.98364,
+    21.407766,
+]
+
+[[layers]]
+screen = 20
+part = 4
+to = [
+    164.91095,
+    183.38878,
+    74.363815,
+    21.407766,
+]
+
+[[layers]]
+screen = 20
+part = 5
+to = [
+    226.67436,
+    183.38878,
+    70.98364,
+    21.407766,
+]
+
+[[layers]]
+screen = 20
+part = 6
+to = [
+    164.91095,
+    202.54309,
+    74.363815,
+    21.407766,
+]
+
+[[layers]]
+screen = 20
+part = 7
+to = [
+    226.67436,
+    202.54309,
+    70.98364,
+    21.407766,
+]
+
+[[layers]]
+screen = 20
+part = 8
+to = [
+    283.51343,
+    183.94742,
+    74.363815,
+    21.407766,
+]
+
+[[layers]]
+screen = 20
+part = 9
+to = [
+    286.38602,
+    202.69742,
+    70.98364,
+    21.407766,
+]
+
+[[layers]]
+screen = 20
+part = 12
+to = [
+    39.511417,
+    13.839638,
+    316.2299,
+    166.0207,
+]
+
+[[layers]]
+screen = 19
+part = 4
+to = [
+    0.24323438,
+    213.35332,
+    31.70285,
+    26.419043,
+]
+
+[[layers]]
+screen = 19
+part = 3
+to = [
+    139.94362,
+    202.68665,
+    116.24379,
+    26.419043,
+]
+
+[[layers]]
+screen = 19
+part = 6
+to = [
+    4.8244896,
+    2.355009,
+    370.9015,
+    194.7233,
+]
+
+[[layers]]
+screen = 14
+part = 4
+to = [
+    49.527225,
+    -2.6603622,
+    332.70612,
+    174.67072,
+]
+
+[[layers]]
+screen = 14
+part = 5
+to = [
+    0.65690076,
+    0.58963776,
+    401.09875,
+    240.42073,
+]
+
+[[layers]]
+screen = 14
+part = 10
+to = [
+    100.72164,
+    13.089645,
+    228.42041,
+    119.920715,
+]
+
+[[layers]]
+screen = 14
+part = 7
+to = [
+    -0.000005722046,
+    62.339645,
+    152.22993,
+    79.920715,
+]
+
+[[layers]]
+screen = 14
+part = 9
+to = [
+    0.31021118,
+    11.339645,
+    399.99,
+    230.42072,
+]
+
+[[layers]]
+screen = 14
+part = 8
+to = [
+    0.31021118,
+    11.339645,
+    399.99,
+    230.42072,
+]
+
+[[layers]]
+screen = 14
+part = 6
+to = [
+    -1.0,
+    61.839622,
+    152.22993,
+    79.920715,
+]
+
+[[layers]]
+screen = 19
+part = 1
+to = [
+    202.96936,
+    195.09653,
+    98.02504,
+    12.39397,
+]
+
+[[layers]]
+screen = 19
+part = 0
+to = [
+    39.308846,
+    206.09651,
+    82.25089,
+    12.39397,
+]
+
+[[layers]]
+screen = 26
+part = 0
+to = [
+    171.95638,
+    52.396526,
+    180.27592,
+    135.20694,
+]
+
+[[layers]]
+screen = 26
+part = 12
+to = [
+    -59.150803,
+    -49.126865,
+    458.19992,
+    313.89523,
+]
+
+[[layers]]
+screen = 26
+part = 13
+to = [
+    21.178183,
+    76.33102,
+    252.22993,
+    151.33795,
+]
+
+[[layers]]
+screen = 26
+part = 9
+to = [
+    5.4833574,
+    209.81552,
+    29.294836,
+    24.78794,
+]
+
+[[layers]]
+screen = 26
+part = 10
+to = [
+    361.7889,
+    209.68881,
+    33.801735,
+    25.914663,
+]
+
+[[layers]]
+screen = 26
+part = 14
+to = [
+    21.69571,
+    76.331024,
+    251.89296,
+    151.13577,
+]
+
+[[layers]]
+screen = 26
+part = 4
+to = [
+    265.11398,
+    144.01517,
+    123.712006,
+    72.577705,
+]
+
+[[layers]]
+screen = 26
+part = 5
+to = [
+    310.3246,
+    204.2217,
+    49.484802,
+    12.371201,
+]
+
+[[layers]]
+screen = 26
+part = 3
+to = [
+    374.0303,
+    113.12854,
+    9.89696,
+    80.82517,
+]
+
+[[layers]]
+screen = 26
+part = 2
+to = [
+    265.11398,
+    130.81923,
+    123.712006,
+    13.195947,
+]
+
+[[layers]]
+screen = 26
+part = 1
+to = [
+    130.71945,
+    225.3965,
+    121.43682,
+    7.2862086,
+]
+
+[[layers]]
+screen = 26
+part = 6
+to = [
+    254.17032,
+    112.39653,
+    123.712006,
+    94.84587,
+]
+
+[[layers]]
+screen = 26
+part = 7
+to = [
+    258.83505,
+    121.5357,
+    111.539635,
+    76.43974,
+]
+
+[[layers]]
+screen = 26
+part = 8
+to = [
+    369.9284,
+    112.396515,
+    14.020693,
+    80.82517,
+]
+
+[[layers]]
+screen = 26
+part = 15
+to = [
+    296.4386,
+    22.845404,
+    60.035683,
+    59.50905,
+]
+
+[[layers]]
+screen = 8
+part = 6
+to = [
+    0.0,
+    0.0,
+    400.0,
+    240.0,
+]
+
+[[layers]]
+screen = 25
+part = 0
+to = [
+    0.0,
+    4.0,
+    66.01387,
+    29.706242,
+]
+
+[[layers]]
+screen = 25
+part = 6
+to = [
+    344.48987,
+    80.0,
+    39.684837,
+    164.21312,
+]
+
+[[layers]]
+screen = 25
+part = 5
+to = [
+    215.13335,
+    115.6,
+    136.00002,
+    122.4,
+]
+
+[[layers]]
+screen = 25
+part = 2
+to = [
+    199.87889,
+    102.0,
+    163.20001,
+    74.8,
+]
+
+[[layers]]
+screen = 25
+part = 3
+to = [
+    50.464684,
+    213.0,
+    240.00002,
+    27.000002,
+]
+
+[[layers]]
+screen = 23
+part = 2
+to = [
+    142.78285,
+    3.7777777,
+    256.59256,
+    144.33333,
+]
+
+[[layers]]
+screen = 23
+part = 0
+to = [
+    -0.71110535,
+    111.577774,
+    170.45926,
+    127.84445,
+]
+
+[[layers]]
+screen = 23
+part = 1
+to = [
+    13.553256,
+    153.22223,
+    168.0,
+    21.0,
+]
+
+[pause.span]
+from = [
+    0.0,
+    0.0,
+    320.0,
+    240.0,
+]
+to = [
+    0.0,
+    0.0,
+    400.0,
+    240.0,
+]
+anchor = 0.0
+anchor_y = 0.0
+scale = "Stretch"
+visible = true
+
+[pause.center]
+from = [
+    0.0,
+    0.0,
+    320.0,
+    240.0,
+]
+to = [
+    40.0,
+    0.0,
+    320.0,
+    240.0,
+]
+anchor = 0.5
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.left]
+from = [
+    0.0,
+    0.0,
+    320.0,
+    240.0,
+]
+to = [
+    0.0,
+    0.0,
+    320.0,
+    240.0,
+]
+anchor = 0.0
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.right]
+from = [
+    0.0,
+    0.0,
+    320.0,
+    240.0,
+]
+to = [
+    80.0,
+    0.0,
+    320.0,
+    240.0,
+]
+anchor = 1.0
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.corner]
+from = [
+    0.0,
+    0.0,
+    320.0,
+    240.0,
+]
+to = [
+    80.0,
+    0.0,
+    320.0,
+    240.0,
+]
+anchor = 1.0
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[dialog.span]
+from = [
+    0.0,
+    0.0,
+    320.0,
+    240.0,
+]
+to = [
+    0.0,
+    0.0,
+    400.0,
+    240.0,
+]
+anchor = 0.0
+anchor_y = 0.0
+scale = "Stretch"
+visible = true
+
+[dialog.panel]
+from = [
+    0.0,
+    0.0,
+    320.0,
+    240.0,
+]
+to = [
+    40.0,
+    0.0,
+    320.0,
+    240.0,
+]
+anchor = 0.5
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[[navigation]]
+screen = 12
+from = 1
+direction = "Left"
+to = 5
+
+[[navigation]]
+screen = 12
+from = 1
+direction = "Down"
+to = 5
+
+[[navigation]]
+screen = 12
+from = 5
+direction = "Up"
+to = 1
+
+[[navigation]]
+screen = 12
+from = 5
+direction = "Right"
+to = 1
+
+[[navigation]]
+screen = 12
+from = 5
+direction = "Down"
+to = 6
+
+[[navigation]]
+screen = 12
+from = 4
+direction = "Up"
+to = 3
+
+[[navigation]]
+screen = 12
+from = 4
+direction = "Down"
+to = 3
+
+[[navigation]]
+screen = 12
+from = 4
+direction = "Left"
+to = 2
+
+[[navigation]]
+screen = 12
+from = 4
+direction = "Right"
+to = 6
+
+[[navigation]]
+screen = 12
+from = 7
+direction = "Up"
+to = 3
+
+[[navigation]]
+screen = 12
+from = 7
+direction = "Down"
+to = 6
+
+[[navigation]]
+screen = 12
+from = 6
+direction = "Up"
+to = 7
+
+[[navigation]]
+screen = 13
+from = 1
+direction = "Down"
+to = 0
+
+[[navigation]]
+screen = 13
+from = 3
+direction = "Up"
+to = 0
+
+[[navigation]]
+screen = 13
+from = 3
+direction = "Down"
+to = 4
+
+[[navigation]]
+screen = 13
+from = 3
+direction = "Left"
+to = 2
+
+[[navigation]]
+screen = 13
+from = 0
+direction = "Down"
+to = 3
+
+[[navigation]]
+screen = 13
+from = 0
+direction = "Up"
+to = 1
+
+[[navigation]]
+screen = 13
+from = 0
+direction = "Right"
+to = 2
+
+[[navigation]]
+screen = 13
+from = 1
+direction = "Right"
+to = 2
+
+[[navigation]]
+screen = 13
+from = 4
+direction = "Right"
+to = 2
+
+[[navigation]]
+screen = 13
+from = 4
+direction = "Up"
+to = 3
+
+[[navigation]]
+screen = 3
+from = 0
+direction = "Up"
+to = 3
+
+[[navigation]]
+screen = 3
+from = 2
+direction = "Down"
+to = 3
+
+[[navigation]]
+screen = 24
+from = 7
+direction = "Up"
+to = 5
+
+[[navigation]]
+screen = 24
+from = 7
+direction = "Left"
+to = 0
+
+[[navigation]]
+screen = 24
+from = 7
+direction = "Right"
+to = 2
+
+[[navigation]]
+screen = 24
+from = 2
+direction = "Left"
+to = 7
+
+[[navigation]]
+screen = 24
+from = 2
+direction = "Right"
+to = 3
+
+[[navigation]]
+screen = 24
+from = 2
+direction = "Down"
+to = 5
+
+[[navigation]]
+screen = 24
+from = 3
+direction = "Up"
+to = 5
+
+[[navigation]]
+screen = 24
+from = 3
+direction = "Down"
+to = 5
+
+[[navigation]]
+screen = 24
+from = 3
+direction = "Left"
+to = 2
+
+[[navigation]]
+screen = 24
+from = 3
+direction = "Right"
+to = 4
+
+[[navigation]]
+screen = 24
+from = 4
+direction = "Up"
+to = 5
+
+[[navigation]]
+screen = 24
+from = 4
+direction = "Down"
+to = 5
+
+[[navigation]]
+screen = 24
+from = 4
+direction = "Left"
+to = 3
+
+[[navigation]]
+screen = 24
+from = 4
+direction = "Right"
+to = 0
+
+[[navigation]]
+screen = 24
+from = 0
+direction = "Up"
+to = 1
+
+[[navigation]]
+screen = 24
+from = 0
+direction = "Down"
+to = 1
+
+[[navigation]]
+screen = 24
+from = 0
+direction = "Left"
+to = 4
+
+[[navigation]]
+screen = 24
+from = 0
+direction = "Right"
+to = 1
+
+[[navigation]]
+screen = 24
+from = 1
+direction = "Up"
+to = 0
+
+[[navigation]]
+screen = 24
+from = 1
+direction = "Left"
+to = 5
+
+[[navigation]]
+screen = 24
+from = 1
+direction = "Right"
+to = 6
+
+[[navigation]]
+screen = 24
+from = 6
+direction = "Left"
+to = 1
+
+[[navigation]]
+screen = 24
+from = 6
+direction = "Up"
+to = 0
+
+[[navigation]]
+screen = 24
+from = 6
+direction = "Right"
+to = 5
+
+[[navigation]]
+screen = 21
+from = 0
+direction = "Right"
+to = 1
+
+[[navigation]]
+screen = 20
+from = 1
+direction = "Right"
+to = 4
+
+[[navigation]]
+screen = 20
+from = 1
+direction = "Up"
+to = 3
+
+[[navigation]]
+screen = 20
+from = 4
+direction = "Up"
+to = 6
+
+[[navigation]]
+screen = 20
+from = 4
+direction = "Down"
+to = 6
+
+[[navigation]]
+screen = 20
+from = 4
+direction = "Left"
+to = 1
+
+[[navigation]]
+screen = 20
+from = 4
+direction = "Right"
+to = 5
+
+[[navigation]]
+screen = 20
+from = 5
+direction = "Left"
+to = 4
+
+[[navigation]]
+screen = 20
+from = 5
+direction = "Down"
+to = 7
+
+[[navigation]]
+screen = 20
+from = 5
+direction = "Right"
+to = 8
+
+[[navigation]]
+screen = 20
+from = 5
+direction = "Up"
+to = 7
+
+[[navigation]]
+screen = 20
+from = 0
+direction = "Down"
+to = 2
+
+[[navigation]]
+screen = 20
+from = 0
+direction = "Left"
+to = 8
+
+[[navigation]]
+screen = 20
+from = 0
+direction = "Up"
+to = 10
+
+[[navigation]]
+screen = 20
+from = 9
+direction = "Up"
+to = 8
+
+[[navigation]]
+screen = 20
+from = 9
+direction = "Left"
+to = 7
+
+[[navigation]]
+screen = 20
+from = 9
+direction = "Right"
+to = 10
+
+[[navigation]]
+screen = 20
+from = 9
+direction = "Down"
+to = 8
+
+[[navigation]]
+screen = 20
+from = 8
+direction = "Up"
+to = 9
+
+[[navigation]]
+screen = 20
+from = 8
+direction = "Down"
+to = 9
+
+[[navigation]]
+screen = 20
+from = 8
+direction = "Left"
+to = 5
+
+[[navigation]]
+screen = 20
+from = 8
+direction = "Right"
+to = 10
+
+[[navigation]]
+screen = 20
+from = 10
+direction = "Left"
+to = 9
+
+[[navigation]]
+screen = 20
+from = 10
+direction = "Right"
+to = 2
+
+[[navigation]]
+screen = 20
+from = 10
+direction = "Up"
+to = 2
+
+[[navigation]]
+screen = 20
+from = 10
+direction = "Down"
+to = 0
+
+[[navigation]]
+screen = 20
+from = 6
+direction = "Up"
+to = 4
+
+[[navigation]]
+screen = 20
+from = 6
+direction = "Down"
+to = 4
+
+[[navigation]]
+screen = 20
+from = 6
+direction = "Left"
+to = 3
+
+[[navigation]]
+screen = 20
+from = 6
+direction = "Right"
+to = 7
+
+[[navigation]]
+screen = 20
+from = 7
+direction = "Up"
+to = 5
+
+[[navigation]]
+screen = 20
+from = 7
+direction = "Down"
+to = 5
+
+[[navigation]]
+screen = 20
+from = 7
+direction = "Left"
+to = 6
+
+[[navigation]]
+screen = 20
+from = 7
+direction = "Right"
+to = 9
+
+[[navigation]]
+screen = 14
+from = 0
+direction = "Right"
+to = 1
+
+[[navigation]]
+screen = 14
+from = 0
+direction = "Down"
+to = 2
+
+[[navigation]]
+screen = 14
+from = 0
+direction = "Left"
+to = 1
+
+[[navigation]]
+screen = 14
+from = 0
+direction = "Up"
+to = 2
+
+[[navigation]]
+screen = 14
+from = 1
+direction = "Left"
+to = 0
+
+[[navigation]]
+screen = 14
+from = 1
+direction = "Right"
+to = 2
+
+[[navigation]]
+screen = 14
+from = 1
+direction = "Down"
+to = 2
+
+[[cauldron]]
+from = [
+    36.0,
+    22.0,
+    328.0,
+    218.0,
+]
+to = [
+    32.346092,
+    46.46198,
+    238.42914,
+    144.3203,
+]
+anchor = 0.0
+anchor_y = 0.0
+visible = true
+
+[cauldron.scale.Fit]
+design_width = 427.0
+
+[[cauldron]]
+from = [
+    -6.0,
+    176.0,
+    140.0,
+    76.0,
+]
+to = [
+    117.13095,
+    168.90521,
+    70.76197,
+    38.102604,
+]
+anchor = 0.0
+anchor_y = 1.0
+visible = true
+
+[cauldron.scale.Fit]
+design_width = 427.0
+
+[[cauldron]]
+from = [
+    14.0,
+    0.0,
+    312.0,
+    32.0,
+]
+to = [
+    41.334373,
+    203.2271,
+    220.0,
+    23.0,
+]
+anchor = 0.0
+anchor_y = 1.0
+visible = true
+
+[cauldron.scale.Fit]
+design_width = 427.0
+
+[[cauldron]]
+from = [
+    6.0,
+    30.0,
+    54.0,
+    54.0,
+]
+to = [
+    46.48463,
+    225.45679,
+    14.048038,
+    14.897397,
+]
+anchor = 0.0
+anchor_y = 1.0
+visible = true
+
+[cauldron.scale.Fit]
+design_width = 427.0
+
+[[cauldron]]
+from = [
+    6.0,
+    202.0,
+    42.0,
+    38.0,
+]
+to = [
+    6.1088543,
+    206.77759,
+    33.0,
+    30.0,
+]
+anchor = 0.0
+anchor_y = 1.0
+visible = true
+
+[cauldron.scale.Fit]
+design_width = 427.0
+
+[[cauldron]]
+from = [
+    16.0,
+    160.0,
+    288.0,
+    80.0,
+]
+to = [
+    244.9,
+    192.9,
+    171.1,
+    47.5,
+]
+anchor = 1.0
+anchor_y = 1.0
+visible = true
+
+[cauldron.scale.Fit]
+design_width = 427.0
+
+[[cauldron]]
+from = [
+    0.0,
+    0.0,
+    320.0,
+    240.0,
+]
+to = [
+    225.3625,
+    74.57709,
+    201.14948,
+    150.52292,
+]
+anchor = 1.0
+anchor_y = 1.0
+visible = true
+
+[cauldron.scale.Fit]
+design_width = 427.0
+
+[[cauldron]]
+from = [
+    0.0,
+    0.0,
+    320.0,
+    240.0,
+]
+to = [
+    188.0,
+    47.0,
+    237.4,
+    178.1,
+]
+anchor = 1.0
+anchor_y = 1.0
+visible = true
+
+[cauldron.scale.Fit]
+design_width = 427.0
+
+[[cauldron]]
+from = [
+    36.0,
+    2.0,
+    328.0,
+    22.0,
+]
+to = [
+    49.5,
+    2.0,
+    328.0,
+    22.0,
+]
+anchor = 0.5
+anchor_y = 0.0
+visible = true
+
+[cauldron.scale.Fit]
+design_width = 427.0
+
+[[loading]]
+from = [
+    0.0,
+    181.0,
+    400.0,
+    59.0,
+]
+to = [
+    0.0,
+    181.0,
+    400.0,
+    59.0,
+]
+anchor = 0.0
+anchor_y = 0.0
+scale = "Stretch"
+visible = true
+
+[[loading]]
+from = [
+    0.0,
+    181.0,
+    400.0,
+    59.0,
+]
+to = [
+    86.63135,
+    196.55556,
+    201.12993,
+    29.666666,
+]
+anchor = 0.5
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[[loading]]
+from = [
+    164.6,
+    73.3,
+    64.0,
+    64.0,
+]
+to = [
+    180.58334,
+    83.0,
+    48.0,
+    48.0,
+]
+anchor = 1.0
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[[loading]]
+from = [
+    0.0,
+    0.0,
+    320.0,
+    230.0,
+]
+to = [
+    -4.263886,
+    36.444443,
+    183.11111,
+    131.61113,
+]
+anchor = 0.5
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[[folders]]
+screen = 8
+name = "Volume Sliders"
+parts = [
+    0,
+    1,
+    2,
+]
+linked = true
+collapsed = true

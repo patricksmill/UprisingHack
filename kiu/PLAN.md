@@ -792,7 +792,7 @@ Rust fragment and a change request. The same overlay draws a canvas over the
 live top screen with the active Scripted Menu's layers: body drag moves, corner
 handle resizes, and the override is applied on the next layout. **Save layout**
 writes `menu-layout.toml` in the data directory and the next `--menu-editor`
-run loads it; normal launches ignore it. Next: generalize Scripted overrides
+run loads it; normal launches use the committed `kiu/menu-layout.toml`. Next: generalize Scripted overrides
 into rules that survive every aspect width, then aspect previews.
 
 ### Midstage Loading in layers

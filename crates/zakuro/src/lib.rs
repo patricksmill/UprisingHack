@@ -82,6 +82,15 @@ struct SavedLayer {
     to: [f32; 4],
 }
 
+/// the port's menu layout, which every launch starts from: the editor's
+/// saved layout, made the defaults. `--menu-editor` reads the data folder's
+/// menu-layout.toml instead, once Save layout has written one.
+const DEFAULT_LAYOUT: &str = include_str!("../../../kiu/menu-layout.toml");
+
+fn default_layout() -> SavedLayout {
+    toml::from_str(DEFAULT_LAYOUT).expect("kiu/menu-layout.toml is a layout")
+}
+
 fn layout_path(data_dir: &Option<PathBuf>) -> PathBuf {
     data_dir.clone().unwrap_or_default().join("menu-layout.toml")
 }
@@ -90,9 +99,7 @@ fn load_layout(data_dir: &Option<PathBuf>) -> Result<SavedLayout, String> {
     let path = layout_path(data_dir);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SavedLayout { layers: Vec::new(), pause: None, dialog: None, navigation: Vec::new(), hidden: Vec::new(), cauldron: None, loading: None, folders: Vec::new() })
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(default_layout()),
         Err(error) => return Err(format!("Could not read {}: {error}", path.display())),
     };
     toml::from_str(&text).map_err(|error| format!("Could not read {}: {error}", path.display()))
@@ -171,8 +178,9 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
     }
 
     let data_dir = options.data.clone().map(PathBuf::from).or_else(default_data_dir);
-    let (layout_overrides, pause_rules, dialog_rules, cauldron_rules, loading_rules, navigation, hidden, folders, layout_error) = if options.menu_editor {
-        match load_layout(&data_dir) {
+    // the editor works on the data folder's layout; a normal launch, the port's
+    let (layout_overrides, pause_rules, dialog_rules, cauldron_rules, loading_rules, navigation, hidden, folders, layout_error) = {
+        match if options.menu_editor { load_layout(&data_dir) } else { Ok(default_layout()) } {
             Ok(saved) => (
                 saved.layers.into_iter().map(|layer| (layer.screen, layer.part, layer.to)).collect(),
                 saved.pause.unwrap_or_default(),
@@ -189,8 +197,6 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
                 (Vec::new(), PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), Vec::new(), Vec::new(), Some(error))
             }
         }
-    } else {
-        (Vec::new(), PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), Vec::new(), Vec::new(), None)
     };
     if let Some(dir) = &data_dir {
         report::to_file(dir);
@@ -1088,10 +1094,8 @@ impl App {
                 mouse.set_dialog_rules(self.dialog_rules);
                 mouse.set_cauldron_rules(self.cauldron_rules);
                 mouse.set_loading_rules(self.loading_rules);
-                if self.options.menu_editor {
-                    mouse.set_editor_navigation(self.navigation.clone());
-                    mouse.set_editor_hidden_layers(self.hidden.clone());
-                }
+                mouse.set_editor_navigation(self.navigation.clone());
+                mouse.set_editor_hidden_layers(self.hidden.clone());
             }
             // at 60 FPS the game has half a 3DS's time for each frame, which
             // its busiest scenes need more than: ZAKURO_OVERCLOCK times the
@@ -3087,6 +3091,23 @@ mod tests {
         let rules = loaded.pause.expect("the old Pause rules");
         assert!([rules.span, rules.center, rules.left, rules.right, rules.corner].iter().all(|rule| rule.visible), "old rules were hidden");
         std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    /// the port's layout is built in and moves the Main Menu's buttons.
+    #[test]
+    fn the_ports_layout_is_the_default() {
+        let layout = default_layout();
+        assert!(layout.layers.iter().any(|layer| layer.screen == 2), "the Main Menu keeps its moves");
+        assert!(layout.pause.is_some() && layout.cauldron.is_some() && layout.loading.is_some());
+    }
+
+    /// an editor with no saved layout yet starts from the port's.
+    #[test]
+    fn a_missing_layout_is_the_ports() {
+        let dir = std::env::temp_dir().join(format!("zakuro-layout-missing-{}", std::process::id()));
+        let loaded = load_layout(&Some(dir)).expect("a missing layout is the default");
+        assert_eq!(loaded.layers.len(), default_layout().layers.len());
+        assert_eq!(loaded.hidden, default_layout().hidden);
     }
 
     /// a damaged layout is reported, not silently treated as the default.
