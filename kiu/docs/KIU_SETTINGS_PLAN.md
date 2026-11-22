@@ -1,6 +1,6 @@
 # KIU-native Options implementation plan
 
-Status (13 Nov): in progress.
+Status (16 Nov): closed. Native PC Settings Screens were not worth the effort and are abandoned; PC Preferences stay in the UprisingHack Window of the Frontend Menu ([ADR 0007](adr/0007-kiu-native-options-for-pc-preferences.md)). Slices 2–4 were built and stay; the rest of this plan is kept as a record and will not be done.
 
 | Slice | State |
 | --- | --- |
@@ -8,7 +8,7 @@ Status (13 Nov): in progress.
 | 2. Settings store | Built: `PcPreferences` (aim, presentation, Action Bindings) in the settings file; old files migrate; category Restore Defaults; saves written beside and renamed over, failures shown; the migration notice stays until acknowledged; recovery resets ask first. `ZAKURO_AIM_SENSITIVITY`, `ZAKURO_HUD_SCALE`, `ZAKURO_PORTRAIT_SCALE` removed. Display rollback not built: no Display/Graphics Screen yet. |
 | 3. Action Bindings | Built for keyboard, mouse and controller: contexts, primary/secondary, conflicts with Swap/Replace/Cancel, required actions, press-context rule, one start per action across its inputs, release on capture loss, focus loss and controller disconnect, dead zone and right-stick sensitivity (Kid Icarus only). Battle has no held-item input (pickups take effect at once). A, B, Y, ZR and D-pad Up attack as L does, so Attack covers them; X is the game's own Change View, now an action (V, controller top face); R and ZL show no role and are not bound. Vertical inversion stays the game's own. |
 | 4. Gyro | SDL3 (static, controllers and sensors only) reads the gyroscope into the console's HID gyroscope, off by default, Always/Hold, calibration, inversion. Aiming with it needs the patch installed. Not checked on physical hardware. |
-| 5. Native Screens | Escape/Start reach the game's Pause; F12 or Home opens the Frontend Menu. No native PC Settings Screen yet (the PC Settings Row prototype was removed). |
+| 5. Native Screens | Escape/Start reach the game's Pause; F12 or Home opens the Frontend Menu. Abandoned: no native PC Settings Screen (the PC Settings Row prototype was removed). |
 | 6. Instructions | The game's button prompts show the inputs bound to Confirm, Back, Attack, the menu directions and Move, per device. Touch-screen instructions, control diagrams and presentation settings in KIU's Screens not started. |
 
 ## Goal and scope

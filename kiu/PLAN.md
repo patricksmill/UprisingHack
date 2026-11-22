@@ -9,11 +9,10 @@ stays sharp at any resolution and the layout follows the HUD scale.
 Addresses are for the USA build (0004000000030100). Findings so far are in
 `analysis/FINDINGS.md`.
 
-The approved plan for moving player-facing PC settings into KIU's own Options
-Screens is [KIU-native Options](docs/KIU_SETTINGS_PLAN.md). Its settings store,
-Action Bindings and gyro input are built; the native Screens are not (status
-table there). The ownership decision is
-recorded in [ADR 0007](docs/adr/0007-kiu-native-options-for-pc-preferences.md).
+PC Preferences live in the UprisingHack Window of the Frontend Menu. The plan
+to move them into KIU's own Options Screens ([KIU-native Options](docs/KIU_SETTINGS_PLAN.md))
+is closed: its settings store, Action Bindings and gyro input were built, the
+native Screens were abandoned ([ADR 0007](docs/adr/0007-kiu-native-options-for-pc-preferences.md)).
 
 ## Where things stand
 
