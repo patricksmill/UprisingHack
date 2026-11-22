@@ -2,10 +2,13 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+from recomp_abi import abi_dir  # noqa: E402
 
 
 class FloatResults(unittest.TestCase):
@@ -14,7 +17,7 @@ class FloatResults(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.work = Path(cls.temporary.name)
-        abi = ROOT / "tools/3dsrecomp/abi"
+        abi = abi_dir()
         cls.binary = cls.work / "difftest"
         subprocess.run(["cc", "-O1", "-I", str(abi), "-o", str(cls.binary),
                         str(ROOT / "scripts/difftest.c"), "-lm", "-ldl"], check=True)

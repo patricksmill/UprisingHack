@@ -62,16 +62,16 @@ These are starting anchors, not claims that the new Screens or input behavior al
 
 | Location | Evidence / intended involvement |
 | --- | --- |
-| `tools/zakuro/crates/zakuro/src/settings.rs` | Existing host preferences, virtual-button `Keys`/`PadButtons`, TOML load/save; new preferences must reuse the persistence convention |
-| `tools/zakuro/crates/zakuro/src/lib.rs` | Applies host settings, creates AimMouse, reads environment preferences, handles Esc, gamepad polling and save-state loads |
-| `tools/zakuro/crates/zakuro/src/input.rs` | Current keyboard-to-3DS mapping; migrate affected consumers to action bindings |
-| `tools/zakuro/crates/zakuro/src/gamepad.rs` | gilrs buttons/axes, fixed dead zone, device-family hints; physical gyro acquisition not established |
-| `tools/zakuro/crates/zakuro/src/menus.rs` | Existing Frontend Menu settings and rebinding; remove the normal-player duplicate path after cutover, retain explicit diagnostic/recovery functions |
-| `tools/zakuro/crates/zakuro-core/src/aim_mouse.rs` | Native input hooks, camera behavior, host gestures and Screen interaction |
-| `tools/zakuro/crates/zakuro-core/src/aim_mouse/screen_transform.rs` | Existing ScreenSpec registry and Placement contract |
-| `tools/zakuro/crates/zakuro-core/src/aim_mouse/menu_top.rs` | Existing Scripted Menu layout, native model/text handling |
-| `tools/zakuro/crates/zakuro-core/src/services/hid.rs` | Emulated accelerometer/gyro samples from tilt; not proof of physical sensor input |
-| `tools/zakuro/crates/zakuro-core/src/services/prompts.rs` | Existing prompt representations used by keyboard/controller input |
+| `crates/zakuro/src/settings.rs` | Existing host preferences, virtual-button `Keys`/`PadButtons`, TOML load/save; new preferences must reuse the persistence convention |
+| `crates/zakuro/src/lib.rs` | Applies host settings, creates AimMouse, reads environment preferences, handles Esc, gamepad polling and save-state loads |
+| `crates/zakuro/src/input.rs` | Current keyboard-to-3DS mapping; migrate affected consumers to action bindings |
+| `crates/zakuro/src/gamepad.rs` | gilrs buttons/axes, fixed dead zone, device-family hints; physical gyro acquisition not established |
+| `crates/zakuro/src/menus.rs` | Existing Frontend Menu settings and rebinding; remove the normal-player duplicate path after cutover, retain explicit diagnostic/recovery functions |
+| `crates/zakuro-core/src/aim_mouse.rs` | Native input hooks, camera behavior, host gestures and Screen interaction |
+| `crates/zakuro-core/src/aim_mouse/screen_transform.rs` | Existing ScreenSpec registry and Placement contract |
+| `crates/zakuro-core/src/aim_mouse/menu_top.rs` | Existing Scripted Menu layout, native model/text handling |
+| `crates/zakuro-core/src/services/hid.rs` | Emulated accelerometer/gyro samples from tilt; not proof of physical sensor input |
+| `crates/zakuro-core/src/services/prompts.rs` | Existing prompt representations used by keyboard/controller input |
 | `tools/kiutrace/src/main.rs` | Native state, interaction, screenshots and save-state scenario harness |
 | `analysis/FINDINGS.md`, Darkshade patch section | USA v172 patch map, input/control-settings modifications and widescreen hooks |
 | `patch/Kid Icarus Uprising - C-Stick & Gyro Patch/` | Supplied base patch, region variants, optional fixed-aspect variants and author attribution |

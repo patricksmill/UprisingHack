@@ -101,7 +101,7 @@ Commands:
 
 ```
 CC=$PWD/scripts/cc-fast tools/3dsrecomp/target/release/3dsrecomp build dumps/kiu.cci build/decomp --overrides overrides/
-cc -O1 -I tools/3dsrecomp/abi -o build/difftest scripts/difftest.c -Wl,--no-as-needed -lm -ldl
+cc -O1 -I "$(python3 scripts/recomp_abi.py)" -o build/difftest scripts/difftest.c -Wl,--no-as-needed -lm -ldl
 build/difftest build/lib/0004000000030100.so build/decomp/0004000000030100.so <address> <pointers> [runs] [via] [size limit]
 KIUTRACE_LIB=build/decomp/0004000000030100.so KIUTRACE_NO_HOOKS=1 tools/kiutrace/target/release/kiutrace dumps/kiu.cci <script> <out>
 ```
@@ -149,7 +149,7 @@ compares everything written but the dead stack below the entry's `sp`,
 ```
 # script: load trace/s5.state / capture trace/capture/targets.txt 2 1 trace/capture/s5
 tools/kiutrace/target/release/kiutrace dumps/kiu.cci <script> <out>
-cc -O1 -I tools/3dsrecomp/abi -o build/replay scripts/replay.c -Wl,--no-as-needed -lm -ldl
+cc -O1 -I "$(python3 scripts/recomp_abi.py)" -o build/replay scripts/replay.c -Wl,--no-as-needed -lm -ldl
 build/replay build/lib/0004000000030100.so build/lift/lifted.so trace/capture/s5 trace/capture/s8
 ```
 

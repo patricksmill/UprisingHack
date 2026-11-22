@@ -164,7 +164,7 @@ def main():
     folder = sys.argv[4] if len(sys.argv) > 4 else "us/menu/"
     here = os.path.dirname(os.path.abspath(__file__))
     listing = subprocess.run(["cargo", "run", "-q", "--release", "-p", "zakuro-fs", "--example", "romdump", "--",
-                              os.path.abspath(rom), "files"], cwd=os.path.join(here, "../tools/zakuro"),
+                              os.path.abspath(rom), "files"], cwd=os.path.join(here, "../.."),
                              capture_output=True, text=True, check=True).stdout
     os.makedirs(out, exist_ok=True)
     seen = set()

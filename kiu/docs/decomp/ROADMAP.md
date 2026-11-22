@@ -101,14 +101,14 @@ categories for diagnosis rather than treating its compilation as acceptance.
 - `tools/3dsrecomp/src/port.rs:54-85` already generates a linked executable,
   but launches `zakuro::run(Some(code))`. Its own comment states that it still
   reads the game dump. This is packaging, not the finished native runtime.
-- `tools/zakuro/crates/zakuro-core/src/recompiled.rs:254-317` reconstructs an
+- `crates/zakuro-core/src/recompiled.rs:254-317` reconstructs an
   ARM `Context`, dispatches code by guest PC, returns on SVC or instruction
   budget, and updates guest cycles. Static linking alone removes none of it.
-- `tools/zakuro/crates/zakuro-core/src/kernel/svc.rs:33-109` owns SVC dispatch,
+- `crates/zakuro-core/src/kernel/svc.rs:33-109` owns SVC dispatch,
   including memory, thread creation, synchronization, ticks and IPC. The
   existing trace log includes thread, SVC number, arguments, PC and LR; use
   that before adding another tracing mechanism.
-- `tools/zakuro/crates/zakuro-core/src/kernel/sync.rs:7-81` distinguishes
+- `crates/zakuro-core/src/kernel/sync.rs:7-81` distinguishes
   one-shot, sticky and pulse events, recursive mutex ownership and counts,
   semaphores and timers. A host-thread migration must preserve these
   semantics, not substitute ordinary host mutexes indiscriminately.
@@ -175,9 +175,9 @@ experimental lifted candidates. The boot-gap cutover below supersedes it:
 Build commands, run from the repository root:
 
 ```
-CC=$PWD/scripts/cc-fast tools/3dsrecomp/target/release/3dsrecomp port dumps/kiu.cci build/kiu-linked --name kiu-linked --zakuro tools/zakuro --overrides overrides/
-cp tools/zakuro/Cargo.lock build/kiu-linked/Cargo.lock
-CARGO_TARGET_DIR=$PWD/tools/zakuro/target cargo build --release --offline --manifest-path build/kiu-linked/Cargo.toml --config "patch.\"https://github.com/fearkov/3dsrecomp\".recomp-abi.path=\"$PWD/tools/3dsrecomp/abi\""
+CC=$PWD/scripts/cc-fast tools/3dsrecomp/target/release/3dsrecomp port dumps/kiu.cci build/kiu-linked --name kiu-linked --zakuro .. --overrides overrides/
+cp ../Cargo.lock build/kiu-linked/Cargo.lock
+CARGO_TARGET_DIR=$PWD/../target cargo build --release --offline --manifest-path build/kiu-linked/Cargo.toml --config "patch.\"https://github.com/fearkov/3dsrecomp\".recomp-abi.path=\"$PWD/tools/3dsrecomp/abi\""
 ```
 
 The copied lockfile is necessary: resolving the fresh workspace without it
@@ -194,7 +194,7 @@ This is a functional smoke artifact, not a performance-tuned release.
 ### Executed smoke
 
 ```
-RUST_LOG=warn,zakuro_core::loader=info,cranelift_jit=warn tools/zakuro/target/release/kiu-linked dumps/kiu.cci --headless 1200 --profile --rasterizer software --mute --data "$PWD/trace/linked-audit/user"
+RUST_LOG=warn,zakuro_core::loader=info,cranelift_jit=warn ../target/release/kiu-linked dumps/kiu.cci --headless 1200 --profile --rasterizer software --mute --data "$PWD/trace/linked-audit/user"
 ```
 
 Observed loader output:
@@ -285,7 +285,7 @@ equality hashes are in `trace/boot-gap-cutover/receipt.json`.
 
 ### Current linked Linux artifact
 
-- Executable: `tools/zakuro/target/release/kiu-linked`, 807,499,008 bytes.
+- Executable: `../target/release/kiu-linked`, 807,499,008 bytes.
 - SHA-256:
   `a8dfd03ecd5e6de08817d0d05850aa76006862de8e6085f36cd079a30b68f97b`.
 - Verified archive: `build/boot-gap/librecomp.a`, SHA-256
@@ -298,7 +298,7 @@ second full C compilation. The new root workspace was built with both local
 dependency patches, which Cargo does not inherit from the Zakuro dependency:
 
 ```
-CARGO_TARGET_DIR=$PWD/tools/zakuro/target cargo build --release --offline --manifest-path build/kiu-boot-gap/Cargo.toml --config "patch.\"https://github.com/fearkov/3dsrecomp\".recomp-abi.path=\"$PWD/tools/3dsrecomp/abi\"" --config "patch.\"https://github.com/fearkov/3dsrecomp\".recomp3ds.path=\"$PWD/tools/3dsrecomp\""
+CARGO_TARGET_DIR=$PWD/../target cargo build --release --offline --manifest-path build/kiu-boot-gap/Cargo.toml --config "patch.\"https://github.com/fearkov/3dsrecomp\".recomp-abi.path=\"$PWD/tools/3dsrecomp/abi\"" --config "patch.\"https://github.com/fearkov/3dsrecomp\".recomp3ds.path=\"$PWD/tools/3dsrecomp\""
 ```
 
 Executed headless smoke:

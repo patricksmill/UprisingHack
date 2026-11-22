@@ -18,6 +18,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from recomp_abi import abi_dir
+
 ROOT = Path(__file__).resolve().parent.parent
 REFERENCE = ROOT / "build/lib/0004000000030100.so"
 PARTS = 48
@@ -48,7 +50,7 @@ def ghidra(addresses: Path, out: Path, contracts: Path | None = None) -> None:
 
 def build(out: Path) -> None:
     shutil.copy(ROOT / "ghidra/lifted.h", out)
-    shutil.copy(ROOT / "tools/3dsrecomp/abi/recomp.h", out)
+    shutil.copy(abi_dir() / "recomp.h", out)
     source = (out / "lifted.c").read_text()
     functions = re.split(r"(?m)^(?=/\* \S+ \*/\nRECOMP_OVERRIDE)", source)[1:]
 
@@ -68,7 +70,7 @@ def build(out: Path) -> None:
 
 def check(out: Path, runs: int) -> Counter:
     difftest = ROOT / "build/difftest"
-    subprocess.run(["cc", "-O1", "-I", str(ROOT / "tools/3dsrecomp/abi"), "-o", str(difftest), str(ROOT / "scripts/difftest.c"),
+    subprocess.run(["cc", "-O1", "-I", str(abi_dir()), "-o", str(difftest), str(ROOT / "scripts/difftest.c"),
                     "-Wl,--no-as-needed", "-lm", "-ldl"], check=True)
     lifted = [line.split()[0] for line in (out / "report.txt").read_text().splitlines() if line.split()[1] == "lifted"]
     (out / "lifted.txt").write_text("\n".join(lifted) + "\n")

@@ -1,10 +1,13 @@
 """Directed checks for the two recovered raw core/float result pairs."""
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+from recomp_abi import abi_dir  # noqa: E402
 
 
 class ScalarResults(unittest.TestCase):
@@ -53,7 +56,7 @@ int main(void) {
 ''')
             for optimization in ["-O0", "-O2"]:
                 subprocess.run(["cc", optimization, "-ffp-contract=off", "-I", str(work),
-                                "-I", str(ROOT / "tools/3dsrecomp/abi"), str(source),
+                                "-I", str(abi_dir()), str(source),
                                 str(ROOT / "overrides/scalar.c"), "-o", str(work / "check"), "-lm"], check=True)
                 subprocess.run([str(work / "check")], check=True)
 

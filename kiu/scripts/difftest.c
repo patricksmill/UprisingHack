@@ -2,7 +2,7 @@
    same random registers and memory, and reports where they part: recovered
    or lifted C Overrides against the generated code they replace.
 
-   build: cc -O1 -I tools/3dsrecomp/abi -o build/difftest scripts/difftest.c -Wl,--no-as-needed -lm -ldl
+   build: cc -O1 -I "$(python3 scripts/recomp_abi.py)" -o build/difftest scripts/difftest.c -Wl,--no-as-needed -lm -ldl
    usage: difftest <reference.so> <candidate.so> <address|@list> <pointers> [runs] [via] [size limit]
 
    The candidate is either a library 3dsrecomp built with the overrides, or

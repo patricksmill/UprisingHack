@@ -1097,7 +1097,7 @@ its head sentinel; +0x10 is node color, not a leaf marker.
 
 ## Screen anchors
 
-Canonical Screen names are in `GLOSSARY.md`; this table is the only place their code anchors live. Scripted Menu rows come from `MENU_SCREENS` in `tools/zakuro/crates/zakuro-core/src/aim_mouse.rs`; `vtable` is the object's first word.
+Canonical Screen names are in `GLOSSARY.md`; this table is the only place their code anchors live. Scripted Menu rows come from `MENU_SCREENS` in `crates/zakuro-core/src/aim_mouse.rs`; `vtable` is the object's first word.
 
 | Screen | vtable | update | outline | A / use |
 | --- | --- | --- | --- | --- |
@@ -2127,7 +2127,7 @@ from the Windows frontend and has not been installed in its game cache.
 Anchors: `tools/3dsrecomp/src/overrides.rs` (`Pinned`),
 `tools/3dsrecomp/src/build.rs` (`pinned_files`, duplicate checks),
 `tools/3dsrecomp/src/compile.rs` (`common_folder`), and
-`tools/zakuro/crates/zakuro/src/recompile.rs` (`PINNED`). The pinning key is
+`crates/zakuro/src/recompile.rs` (`PINNED`). The pinning key is
 the FNV-1a hash of the executable's text after mods and updates, the same
 key as the bundled hints; for this dump it is `D6E028C6175A2B07`.
 Override seeds change function partitioning across nearly every generated

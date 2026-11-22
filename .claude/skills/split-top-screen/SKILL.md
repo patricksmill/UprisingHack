@@ -7,7 +7,7 @@ description: Split a Scripted Menu's top-screen Details card into independently 
 
 A Screen's top picture is split by **mesh node ownership**: a `TopLayer` table
 `(layer name, model, nodes)` on the Screen's `LayoutKind::Board` row in
-`tools/zakuro/crates/zakuro-core/src/aim_mouse/screen_transform.rs`. No other
+`crates/zakuro-core/src/aim_mouse/screen_transform.rs`. No other
 code changes are needed per Screen. Reference tables: `GEAR_TOP`, `POWERS_TOP`,
 `WEAPONS_TOP`. An empty node list owns the rest of that model.
 
@@ -50,7 +50,7 @@ Shots are `.ppm`; view them with `python3 $G <out> <dest.png> <cols> <shots...>`
    alone, and hiding the paper keeps the words. Also reshoot Gear
    (`trace/armory-gear.state`) and Powers (`trace/poweredit.state`).
 
-7. **Test and ship.** `cd tools/zakuro && cargo test -p zakuro-core --release`
+7. **Test and ship.** `cargo test -p zakuro-core --release`
    (note pre-existing failures by rerunning without your change). Windows:
    `cargo build --release --target x86_64-pc-windows-gnu -p zakuro`, copy
    `target/x86_64-pc-windows-gnu/release/zakuro.exe` to

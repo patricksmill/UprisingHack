@@ -2,7 +2,7 @@
    the game entered them, through two recompiled libraries, and reports
    where they part: real inputs where scripts/difftest.c has random ones.
 
-   build: cc -O1 -I tools/3dsrecomp/abi -o build/replay scripts/replay.c -Wl,--no-as-needed -lm -ldl
+   build: cc -O1 -I "$(python3 scripts/recomp_abi.py)" -o build/replay scripts/replay.c -Wl,--no-as-needed -lm -ldl
    usage: replay <reference.so> <candidate.so> <capture dir>...
 
    The candidate is a library 3dsrecomp built with overrides, or a library
