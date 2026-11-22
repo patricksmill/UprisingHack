@@ -80,6 +80,44 @@ each layer named in `group` with its native box (Idols: `IDOLS_BOTTOM`).
   in-script from a neighbouring state instead.
 - Convert shots with `ffmpeg -i x_top.ppm x.jpg` if the PNG grid is rejected.
 
+- A Screen with no registry row needs one first: find its object (scan the
+  heap for a word near a sibling's vtable), then its update with `entered
+  <object> 2` (the first function entered with r0 = the object, from the
+  menu dispatcher). Add the `Screen` variant, `SCRIPTED_UPDATES`, `PLACES`
+  and `SCREEN_MENUS` (`menuid` prints the MENUID) entries.
+- A common backdrop (`MenCmnBg0000`) left as a plain group model draws over
+  the whole top screen; give it a bottom node layer.
+- Bottom node layers are cut at their group boxes: probe with full-screen
+  boxes, or a part outside its box looks like it draws nothing.
+- Words need a node layer that `board_text_now` lets replay text; a node
+  that draws nothing (`pPlane1`) can own such a layer.
+- Owning each of many small nodes (portrait pieces) separately can lose
+  them; try one rest layer.
+
+- A `Generic` Screen made a Board needs its bottom split too: a single
+  model-less bottom part broke mouse clicks on Fuse Weapons. Test clicks
+  with `mhover` + `press`/`release` (`mpress` and `click` did not act on
+  Fuse in any build).
+- Count the replays. Fuse froze in a loading at 17 bottom node layers and
+  not at 16. Layers that only draw on a page (dialogs) can be made
+  unavailable outside it (`available`, from a game phase word), which also
+  keeps them from taking the pointer. Replay the Screen's whole flow,
+  including what follows a dialog, on the final build.
+- Find a Screen's phase by diffing heap dumps between pages (small words
+  steady within a page), then `watch` + `trace` with
+  `KIUTRACE_WATCH_REGS=1` for its writer and base register.
+- A particle model (`PtcCmn*`) has no nodes; replays drop it from the layer
+  list unless they own it. If a probe shows the same sparkles in every
+  layer, including one that owns nothing, look for such a model.
+- Nodes that draw nothing in the idle Screen may draw in its animation
+  (Fuse's flash rays): replay the Screen's animation before leaving them
+  to the Details card.
+- A bar under the hint's words can follow the hint: add its layer name to
+  `HINT_BACKING`.
+- Old `trace/` states (0.2.30) no longer load; the user's desktop slots are
+  in `/mnt/c/Users/Patrick/AppData/Roaming/zakuro/states/0004000000030100/`
+  ("state N" means `N.state`).
+
 ## Draws that are not models
 
 Something drawn in every layer's replay that no node or model flag hides

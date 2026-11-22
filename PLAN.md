@@ -794,3 +794,19 @@ handle resizes, and the override is applied on the next layout. **Save layout**
 writes `menu-layout.toml` in the data directory and the next `--menu-editor`
 run loads it; normal launches ignore it. Next: generalize Scripted overrides
 into rules that survive every aspect width, then aspect previews.
+
+### Midstage Loading in layers
+
+```
+Relayout the Midstage Loading (In-Game Menu): Midstage Progress drawn over the Loading orb and the tip bar → Tip bar, Tip, Loading orb and Midstage Progress are four editor layers, laid out apart by default.
+Acceptance: from the user's slot 3 (Chapter 1, air battle to land battle) at 5:3 and 16:9, no part covers another; in the editor each part moves, resizes and hides alone; entering and leaving show no part elsewhere for a frame.
+```
+
+Status: built and checked in the harness (FINDINGS "Midstage Loading layers").
+Core 277 and frontend 126 tests pass. Windows release rebuilt; the build,
+`dist/zakuro-kiu-mouse.exe` and the Downloads copy have SHA-256
+`490367457cf47c0c00e99bd12981632b56c6997c9384ca157088c154f7a65dcb`. The
+same bytes completed the five-frame Windows startup check from the build
+and a fresh copy; the `dist` path exited 5 while an earlier
+`zakuro-kiu-mouse.exe` was still running. Physical mouse and editor testing
+on Windows remains.

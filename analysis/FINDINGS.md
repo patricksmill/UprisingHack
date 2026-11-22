@@ -126,6 +126,21 @@ pixels being 9.8° of a 45° view. The port widens both limits by 10° while
 the mouse aims on the ground (`PITCH_LIMITS`, `CAPTURED_PITCH_REACH`).
 `0x0034C210` is clamp(s0, s1, s2); `0x0034C248` wraps an angle.
 
+Ground camera distance (`trace/s8.state`, found 20 November by poking and
+watching writes): the camera update `0x00703B68` stores its camera in
+`*0x00D3A18C` (0x141FDE68 there). The matrix object at camera+0x278 holds the eye at
++0, the direction at +0xC, the target at +0x24, the distance at +0x30 (34 on
+the ground), the yaw at +0x34, the pitch at +0x38, the fovy at +0x40 and the aspect at +0x44.
+`0x006063E8(matrix, yaw, pitch)` places the eye at target − direction ×
+distance. `0x007EF350` (called only at 0x00703FAC) works the distance out
+again each frame from a base at camera+0x6AC times a zoom at camera+0x6D8
+(1, eased back after a poke by 0x0090AECC), floored at 0.01, and stores it
+at `0x007EF464` (`vstr s0, [r4, #0x30]`, r4 the matrix object). r10 there is still the
+caller's aim object (vtable 0x00CF1B94, +0x81 = 1 on the ground). A poke
+of +0x30 lasts one frame. The port scales s0 at that store
+(`CAMERA_DISTANCE`, the PC Preference "Land Battle camera distance",
+default 1.25): 42.5 held steady through 175 frames of running.
+
 Pit's ground movement (`trace/s8.state`, measured 19 November by stepping
 the Circle Pad and reading Pit's position each frame): his position is the
 vec3 at `0x141FBEA0` (x, y, z; many matrix copies nearby). The game's input
@@ -920,6 +935,91 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   The layout row declares these groups; replays retain native node visibility
   and restore it afterward. The doubled camera guard band enlarged this
   artwork despite its Placement; these groups use the native viewport mapping.
+- Armory — Fuse Weapons top-screen node ownership (Scripted Screen 17,
+  MENUID 26; the user's desktop slot 4 of 20 Nov, a 0.2.32 state).
+  `MenAltermixUp0000`: `NN_U0000` Paper background (with both weapons'
+  coloured headers, one mesh), `NN_U01` Ornament, `NN_U0003` Weapon A,
+  `NN_U0005` Weapon B, `NN_U0009` the yellow filled bonus slots of both
+  weapons (one mesh, showing where a dark bar is hidden), `MN_U0001..0006`
+  and `MN_U0007..0012` the dark bonus slots of A and B (`MN_U0001` and
+  `MN_U0007` hidden where the first slot is filled), `NN_U0008` the Result
+  bar under the hint's words, `cir`/`cir1` a faint ring, `light`/`light1`
+  the orange and green rays, `light2`/`light3` the white rays of the
+  fusion's flash, `NN_U0001` the result's shadow, `NN_U0002` the result
+  weapon. `NN_U0006`, `NN_U0007`, `Seed1`, `Seed2`, `MenAltermixUp0001`
+  and `MenAltermixUp0102` drew nothing before or during a fusion. The
+  sparkles are `PtcCmnMenuAlterMix`, a particle model (vtable `0x00D14A8C`,
+  CGFX models `0x00D14AF4`): no mesh nodes, and clearing its `+0x1F6` byte
+  does not stop its draw, so it drew in every layer's replay (36 node
+  layers exhausted the drawing buffer: the rows and weapon vanished).
+  A replay that does not own it now takes it out of its layer list.
+  The bonus slots' words are fitted to the slot width by the game; in the
+  Details card's guard-band replay they come out narrower than native
+  ("Melee defense +1" 68 px at full size, native 85, the unsplit layout
+  107); without the guard band every word breaks. Not fixed.
+  That build (top split, the bottom one whole Control) also broke mouse
+  clicks on the Board: `mhover` + `press` on a weapon did nothing, where
+  the Generic layout opened Fuse/Cancel. The bottom split below fixes it.
+- Armory — Fuse Weapons bottom node ownership (21 Nov, same slot).
+  `MenAltermixBt0000`: `NN_B0002` Weapon A's (green, top row) background,
+  `NN_B0003` Weapon B's (peach, left column), `NN_U0000` a grey mask under
+  the Frame that reaches past the screen's edges (drawn whole, it showed
+  as grey blocks beside the Board). `MenAltermixBt0002`: `NN_B0000` the
+  Frame (corner art, A and B tabs, bottom bar), `MN_B0000_` `NN_B0004`
+  `MN_B0005` Weapon A's scroll bar (track, thumb, arrow), `MN_B0001_`
+  `MN_B0003` Weapon B's, `NN_B0005` Back. `Bt0001` the grid, `Bt0004`
+  and `Bt0005` the A and B lists (one dynamic-texture node each), `Bt0006`
+  `Bt0007` `Bt0008` the column, row and grid Cursors, `Bt0009` the sort
+  order bar (its words, such as "Order Used", come from the bottom text
+  pass), `Bt0010` both questions (Fuse/Cancel, then "Equip?" No/Yes)
+  with their words, `Bt0003` the fusion's flash. `MenCmnWindowBt0000`
+  drew nothing in any phase seen.
+- Fuse Weapons' phase is the word at Screen object `+0x2B20` (object
+  vtable `0x00CEE148`, 0x1406C200 in that slot; written by `0x002C74DC`
+  with r4 the object): 0 on entry and after Cancel, 2 after a sort-order
+  touch, 3 after its direction arrow, 5 Fuse/Cancel, 6 fusing, 8 Equip?.
+  The model and node flags do not change between phases; the questions
+  appear by animation. A native touch on No does not answer Equip? (the
+  Generic build too); Yes and A do.
+- 17 bottom node layers replayed every frame froze the game in the
+  loading after Yes (grey screen with the loading orb, for good); 16, any
+  one fewer, did not. The question, flash and Window layers now draw only
+  in phases 5..8, so the Board replays 14. With them, the 36 one-node top
+  layers, and Powers' entry, this is the third time the replay count or
+  size froze or blanked a Screen.
+  Windows release rebuilt; `dist/zakuro-kiu-mouse.exe` and the Downloads
+  copy have SHA-256
+  `41d2dcb884bbc8b1b5a4bafb41fdd2b4eb30be61c18a5498609f135dcb479db8` and
+  completed the five-frame Windows startup check.
+- That gating still replayed 17 in phases 5..8, as the dialog's three
+  layers joined the Board's 14. A mouse click on a grid cell (the second,
+  as natively) set phase 5 and, on its first frame, the bottom pass's
+  buffer bind 0x009166E0 called 0x00B8C030, which read guest `0x1C`
+  through a null from 0x001ECC5C (the context's +8, then +0xC: no bound
+  framebuffer); the bottom stopped updating, so Fuse/Cancel never showed
+  (`access to unmapped guest address 0x0000001C`). Natively the game hides
+  both scroll bars and Back then, so those layers now draw only outside
+  phases 5..8 and every phase replays 14. Grid click, Fuse, Equip? and Yes
+  by mouse on slot 4 (`trace/fuse-slot4.state`) then ran with no fault and
+  no freeze. Windows release rebuilt; `dist/zakuro-kiu-mouse.exe` and the
+  Downloads copy have SHA-256
+  `72154f02c79ea4d1ac36d227769f4c34b0522fa63162127910089623f6b447e1` and
+  completed 60 headless frames; the previous build is
+  `dist/zakuro-kiu-mouse-before-fuse-dialog.exe`.
+- Power Portrait (the Vault's, Scripted Screen 27, MENUID 47; slot-2 state
+  `trace/powerportrait.state`): object 0x14057168 there, vtable 0x00CF9388,
+  update 0x0018AEB8, a thunk of 0x001AD618 (0x0018AEC8, a thunk of
+  0x001AD498, runs beside it). Found with `entered <object>`; `calls` on the
+  0x001B4Cxx thunks caught nothing. Top-screen node ownership,
+  `MenColPazUp0000`: `NN_U1101` Frame (with its green board), `NN_U1102`
+  Checkerboard, `NN_U0001`..`NN_U0060` the 60 portrait pieces (hidden until
+  earned). `MN_U1103`, `complete` and `flash` draw nothing at 15%. Owning
+  each piece in its own layer lost the earned pieces' drawing; one rest
+  layer keeps them. Bottom, `MenColPazBt0001`: `NN_B1000` the Current
+  Completion banner and ring in one mesh, `NN_B1001` the digits; `comp`
+  and `pPlane1` draw nothing. `MenCmnBg0000` is the bottom backdrop: left
+  as a plain group model it drew across the whole top screen and covered
+  the portrait, so it is a bottom node layer.
 - Armory Weapons top-screen node ownership (found by moving one node at a
   time; hide-diffs were misleading): `MenEquipUp0100` is the paper with its
   crest, ornaments and ink frame in one mesh. `MenEquipUp0121`: `NN_U0005`
@@ -1028,6 +1128,7 @@ Canonical Screen names are in `GLOSSARY.md`; this table is the only place their 
 | Vault | 0x00CF8248 | 0x00224B80 | outline_vault | 0x00345FDC |
 | Idol Toss (Vault) | 0x00CF9400 | 0x001B4D4C | outline_idol | none (click is a touch) |
 | Idols (Vault) | 0x00CF93D8 | 0x001B4D70 | outline_none | none (click is a touch) |
+| Power Portrait (Vault) | 0x00CF9388 | 0x0018AEB8 | outline_none | none (click is a touch) |
 | Control Configuration | in-game Options page 5 | 0x00A0ACF0 | none | drags what it holds |
 | Pause | object at ctx+0x243C | 0x0060DC7C input | pause options page at +0x678 | touch: 0x00A0867C main page, 0x00A06188 Options |
 | Retreat Dialog | dialog object | 0x007226C4 input | picked button at +0x294 | touch began now |
@@ -2261,3 +2362,105 @@ SHA-256 both equal
 Physical mouse testing remains unperformed. The Linux interpreter replay
 captured the corrected reveal but was terminated before its return capture;
 Windows completed all three captures.
+
+## Idol Toss pop-ins on entering, leaving and the play-coin Dialog (20 November)
+
+Idol Toss is one Screen to the game, from the Solo Hub and from the Vault
+alike. For either one's object the class runs 0x001B4D4C alone on its first
+frame, then 0x001B4D58 and 0x001B4D4C every frame (harness `calls`, also
+during a held egg drag), and only 0x001B4D58 while leaving. So the
+registry's rows 22 (0x001B4D58) and 25 (0x001B4D4C) never told the two
+apart: the Screen was 25 every steady frame, from the hub too, and the
+saved edits are all under 25. It became 22 on the leaving frames and
+under the play-coin Dialog (hard-coded 22), and those frames drew 22's
+default Placements: everything jumped while the scene faded out, and
+jumped when the Dialog opened and again when buying closed it.
+`menu_top::screen_of_row` now draws and saves row 22 as 25, and the
+Dialog uses 25.
+
+Entering from the Vault, the first frame the Idol Toss models loaded drew
+the native fallback layout (`scripted_len() + 6`: a Details card a third of
+the screen wide and the whole bottom screen as one Board), because MENUID 44
+names both rows and the model scan kept Idol Toss only when the last input
+was already one. `MenColVision` models now draw Screen 25.
+
+The frame after that still drew the Fountain where the bottom screen had
+it. A new scene's bottom camera has no projection (camera `+8` bit 2
+clear, flags 0x01; 0x45 once 0x003901C4 builds it, 0x77 after a draw)
+until the first draw through it, and the replays run before the game's
+own bottom pass: the first replay drew unplaced. Building the projection
+first (calling 0x003901C4) was not enough; the rest of the camera is also
+set by that first draw. Bottom parts whose camera is unset now wait for
+the next frame (`menu_top::draw_part`). This fires on exactly one frame per
+scene change (entering Idol Toss, Chapter Select, the Vault) and on none
+while a Screen is steady.
+
+Under the user's saved layout a dragged egg follows the pointer within
+about 3 px across the hand-off from Egg queue to Launcher. Under the
+default layout it shrinks from scale 1 to 0.68 and drops about 27 px where
+it leaves the queue (native x 262), because the default Egg queue keeps
+its native size down the right edge while the Launcher is at 0.68. The
+native touch ring and sparkle trail are not drawn on the top screen. The
+green leaves dropping off a dragged egg and the large Back arrow sweeping
+the top screen while leaving are the game's own.
+
+Harness: `kiutrace` `override <screen> <part> x y w h` loads a saved
+`menu-layout.toml` layer, as the frontend does. `build/toss-popins/` holds
+the replays (`enter`, `exit`, `coin`, `buy`, `drag`), the user's layout as
+`override` lines, and 0.2.32 states reached from slot 2: the Vault, Idol
+Toss, the Dialog, an egg ready to drag, a loaded egg and the Solo Hub.
+0.2.30 states no longer load. The leaving, Dialog and buying replays keep
+Counters at (0, 4) and the Launcher at y 102 throughout; entering goes
+from 24 straight to 25.
+Windows release rebuilt; `dist/zakuro-kiu-mouse.exe` and the Downloads
+copy both have SHA-256
+`36badbf624a9b186368cd6392dde5536bfd8a8a5185438d7b648610de05d84cc`, and
+the distributed executable completed its five-frame Windows startup check.
+Physical mouse testing remains unperformed.
+
+Default Egg queue at the bowl's scale (20 November): Launcher, Fountain and
+Egg queue now share `idol_toss` by default, bottom-anchored with the queue
+flush right (at 16:9 the bowl's top moves from y 62 to 104, the queue
+[387.2, 76.8, 39.4, 163.2]). Replaying `build/toss-popins/bought2.state`
+with no saved layout, a dragged egg stays within 1.5 px of its previous
+offset from the pointer every frame and keeps its size, where it used to
+shrink from scale 1 to 0.68 and drop 27 px leaving the queue. Saved edits
+still override the default.
+Windows release rebuilt with it; `dist/zakuro-kiu-mouse.exe` and the
+Downloads copy have SHA-256
+`c71d3a0dadf07f79f6538d2f19b3ba7b4c6e14517bcf13631a8644e2b04f2013` and
+completed the five-frame Windows startup check.
+
+## Midstage Loading layers (22 November)
+
+The loading between an air and a land battle (user's slot 3, Chapter 1's
+mid-stage, loading from frame ~130 to ~435) is no Scripted Menu: no MENUID,
+no scene models. Its pictures come from the dialogs' 2D context
+(0x14A1340C, the Retreat Dialog's) with bit 26 of +0x270 set:
+
+- Top pass 0x007255AC keeps that bit in r7 and tests it at 0x00725784.
+  With it set: the tip bar, 0x0092EDA8 at 0x007257D0 (s0..s3 = 0, 181,
+  400, 59) flushed at 0x00725814 (returns to 0x00725818); then 0x00724AE0,
+  whose flush returns to 0x00725828 like the battery's every frame (the
+  battery quad, 382..400 × 0..13, is already dropped there): one turning
+  64-pixel quad, middle about (196.6, 105.3).
+- The tip's words: the 3D renderer, camera call 0x0090A5B4 at 0x00725970
+  with the top projection on the stack in r1 (rows -1/120 and -1/200),
+  then 0x00909ACC(r5 + 0x19C) once per eye.
+- Midstage Progress: the bottom pass 0x00722A50 draws one text, 0x00909ACC
+  at 0x00722DAC (r0 = ctx + 0x204), through the same call sites the
+  Retreat Dialog's words use; it draws no box (0x00722AF4/0x00722B0C are
+  not reached). With Pause on the top screen these replayed at
+  DIALOG_TEXT (0x007258C0) through the dialog's panel rule, so before this
+  change they covered the orb and the tip bar.
+- The bottom pass draws the words for three frames after the top's last
+  loading pass; the next top passes have r7 clear.
+
+The Midstage Loading is a Screen of its own with `LoadingRules` (Tip bar,
+Tip, Loading orb, Midstage Progress); see screen-transform.md. Harness
+`layers`, `layer`, `visible` reach it while it is the Screen last drawn.
+Checked from slot 3 (`pausetop narrtop menutop`): default at 5:3 and 16:9
+keeps the parts apart; moving the orb and Midstage Progress and hiding the
+bar moves and hides each alone; entering and leaving frame by frame show no
+part in another place; a Retreat Dialog later in that battle still draws in
+its own panel.
