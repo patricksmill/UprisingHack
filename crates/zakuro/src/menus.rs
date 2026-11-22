@@ -1507,11 +1507,6 @@ impl Menus {
         actions
     }
 
-    /// whether the Settings or UprisingHack window is open.
-    pub fn settings_shown(&self) -> bool {
-        self.settings_open || self.uprising_open
-    }
-
     /// the UprisingHack window, when open: the settings this port adds
     /// for Kid Icarus: Uprising, apart from the emulator's own Settings.
     pub fn uprising(&mut self, ctx: &egui::Context, settings: &mut Settings) -> Vec<Action> {

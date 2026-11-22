@@ -13,6 +13,7 @@ pub(super) const FINISHED: u32 = 0x0072A0B4;
 /// the `CircleShadow` draw (this in r0: positions at +0, count at +0x14),
 /// run inside each scene pass: the Idols' floor shadow.
 pub(super) const CIRCLE_SHADOW_DRAW: u32 = 0x0080B100;
+#[cfg(test)]
 pub(super) const FONT_CALL: [u32; 7] = [0x00A36E64, 0x00A36EC8, 0x00A36EE4, 0x00A36F00, 0x00A36F1C, 0x00A36F74, 0x00A36FA4];
 pub(super) const FONT_DONE: [u32; 7] = [0x00A36E68, 0x00A36ECC, 0x00A36EE8, 0x00A36F04, 0x00A36F20, 0x00A36F78, 0x00A36FA8];
 /// what every FONT_CALL calls, 0x005CB24C(text, ...): it copies the text's
