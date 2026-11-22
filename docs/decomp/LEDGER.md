@@ -2,7 +2,7 @@
 
 What of the game's code has been recovered as maintained source, against
 what, and how each piece was checked. Code anchors for behaviour stay in
-`analysis/FINDINGS.md`; this file counts and proves.
+`kiu/analysis/FINDINGS.md`; this file counts and proves.
 
 ## Reference
 
@@ -23,9 +23,9 @@ The reference is `dumps/kiu.cci` as dumped, run by `kiutrace` with
 
 | Count | Value | Source |
 | --- | --- | --- |
-| Functions, 3dsrecomp | 49,236 (1,062 Thumb) | `analysis/recomp_analyze.txt`, `analysis/functions.txt` |
-| Functions, Ghidra | 51,409 | `analysis/all.c` |
-| Text classified | 93.6% code, 4.2% literals, 2.2% unreached | `analysis/recomp_analyze.txt` |
+| Functions, 3dsrecomp | 49,236 (1,062 Thumb) | `kiu/analysis/recomp_analyze.txt`, `kiu/analysis/functions.txt` |
+| Functions, Ghidra | 51,409 | `kiu/analysis/all.c` |
+| Text classified | 93.6% code, 4.2% literals, 2.2% unreached | `kiu/analysis/recomp_analyze.txt` |
 | Indirect calls / switches / svcs / dead ends | 16,396 / 541 / 646 / 944 | same |
 | Modules (CRO) | 0 | same |
 | Functions run by the 55 saved states, 60 frames each | 6,018 (12.2%) | `ran 60` on every `trace/*.state` |
@@ -61,9 +61,9 @@ indirect targets are resolved and closed.
 
 A function counts as recovered when all of these hold:
 
-1. It is written by hand as a C Override in `overrides/`, with the fields it
+1. It is written by hand as a C Override in `kiu/overrides/`, with the fields it
    touches named from evidence.
-2. `scripts/difftest.c` finds no difference from the generated code over
+2. `kiu/scripts/difftest.c` finds no difference from the generated code over
    random registers and memory, aliased and unaligned pointers included. It
    compares memory, the live stack, `r0`, `r4`-`r11`, `sp`, the return, the
    exit reason and the instructions charged. `r1`-`r3`, `r12`, the flags
@@ -82,7 +82,7 @@ partway through a function, and resumes it at the label it stopped at,
 in generated code that expects the original's registers and stack frame.
 Hand-written code does not keep those, so a recovered function charges the
 instructions its generated code would have (`BUDGET_ATOMIC`, in
-`tools/3dsrecomp/abi/recomp.h`) and only yields on the way in. When the
+`kiu/tools/3dsrecomp/abi/recomp.h`) and only yields on the way in. When the
 budget runs out partway, the thread overruns its slice instead of stopping,
 and Zakuro does not count the overrun as cycles (`recompiled.rs`, `ran`
 uses the budget clamped at zero). Thread timing can therefore shift, and
@@ -141,7 +141,7 @@ Compiled candidates and comparison artifacts remain under ignored `build/lift/`.
 
 `kiutrace`'s `capture` command, run in the interpreter, stops as each listed
 function is entered and writes its registers and every non-I/O mapped page;
-pages shared between captures are written once. `scripts/replay.c` maps a
+pages shared between captures are written once. `kiu/scripts/replay.c` maps a
 capture copy-on-write, runs the reference and the candidate from it, and
 compares everything written but the dead stack below the entry's `sp`,
 `r4`-`r11`, `sp`, the return, `s16`-`s31` and `fpscr`, with `r0` apart.
@@ -184,9 +184,9 @@ the candidate) show no difference on any capture: `0x00919E90` (3 entries),
 
 ### Float operations and prototype experiments
 
-`ghidra/LiftOverrides.java` now lifts p-code float operations the way the
+`kiu/ghidra/LiftOverrides.java` now lifts p-code float operations the way the
 generated VFP code computes them (plain C on the values, results flushed to
-zero when `fpscr` asks; `ghidra/lifted.h`). Both harnesses now leave
+zero when `fpscr` asks; `kiu/ghidra/lifted.h`). Both harnesses now leave
 `fpscr`'s condition flags, QC and cumulative exception bits out of the
 comparison: the AAPCS does not preserve them across calls, and lifted
 comparisons do not set them.
@@ -203,12 +203,12 @@ Same 3,239 functions, same captures:
 The two prototype experiments did not pay: the ARMv7 import loses functions
 on both checks, and Parameter ID fixes some real-entry differences while
 tripling random-input ones (246 to 657). Their projects were deleted; the
-lifter stays on `ghidra/project`. Recreating them: re-import with
+lifter stays on `kiu/ghidra/project`. Recreating them: re-import with
 `-processor ARM:LE:32:v7 -cspec default`, or re-analyze a copy with the
 "Decompiler Parameter ID" analysis option on and `GHIDRA_HEADLESS_MAXMEM=7G`
 (the default 2 GB heap runs out).
 
-`scripts/r0_live.py` reads a replay's `r0`-only functions and checks, in
+`kiu/scripts/r0_live.py` reads a replay's `r0`-only functions and checks, in
 the generated C after every direct call, whether the caller reads `r0`
 before writing it. Of the 114: 16 have a caller that reads it (a return
 value Ghidra missed: real bugs), 31 have every direct caller overwrite it
@@ -233,7 +233,7 @@ and registers that differ.
 The lifter now also lifts a function Ghidra calls void a second time with a
 return value, to see what the machine leaves in `r0`, and keeps that lift
 when the stack frame and every call's arguments stay as they were
-(`ghidra/LiftOverrides.java`, "Observe machine return").
+(`kiu/ghidra/LiftOverrides.java`, "Observe machine return").
 
 Captures were widened from 2 sets to 10: `s1` over two frames; `exo-tank`,
 `s5` and `s8` after 20 frames and with input, three entries a function
@@ -258,7 +258,7 @@ are not comparable with these.
 Of the 102 that still differ on real entries, the first difference is in
 memory for 68, 25 leave the captured memory, 8 trap and 1 returns with
 other saved registers. Their causes are in the next section.
-`scripts/r0_live.py` on the 50 `r0`-only: 14 have a direct caller that
+`kiu/scripts/r0_live.py` on the 50 `r0`-only: 14 have a direct caller that
 reads `r0`, 15 have every direct caller overwrite it, 21 are undetermined.
 Outputs are under ignored `build/continue/`; the overnight round's own
 logs and receipts are under `build/overnight/round-001/`.
@@ -273,12 +273,12 @@ with `r0`-`r3`, `s0`-`s3` and `sp`. `build/continue/calls_diverge.py`
 finds the first call that goes elsewhere or takes another value in a
 register the callee reads before writing, from the generated C.
 `REPLAY_SHOW=1` prints the bytes and registers that differ, and
-`ghidra/DumpPcode.java` the high p-code a function is lifted from.
+`kiu/ghidra/DumpPcode.java` the high p-code a function is lifted from.
 
 Three causes were faults in the lifter, shown by fixing each and lifting
 again; 30 of the 102 no longer differ and none that was the same does:
 
-| Fault, fixed in `ghidra/LiftOverrides.java` | Now same | Now `r0` only |
+| Fault, fixed in `kiu/ghidra/LiftOverrides.java` | Now same | Now `r0` only |
 | --- | --- | --- |
 | A value printed where it is used was not cut to its size: a byte flag Ghidra reads as a word was tested whole (`0x00473DA4` and `0x0091E1F0` never left their loops) | 4 | |
 | A value Ghidra keeps in a register until a call and then lands in a stack slot (an `INDIRECT` into the stack) was never written, so structures built on the stack for a callee were empty (`0x002F3610`, `0x00352A9C`) | 19 | 4 |
@@ -331,7 +331,7 @@ verdicts and first differences are in `build/continue/frame-all.txt`,
 
 The four previously undetermined cases with agreeing call traces now have
 passing isolated probes. Anchors and the original-instruction/high-p-code
-evidence are in `analysis/FINDINGS.md`, under “Lifted-code discrepancy
+evidence are in `kiu/analysis/FINDINGS.md`, under “Lifted-code discrepancy
 probes.” These are experimental candidates under `build/re-next/`, with
 no production override or recovered-source promotion.
 
@@ -391,7 +391,7 @@ captures were not modified. The maintained recovery count remains ten.
 
 ### Maintained lifter repairs and stricter replay (14 November)
 
-`ghidra/LiftOverrides.java` now suppresses synthetic memory self-copies,
+`kiu/ghidra/LiftOverrides.java` now suppresses synthetic memory self-copies,
 reloads memory inputs during phi transfers even when they share a high
 variable, and preserves NaN self-comparisons by disabling Ghidra's
 `trivialarith` rule as well as setting `NanIgnoreEnum.None`. The configuration
@@ -445,7 +445,7 @@ end fully matching; six are `r0`-only. These signature edits are rolled back
 and not enabled in the maintained lifter. Single typed return values are
 insufficient to represent the observed core and float register effects.
 
-`scripts/replay.c` now returns failure for `r0`-only results, functions with
+`kiu/scripts/replay.c` now returns failure for `r0`-only results, functions with
 no comparable capture and an empty selection. Previously it only failed
 ordinary discrepancies, so the float-return and hierarchy experiments
 could report exit zero with unresolved returns. Regression checks confirm
@@ -458,7 +458,7 @@ Artifacts are under `build/repairs-20261114/`, including
 `semantic-receipt.json`, `bounds-receipt.json`, `strict-receipt.json`,
 generated candidates and the fixture generator. New actual captures are
 under `trace/re-storage-20261114-a/`. No generated candidate was installed
-in `overrides/`, and the maintained recovery count remains ten.
+in `kiu/overrides/`, and the maintained recovery count remains ten.
 
 The Windows release build completed offline, was copied to
 `dist/zakuro-kiu-mouse.exe`, and matches the build by SHA-256:
@@ -473,7 +473,7 @@ or audio output. Build and smoke receipts are retained with the artifacts.
 The maintained lifter accepts an optional result-contract file. The first
 non-comment line must give the executable SHA-256; following lines name a
 function and one or two raw register words, least significant first.
-The verified file `ghidra/kiu-call-results.txt` describes the two callees
+The verified file `kiu/ghidra/kiu-call-results.txt` describes the two callees
 from the eight-function float-return cohort. Signature edits are
 provisional and roll back at script exit. The packed unsigned return is
 an analysis representation, not a recovered source type.
@@ -540,7 +540,7 @@ recovery count of ten.
 
 12 of 49,236 functions.
 
-### Memory copy (`overrides/memory.c`)
+### Memory copy (`kiu/overrides/memory.c`)
 
 | Address | Does | difftest |
 | --- | --- | --- |
@@ -549,7 +549,7 @@ recovery count of ten.
 It runs in all 55 saved states and generated code calls it directly from
 471 places, so the whole runs below exercise it wherever the game copies.
 
-### Input samples (`overrides/input_sample.c`)
+### Input samples (`kiu/overrides/input_sample.c`)
 
 The input manager keeps 16 samples of 0x25C bytes and folds those taken
 since the last frame into one frame sample in `0x00A4245C` (not recovered).
@@ -587,7 +587,7 @@ The entry table and every call 3dsrecomp follows go to the overrides.
 Not exercised by any saved state within 60 frames: `0x00919F38`, which only
 runs when the manager's flag at `+0x314C` is set. It rests on difftest alone.
 
-### Strings, the string hash and the set-once flag (`overrides/string.c`)
+### Strings, the string hash and the set-once flag (`kiu/overrides/string.c`)
 
 | Address | Does | difftest, 200,000 runs | Real entries |
 | --- | --- | --- | --- |
@@ -614,16 +614,16 @@ tick words (`0x00F35D10` in `s1`, `s12` and `s14`, `0x00E0BA88` in `s12`;
 identical in all eight. Against the six-override runs only those tick
 words changed. Scripts and dumps are under ignored `trace/decomp-string/`.
 
-`overrides/` is not compiled into the Windows frontend: its Recompile does
+`kiu/overrides/` is not compiled into the Windows frontend: its Recompile does
 not read it, so these run only in libraries built with
 `3dsrecomp build --overrides`.
 
-### Scalar storage (`overrides/scalar.c`)
+### Scalar storage (`kiu/overrides/scalar.c`)
 
 Two hand-written routines preserve paired raw `r0`/`s0` results. Field
 names describe the observed layout, without assigning a game-level meaning
 to the factors. Accesses, anchors, termination rules and instruction-charge
-formulas are recorded in `analysis/FINDINGS.md`.
+formulas are recorded in `kiu/analysis/FINDINGS.md`.
 
 | Routine | Random inputs, with `s0` checked | Recorded entries | Deliberate fixtures |
 | --- | --- | --- | --- |
@@ -679,7 +679,7 @@ gameplay with these overrides remains unverified.
 ### Windows game library with the twelve overrides (14 November)
 
 Windows Recompile now includes the twelve maintained C Overrides. Zakuro
-embeds `overrides/*.c` as a pinned set for program `0004000000030100` and
+embeds `kiu/overrides/*.c` as a pinned set for program `0004000000030100` and
 executable code hash `D6E028C6175A2B07`; 3dsrecomp adds a pinned set only
 when the code being recompiled has that hash, and otherwise leaves it out
 with a note. An update or mod that changes the code therefore gets the
@@ -724,7 +724,7 @@ Interactive Windows gameplay with this library remains unverified.
 ## Next
 
 1. Interactive Windows play with the installed twelve-override library,
-   especially input sampling (`overrides/input_sample.c`) and the scalar
+   especially input sampling (`kiu/overrides/input_sample.c`) and the scalar
    routines in battle. Scripted Windows comparisons pass; see above.
 2. Closed functions the saved states run (3,239), ranked by how often they
    are called: `build/continue/callsites.txt` counts direct call sites.

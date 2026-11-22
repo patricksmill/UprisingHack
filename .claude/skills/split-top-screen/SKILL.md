@@ -57,7 +57,7 @@ Shots are `.ppm`; view them with `python3 $G <out> <dest.png> <cols> <shots...>`
    `dist/zakuro-kiu-mouse.exe` and `/mnt/c/Users/Patrick/Downloads/zakuro-kiu/zakuro-kiu.exe`,
    compare `sha256sum`.
 
-8. **Record** the node map in `analysis/FINDINGS.md` (next to "Gear top-screen
+8. **Record** the node map in `kiu/analysis/FINDINGS.md` (next to "Gear top-screen
    node ownership") and the layer list with indices in
    `docs/agents/screen-transform.md` (next to the Armory — Gear/Powers paragraphs).
    Add anything new you learned to this file.

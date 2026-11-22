@@ -4,7 +4,7 @@ Status (16 Nov): closed. Native PC Settings Screens were not worth the effort an
 
 | Slice | State |
 | --- | --- |
-| 1. Audit | Options inventory, patch overlap (3 of 344 hook addresses), battle button probe and the font-string mechanism recorded in `analysis/FINDINGS.md`. No new native Control built yet. Patch not yet installed as a mod. |
+| 1. Audit | Options inventory, patch overlap (3 of 344 hook addresses), battle button probe and the font-string mechanism recorded in `kiu/analysis/FINDINGS.md`. No new native Control built yet. Patch not yet installed as a mod. |
 | 2. Settings store | Built: `PcPreferences` (aim, presentation, Action Bindings) in the settings file; old files migrate; category Restore Defaults; saves written beside and renamed over, failures shown; the migration notice stays until acknowledged; recovery resets ask first. `ZAKURO_AIM_SENSITIVITY`, `ZAKURO_HUD_SCALE`, `ZAKURO_PORTRAIT_SCALE` removed. Display rollback not built: no Display/Graphics Screen yet. |
 | 3. Action Bindings | Built for keyboard, mouse and controller: contexts, primary/secondary, conflicts with Swap/Replace/Cancel, required actions, press-context rule, one start per action across its inputs, release on capture loss, focus loss and controller disconnect, dead zone and right-stick sensitivity (Kid Icarus only). Battle has no held-item input (pickups take effect at once). A, B, Y, ZR and D-pad Up attack as L does, so Attack covers them; X is the game's own Change View, now an action (V, controller top face); R and ZL show no role and are not bound. Vertical inversion stays the game's own. |
 | 4. Gyro | SDL3 (static, controllers and sensors only) reads the gyroscope into the console's HID gyroscope, off by default, Always/Hold, calibration, inversion. Aiming with it needs the patch installed. Not checked on physical hardware. |
@@ -58,7 +58,7 @@ Display/Graphics and Presentation are working visible labels. Before implementat
 
 ## Current evidence and code seams
 
-These are starting anchors, not claims that the new Screens or input behavior already exist. Keep newly discovered addresses and patch disassembly in `analysis/FINDINGS.md`, not the glossary.
+These are starting anchors, not claims that the new Screens or input behavior already exist. Keep newly discovered addresses and patch disassembly in `kiu/analysis/FINDINGS.md`, not the glossary.
 
 | Location | Evidence / intended involvement |
 | --- | --- |
@@ -72,8 +72,8 @@ These are starting anchors, not claims that the new Screens or input behavior al
 | `crates/zakuro-core/src/aim_mouse/menu_top.rs` | Existing Scripted Menu layout, native model/text handling |
 | `crates/zakuro-core/src/services/hid.rs` | Emulated accelerometer/gyro samples from tilt; not proof of physical sensor input |
 | `crates/zakuro-core/src/services/prompts.rs` | Existing prompt representations used by keyboard/controller input |
-| `tools/kiutrace/src/main.rs` | Native state, interaction, screenshots and save-state scenario harness |
-| `analysis/FINDINGS.md`, Darkshade patch section | USA v172 patch map, input/control-settings modifications and widescreen hooks |
+| `kiu/tools/kiutrace/src/main.rs` | Native state, interaction, screenshots and save-state scenario harness |
+| `kiu/analysis/FINDINGS.md`, Darkshade patch section | USA v172 patch map, input/control-settings modifications and widescreen hooks |
 | `patch/Kid Icarus Uprising - C-Stick & Gyro Patch/` | Supplied base patch, region variants, optional fixed-aspect variants and author attribution |
 
 Current persistence logs save failures rather than returning a player-visible result and writes directly to its destination. This must be addressed for the approved autosave/error contract. Current environment-controlled presentation preferences are startup inputs, not proof of live-adjustable settings.

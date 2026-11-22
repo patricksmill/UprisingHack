@@ -1,6 +1,6 @@
 # Kid Icarus: Uprising PC Port
 
-Terminology for the PC recompilation, graphics enhancement, and single-screen mouse/keyboard interface. Use these terms in issues, plans, tests, and change requests; the words under _Avoid_ are not used. Code anchors live in `analysis/FINDINGS.md`, and change requests follow `docs/agents/change-requests.md`.
+Terminology for the PC recompilation, graphics enhancement, and single-screen mouse/keyboard interface. Use these terms in issues, plans, tests, and change requests; the words under _Avoid_ are not used. Code anchors live in `kiu/analysis/FINDINGS.md`, and change requests follow `docs/agents/change-requests.md`.
 
 ## Language
 

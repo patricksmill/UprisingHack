@@ -13,7 +13,7 @@ for review. The other permitted subscriptions are not automatic fallbacks.
 
 ## Coordinator round
 
-1. Read `docs/decomp/ROADMAP.md`, `docs/decomp/LEDGER.md`, the latest `build/overnight/HANDOFF.md` if present, and relevant sections of `analysis/FINDINGS.md`. Inspect existing artifacts before selecting work. Respect pre-existing edits as user-owned.
+1. Read `docs/decomp/ROADMAP.md`, `docs/decomp/LEDGER.md`, the latest `build/overnight/HANDOFF.md` if present, and relevant sections of `kiu/analysis/FINDINGS.md`. Inspect existing artifacts before selecting work. Respect pre-existing edits as user-owned.
 2. Select the highest-leverage reachable recovery task in the roadmap: classify discrepancy causes, widen actual-entry evidence, recover evidenced types, or verify a bounded subsystem. Prefer eliminating a failure class to bulk-producing unnamed C. Do not repeat completed measurements merely to confirm documented results.
 3. Define work packets: goal, address ranges, source evidence, exclusive file ownership, observable acceptance and output destination. Root owns shared findings, ledger and handoff. Use `kiu-lead` for an independently substantial subsystem, `kiu-analysis` for uncertain semantics, and `kiu-mechanical` only for completely specified transformations. Read-only exploratory research uses `scout`. Review uses `reviewer`.
 4. Delegate only when at least two independent substantial slices exist. At most four active subagents across the entire tree, including leads; reserve slots explicitly in each lead packet. One owner per file. Nested agents inherit slot allocations, not four new slots. Otherwise work inline. Workers skip builds/tests/lint until fan-in.

@@ -7,7 +7,7 @@ done at the game's own UI layer, not by pasting screen captures, so the text
 stays sharp at any resolution and the layout follows the HUD scale.
 
 Addresses are for the USA build (0004000000030100). Findings so far are in
-`analysis/FINDINGS.md`.
+`kiu/analysis/FINDINGS.md`.
 
 PC Preferences live in the UprisingHack Window of the Frontend Menu. The plan
 to move them into KIU's own Options Screens ([KIU-native Options](docs/KIU_SETTINGS_PLAN.md))
@@ -77,7 +77,7 @@ Not planned.
 ## Phase 0: groundwork (small, first)
 
 1. **Shared save states.** Your Zakuro build and my harness now share the same
-   core, so F5 save states you make load straight into `tools/kiutrace`. From
+   core, so F5 save states you make load straight into `kiu/tools/kiutrace`. From
    your copy, please save states in: an air battle mid-dialog, a ground battle
    mid-dialog, a boss intro (Twinbellows), a scene using a power or item, and
    the pause menu in battle. Scenes I can't reach headless become testable.
@@ -147,7 +147,7 @@ Questions to answer, in this order:
    moved element is drawn in top-screen space.
 
 Tools: the harness (call logging at chosen addresses, write tracing, memory
-reads, screenshots), the Ghidra decompile (`analysis/all.c`), and your save
+reads, screenshots), the Ghidra decompile (`kiu/analysis/all.c`), and your save
 states. The output is a section in FINDINGS.md that settles approach A or B.
 
 ## Phase 3: dialog text on the top screen
@@ -477,7 +477,7 @@ its own PlacementRule, behind the pot by default, editable in F2, drawn
 before the top's 3D so the board and the pot cover it, one picture for both
 eyes. Its rings brighten with the intensity: at 7.4 they show faintly around
 the pot and under Move Out, and the board is unchanged (`trace/s12.state`,
-dial dragged, `cauldronvisible ring 0/1`). See `analysis/CAULDRON_RING.md`.
+dial dragged, `cauldronvisible ring 0/1`). See `kiu/analysis/CAULDRON_RING.md`.
 
 ## Phase 5: playing without the bottom screen
 

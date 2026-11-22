@@ -1,7 +1,7 @@
 <div align="center">
 
 <!-- LOGO PLACEHOLDER: replace with docs/images/logo.png (recommended ~640px wide, transparent PNG) -->
-<img src="kiu/docs/images/logo.png" alt="Kid Icarus: Uprising PC logo" width="480">
+<img src="docs/images/logo.png" alt="Kid Icarus: Uprising PC logo" width="480">
 
 # Kid Icarus: Uprising — PC
 
@@ -14,7 +14,7 @@ Statically recompiled with [3dsrecomp](https://github.com/patricksmill/3dsrecomp
 ![Status](https://img.shields.io/badge/status-work%20in%20progress-orange)
 
 <!-- HERO SCREENSHOT PLACEHOLDER: docs/images/hero.png (16:9 air battle, 1920x1080) -->
-<img src="kiu/docs/images/hero.png" alt="Air battle with mouse aim" width="900">
+<img src="docs/images/hero.png" alt="Air battle with mouse aim" width="900">
 
 </div>
 
@@ -35,22 +35,22 @@ Statically recompiled with [3dsrecomp](https://github.com/patricksmill/3dsrecomp
 
 ### ⚡ Performance
 - **Ahead-of-time recompiled** game code — no JIT warm-up, no interpreter.
-- **60 FPS patch**, generated from your own `code.bin` by `kiu/scripts/make_60fps_ips.py` ([how](kiu/docs/BUILDING.md#5-optional-the-60-fps-patch)).
+- **60 FPS patch**, generated from your own `code.bin` by `kiu/scripts/make_60fps_ips.py` ([how](docs/BUILDING.md#5-optional-the-60-fps-patch)).
 - Headless benchmark harness to track frame rate across upstream merges.
 
 <!-- SCREENSHOT GRID PLACEHOLDERS: replace each with docs/images/<name>.png -->
 <table>
   <tr>
-    <td><img src="kiu/docs/images/ground-battle.png" alt="Ground battle" width="440"></td>
-    <td><img src="kiu/docs/images/menus.png" alt="Single-screen menus" width="440"></td>
+    <td><img src="docs/images/ground-battle.png" alt="Ground battle" width="440"></td>
+    <td><img src="docs/images/menus.png" alt="Single-screen menus" width="440"></td>
   </tr>
   <tr>
     <td align="center"><sub>Ground battle with mouse-look</sub></td>
     <td align="center"><sub>Menus on one screen</sub></td>
   </tr>
   <tr>
-    <td><img src="kiu/docs/images/ultrawide.png" alt="Ultrawide" width="440"></td>
-    <td><img src="kiu/docs/images/settings.png" alt="Input settings" width="440"></td>
+    <td><img src="docs/images/ultrawide.png" alt="Ultrawide" width="440"></td>
+    <td><img src="docs/images/settings.png" alt="Input settings" width="440"></td>
   </tr>
   <tr>
     <td align="center"><sub>Ultrawide in battle</sub></td>
@@ -65,7 +65,7 @@ Statically recompiled with [3dsrecomp](https://github.com/patricksmill/3dsrecomp
 | Layer | Role |
 | --- | --- |
 | **3dsrecomp** | Translates the game's ARM `code.bin` into native code ahead of time. |
-| **Overrides** | Small C replacements for selected game functions (`kiu/overrides/`, tracked in `kiu/docs/decomp/LEDGER.md`). |
+| **Overrides** | Small C replacements for selected game functions (`kiu/overrides/`, tracked in `docs/decomp/LEDGER.md`). |
 | **Zakuro fork** | Runtime: GPU, audio, services, plus the PC frontend, input and screen-layout hooks. |
 | **kiutrace** | Headless harness for save states, scripted input, screenshots and benchmarks. |
 
@@ -110,7 +110,7 @@ Only a handful of game functions are hooked; everything else runs as the origina
 
 To update, `git pull`, rebuild, then recompile.
 
-More detail, including the 60 FPS patch: [kiu/docs/BUILDING.md](kiu/docs/BUILDING.md).
+More detail, including the 60 FPS patch: [docs/BUILDING.md](docs/BUILDING.md).
 
 ### Restoring original presentation
 
@@ -140,12 +140,12 @@ This repository is a fork of [Zakuro](https://github.com/fearkov/zakuro). Upstre
 | `kiu/ghidra/` | Headless analysis scripts |
 | `kiu/scripts/` | Benchmarks, IPS builder, image conversion |
 | `kiu/analysis/` | `FINDINGS.md` (addresses), `PERFORMANCE.md` |
-| `kiu/docs/` | Building, design decisions (`adr/`), decomp notes |
+| `docs/` | Building, design decisions (`adr/`), decomp notes |
 | `GLOSSARY.md` | Project terminology |
 
 The recompiler is the [3dsrecomp fork](https://github.com/patricksmill/3dsrecomp), a Cargo dependency.
 
-Roadmap and open issues: [`kiu/PLAN.md`](kiu/PLAN.md).
+Roadmap and open issues: [`PLAN.md`](PLAN.md).
 
 ---
 
@@ -155,7 +155,7 @@ The port reads a controller's gyroscope into the console's, but the game only ai
 
 Combining it with the port is **experimental and not yet verified**:
 
-- It replaces `code.bin` outright, so it cannot be combined with the [60 FPS patch](kiu/docs/BUILDING.md#5-optional-the-60-fps-patch), which is generated against the original.
+- It replaces `code.bin` outright, so it cannot be combined with the [60 FPS patch](docs/BUILDING.md#5-optional-the-60-fps-patch), which is generated against the original.
 - Install only its **Base Patch**. Skip its widescreen option: the port has its own.
 - Recompile after installing it.
 

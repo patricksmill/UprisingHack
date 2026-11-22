@@ -32,17 +32,17 @@ def main() -> int:
     deadline = time.monotonic() + args.hours * 3600
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     prompt = (
-        "Read docs/decomp/OVERNIGHT.md and execute one coordinator round. "
+        "Read ../docs/decomp/OVERNIGHT.md and execute one coordinator round. "
         "You are the root integration owner. Continue the existing KIU recovery "
         "roadmap, not UI enhancements. Checkpoint before expensive operations. "
         "Do not alter orchestration configuration or this runner."
     )
     if args.smoke:
         prompt = (
-            "Routing smoke only. Read docs/decomp/OVERNIGHT.md. Spawn exactly two "
+            "Routing smoke only. Read ../docs/decomp/OVERNIGHT.md. Spawn exactly two "
             "independent read-only tasks together: kiu-mechanical inventories the "
-            "verification categories in docs/decomp/ROADMAP.md; kiu-analysis reads "
-            "docs/decomp/LEDGER.md and identifies one evidence-backed unresolved "
+            "verification categories in ../docs/decomp/ROADMAP.md; kiu-analysis reads "
+            "../docs/decomp/LEDGER.md and identifies one evidence-backed unresolved "
             "semantic risk. Each reports its active provider/model and one concrete "
             "finding. Neither edits files or spawns children. Wait for both. "
             "Report their observed models and findings. Do not perform recovery work."

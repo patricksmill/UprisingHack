@@ -13,14 +13,14 @@ Two deliverables, not interchangeable:
 ## Bulk source recovery
 
 Maintained recovery now covers twelve functions. The latest two are the
-hand-written packed-scalar and linked-factor routines in `overrides/scalar.c`,
+hand-written packed-scalar and linked-factor routines in `kiu/overrides/scalar.c`,
 checked with both core and float results; they are separate from the generated
 bulk candidates below. Windows Recompile includes them, pinned to the
 code hash they were checked against; a Windows library built with them
 matches a same-tree reference in eight whole-game scripts and is installed.
 Interactive Windows play with it is the remaining acceptance check.
 
-`ghidra/LiftOverrides.java` translates Ghidra high p-code into C Overrides.
+`kiu/ghidra/LiftOverrides.java` translates Ghidra high p-code into C Overrides.
 It emits variables and basic-block jumps, guest-memory accesses, and guest
 calls. This is an experimental semantic lifting pipeline, not original
 source reconstruction and not yet production code. Float operations are
@@ -34,19 +34,19 @@ fixtures, remaining return-register differences and the unpromoted
 float-return contract experiment are recorded in `LEDGER.md`.
 
 Verified mixed core/float results can now be supplied explicitly as the
-fourth positional argument to `scripts/lift.py`, using
-`ghidra/kiu-call-results.txt`. The file is bound to the executable hash;
+fourth positional argument to `kiu/scripts/lift.py`, using
+`kiu/ghidra/kiu-call-results.txt`. The file is bound to the executable hash;
 it is not automatically applied; Windows Recompile includes only the
-maintained `overrides/` files.
+maintained `kiu/overrides/` files.
 Use `REPLAY_VFP_RESULTS` and `DIFFTEST_VFP_RESULTS` for known float-result
 contracts in addition to the default replay/random comparisons. General signature-order independence
 remains unresolved; the rejected isolation experiment is recorded in the
 ledger rather than enabled by default.
 
-`scripts/lift.py` runs Ghidra, partitions the output into 48 translation
+`kiu/scripts/lift.py` runs Ghidra, partitions the output into 48 translation
 units, builds them in parallel using the existing system C compiler, and
-executes `scripts/difftest.c` against the reference library. No generated
-candidate is installed in `overrides/` or the Windows game library.
+executes `kiu/scripts/difftest.c` against the reference library. No generated
+candidate is installed in `kiu/overrides/` or the Windows game library.
 
 Run from the repository root:
 
@@ -86,7 +86,7 @@ categories for diagnosis rather than treating its compilation as acceptance.
 ### Immediate sequence
 
 1. Finish the bulk feasibility measurement and retain rejected cases.
-2. Real-entry capture/replay exists (`kiutrace capture`, `scripts/replay.c`;
+2. Real-entry capture/replay exists (`kiutrace capture`, `kiu/scripts/replay.c`;
    results in `LEDGER.md`). Widen it to more states and frames.
 3. Group failures by cause (input lifetime, SSA merge, calling convention,
    memory ordering, unsupported operations) and fix classes of failures.
@@ -98,7 +98,7 @@ categories for diagnosis rather than treating its compilation as acceptance.
 
 ### Established boundaries
 
-- `tools/3dsrecomp/src/port.rs:54-85` already generates a linked executable,
+- `kiu/tools/3dsrecomp/src/port.rs:54-85` already generates a linked executable,
   but launches `zakuro::run(Some(code))`. Its own comment states that it still
   reads the game dump. This is packaging, not the finished native runtime.
 - `crates/zakuro-core/src/recompiled.rs:254-317` reconstructs an
@@ -188,7 +188,7 @@ upgraded to get this build working.
 
 Archive generation completed with 527 compiled source files in 503.3
 seconds; Cargo completed its release build in 302.51 seconds. The existing
-`scripts/cc-fast` deliberately compiles the generated C without optimization.
+`kiu/scripts/cc-fast` deliberately compiles the generated C without optimization.
 This is a functional smoke artifact, not a performance-tuned release.
 
 ### Executed smoke
@@ -264,7 +264,7 @@ gap translated. The source-recovery gate remains real-call capture/replay.
 ## Boot-gap cutover
 
 The version-bound discovery hint and its code anchors are recorded in
-`analysis/FINDINGS.md`, under “Recompiled boot continuation discovery.”
+`kiu/analysis/FINDINGS.md`, under “Recompiled boot continuation discovery.”
 It translates existing ARM instructions; it does not modify the game dump
 or increase the count of hand-recovered functions.
 
