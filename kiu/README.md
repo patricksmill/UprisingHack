@@ -1,0 +1,152 @@
+<div align="center">
+
+<!-- LOGO PLACEHOLDER: replace with docs/images/logo.png (recommended ~640px wide, transparent PNG) -->
+<img src="docs/images/logo.png" alt="Kid Icarus: Uprising PC logo" width="480">
+
+# Kid Icarus: Uprising — PC
+
+**A native-feeling PC port of Kid Icarus: Uprising, with real mouse aim and a single-screen layout.**
+
+Statically recompiled with [3dsrecomp](tools/3dsrecomp) · runs on a fork of [Zakuro](tools/zakuro)
+
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-informational)
+![Title](https://img.shields.io/badge/title-0004000000030100%20(USA)-blue)
+![Status](https://img.shields.io/badge/status-work%20in%20progress-orange)
+
+<!-- HERO SCREENSHOT PLACEHOLDER: docs/images/hero.png (16:9 air battle, 1920x1080) -->
+<img src="docs/images/hero.png" alt="Air battle with mouse aim" width="900">
+
+</div>
+
+---
+
+## Features
+
+### 🎯 Controls
+- **True mouse aiming** — absolute reticle in air battles, relative mouse-look camera on the ground.
+- **Fully rebindable** keyboard, mouse and controller input.
+- **Optional gyro aim** for supported controllers.
+- **Mouse-driven menus** — hover and click call the game's own cursor and confirm logic, so menus behave exactly as they would on hardware.
+
+### 🖥️ One Screen
+- **Battle HUD, dialogue, pause menu and scripted menus** relocated from the bottom screen onto the main view.
+- **Widescreen** — 16:9 is recommended, since menu layouts are hand-placed for it; ultrawide is supported in battle.
+- Every relocated Screen can be switched back to its original 3DS presentation individually.
+
+### ⚡ Performance
+- **Ahead-of-time recompiled** game code — no JIT warm-up, no interpreter.
+- **60 FPS patch** included (`dist/60fps/code.ips`).
+- Headless benchmark harness to track frame rate across upstream merges.
+
+<!-- SCREENSHOT GRID PLACEHOLDERS: replace each with docs/images/<name>.png -->
+<table>
+  <tr>
+    <td><img src="docs/images/ground-battle.png" alt="Ground battle" width="440"></td>
+    <td><img src="docs/images/menus.png" alt="Single-screen menus" width="440"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Ground battle with mouse-look</sub></td>
+    <td align="center"><sub>Menus on one screen</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/ultrawide.png" alt="Ultrawide" width="440"></td>
+    <td><img src="docs/images/settings.png" alt="Input settings" width="440"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Ultrawide in battle</sub></td>
+    <td align="center"><sub>Rebinding & PC settings</sub></td>
+  </tr>
+</table>
+
+---
+
+## How It Works
+
+| Layer | Role |
+| --- | --- |
+| **3dsrecomp** | Translates the game's ARM `code.bin` into native code ahead of time. |
+| **Overrides** | Small C replacements for selected game functions (`overrides/`, tracked in `docs/decomp/LEDGER.md`). |
+| **Zakuro fork** | Runtime: GPU, audio, services, plus the PC frontend, input and screen-layout hooks. |
+| **kiutrace** | Headless harness for save states, scripted input, screenshots and benchmarks. |
+
+Only a handful of game functions are hooked; everything else runs as the original game logic.
+
+---
+
+## Getting Started
+
+> [!IMPORTANT]
+> You must provide your own **decrypted** dump of Kid Icarus: Uprising (USA). No game data is included or distributed.
+
+### Prerequisites
+
+- [Rust](https://rustup.rs) (stable) and a C compiler.
+- **Linux:** `cmake`, `pkg-config`, and the ALSA and udev development files. On Debian, Ubuntu and Mint:
+  ```sh
+  sudo apt install build-essential cmake pkg-config libasound2-dev libudev-dev
+  ```
+- **Windows:** MinGW-w64 gcc (through MSYS2 or WinLibs) and CMake.
+
+### Build
+
+The Zakuro and 3dsrecomp forks live in their own repositories. Clone them into `tools/`, side by side. Zakuro finds 3dsrecomp at `tools/3dsrecomp`.
+
+1. Clone this repository and both forks:
+   ```sh
+   git clone https://github.com/patricksmill/UprisingHack icarus
+   cd icarus
+   git clone -b kiu-mouse https://github.com/patricksmill/zakuro tools/zakuro
+   git clone -b kiu https://github.com/patricksmill/3dsrecomp tools/3dsrecomp
+   ```
+2. Place your dump at `dumps/kiu.cci`.
+3. Build and open the library:
+   ```sh
+   cargo run --release --manifest-path tools/zakuro/Cargo.toml -p zakuro
+   ```
+4. Press **Choose folder…**, pick `dumps/`, and press **Recompile** next to the game. Do this once, and again after each update. If Zakuro finds no C compiler, it offers to download one.
+5. Launch the game from the library, or straight from the command line:
+   ```sh
+   cargo run --release --manifest-path tools/zakuro/Cargo.toml -p zakuro -- dumps/kiu.cci
+   ```
+   Until you recompile, the game runs in the interpreter, which is much slower.
+6. Press **F12** in-game for the emulator menu.
+
+To update, `git pull` in the repository root, `tools/zakuro` and `tools/3dsrecomp`, then recompile.
+
+### Restoring original presentation
+
+Set any of these to `0` to show that feature as the 3DS draws it:
+
+| Variable | Feature |
+| --- | --- |
+| `ZAKURO_MENUS_TOP` | Scripted menus on the top screen |
+| `ZAKURO_NARRATION_TOP` | Dialogue / narration |
+| `ZAKURO_PAUSE_TOP` | Pause menu |
+| `ZAKURO_CAULDRON_TOP` | Fiend's Cauldron |
+| `ZAKURO_MIRROR_BOTTOM` | Bottom-screen mirroring |
+| `ZAKURO_MENU_HOVER` | Mouse hover in menus |
+
+---
+
+## Repository Layout
+
+| Path | Contents |
+| --- | --- |
+| `tools/zakuro` | Zakuro fork: hooks and frontend |
+| `tools/3dsrecomp` | Recompiler |
+| `tools/kiutrace` | Headless test & benchmark harness |
+| `tools/funclist` | Function list export for Ghidra |
+| `ghidra/` | Headless analysis scripts |
+| `overrides/` | C overrides |
+| `scripts/` | Benchmarks, IPS builder, image conversion |
+| `analysis/` | `FINDINGS.md` (addresses), `PERFORMANCE.md` |
+| `docs/adr/` | Design decisions |
+| `GLOSSARY.md` | Project terminology |
+
+Roadmap and open issues: [`PLAN.md`](PLAN.md).
+
+---
+
+<div align="center">
+<sub>Not affiliated with or endorsed by Nintendo, Project Sora or Sora Ltd. Kid Icarus is a trademark of Nintendo.</sub>
+</div>

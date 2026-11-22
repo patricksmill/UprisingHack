@@ -1,0 +1,5 @@
+# Explicit result words, least significant first. These describe observed
+# machine registers, not reconstructed C types. Evidence: analysis/FINDINGS.md.
+sha256 2718aa2077a29560208c4e499288e5fecc4446d7adec95efb91ebf1b19eda679
+00B40F28 r0,s0
+00B49860 r0,s0

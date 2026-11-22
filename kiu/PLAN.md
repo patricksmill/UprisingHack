@@ -1,0 +1,812 @@
+# Plan: top-screen-only play
+
+Goal: in battle, everything the player needs is on the top screen. That covers
+narration text, portraits, and any bottom-screen information worth keeping. The
+bottom screen can then be hidden, and the mouse never has to touch it. This is
+done at the game's own UI layer, not by pasting screen captures, so the text
+stays sharp at any resolution and the layout follows the HUD scale.
+
+Addresses are for the USA build (0004000000030100). Findings so far are in
+`analysis/FINDINGS.md`.
+
+The approved plan for moving player-facing PC settings into KIU's own Options
+Screens is [KIU-native Options](docs/KIU_SETTINGS_PLAN.md). Its settings store,
+Action Bindings and gyro input are built; the native Screens are not (status
+table there). The ownership decision is
+recorded in [ADR 0007](docs/adr/0007-kiu-native-options-for-pc-preferences.md).
+
+## Where things stand
+
+| Feature | How | Status |
+| --- | --- | --- |
+| Mouse aim, air | aim delta at 0x006D26C4 (`zakuro-core/src/aim_mouse.rs`) | working, tested |
+| Mouse look, ground | camera box collapsed at 0x006D2ED4; pitch limits +10° each way at 0x0074651C (12°/15° → 22°/25°) | working, tested |
+| Smaller HUD and reticle | sprite flush 0x0092F408, reticle size 0x007C4BD0 | working |
+| 60 FPS | `dist/60fps/code.ips`, 5 words | working, speed verified |
+| Recompiled + hooks | 4 hooked functions interpreted, rest native | working, tested |
+| Overclock for heavy scenes | `ZAKURO_OVERCLOCK`, default 2 | built, untested in heavy scenes |
+| Widescreen | projection 0x003901C4, HUD, reticle bounds (from Darkshade's mod) | mapped, not built |
+| Stacked dialog text | probably Zakuro's GPU texture cache | to confirm (software rasterizer test) |
+| Land battles at 1x | Zakuro: textures of a buffer written back unchanged stay scaled | fixed, built |
+| Pause menu on top | pause screen and dialogs replayed in the top passes, touches mapped | working headless, built |
+| Widescreen, any aspect | lens aspect at 0x003901C4, top 2D squeezed by pass (0x0092E4F8), mouse scaled | working, tested |
+| Mouse hover in menus | pause input 0x0060DC7C, dialog input 0x007226C4: hover as a held touch, -1 lights none | pause menu, Options, dialogs working headless, built; menus outside battle to map |
+
+## What the dialog looks like to the game
+
+From sprite logging in a Chapter 1 air battle:
+
+- Sprites go into a shared batch (for example 0x1414A8B8): quads of 4 vertices,
+  0x18 bytes each, laid out as x, y, z, colour, u, v. They are flushed into a
+  GPU command list by 0x0092F408. Top and bottom screens share the batch; the
+  screen depends on which render pass is running.
+- The dialog line is one quad from caller 0x00A192E4, at (19, 11)-(213, 51) in
+  bottom-screen pixels, sampling (0, 0.375)-(0.758, 1) of a texture. So the
+  game renders each line into a texture first, which also explains how stale
+  text can stack if a cache misses the clear.
+- The texture is not set inside the batch. It is bound earlier, through the
+  game's material and render state.
+- Bottom-screen callers seen so far: 0x00A0F3xx-0x00A0F6xx (frame),
+  0x00A11128-0x00A11CE8 (power panel), 0x00A13670-0x00A13B68 (special weapon
+  icons), 0x00A17E70-0x00A181C0 (background), 0x00A192E4 (dialog line),
+  0x00A1950C and 0x00A196C0 (chapter title, hearts counter).
+
+## The approach
+
+There are three ways to get bottom-screen UI onto the top screen. This plan
+uses A, keeps B as a fallback, and avoids C.
+
+**A. Move the UI element to the top screen's draw list (preferred).** The game
+draws each screen's 2D UI in its own pass, probably as a list of UI objects per
+screen. If the dialog object is moved, or added, to the top screen's list, the
+game draws it there with its own textures, animations, fades and alpha. We
+then only adjust its position in the flush hook, from bottom-screen
+coordinates to wherever it should sit on the top screen, scaled with the HUD.
+This needs the most understanding up front but leaves the least to maintain.
+
+**B. Replay the dialog's draws in the top pass.** Record the dialog's quads and
+its texture and material state during the bottom pass, then issue them again
+from the top pass. This works without understanding the UI framework. It is
+fragile, though: we have to reproduce every bit of render state the dialog
+depends on.
+
+**C. Composite in the emulator.** Find the dialog's draws in Zakuro's GPU
+(by texture address) and redraw them on the top framebuffer. It is tied to
+Zakuro's renderer, hard to move to the port, and the hardest to get right.
+Not planned.
+
+## Phase 0: groundwork (small, first)
+
+1. **Shared save states.** Your Zakuro build and my harness now share the same
+   core, so F5 save states you make load straight into `tools/kiutrace`. From
+   your copy, please save states in: an air battle mid-dialog, a ground battle
+   mid-dialog, a boss intro (Twinbellows), a scene using a power or item, and
+   the pause menu in battle. Scenes I can't reach headless become testable.
+2. **Version control.** Put the project in git, commit the Zakuro fork's
+   branch, and record the recomp-abi patch. Every change is then reviewable and
+   can be undone.
+3. **Stacked text check.** Done without you: it reproduces in the harness's
+   software renderer, so it isn't Zakuro's texture cache. The line's texture
+   holds two lines' glyphs, so it wasn't cleared before the new line was
+   rendered. Cause to find in Phase 2 (question 4); the fix is Phase 6.
+
+Status: done. States 1-5 load in the harness; the project, the Zakuro fork
+(branch `kiu-mouse`) and 3dsrecomp (branch `kiu`) are committed locally.
+
+## Phase 1: map the bottom screen's UI
+
+Status: callers mapped from your states, see FINDINGS.md "Bottom-screen UI
+inventory". Narration is 0x0060DB98 (shadow + text quads from one line
+texture), portrait 0x009E3068, band 0x0060DB64.
+
+Make a complete inventory before moving anything:
+
+1. With the harness, log every bottom-screen flush (caller, quads, positions)
+   in each saved scene, with screenshots. That produces a table of element,
+   caller, region and when it shows.
+2. For each element, decide whether it moves to the top screen, stays, or is
+   dropped, and how the player uses it (read only, or touched). Draft:
+
+| Element | On top? | Notes |
+| --- | --- | --- |
+| Dialog text | yes | first target |
+| Portraits | yes | second target |
+| Hearts counter | yes, small | it's information |
+| Special weapon / item icons | yes, small | needs a key to use them (Phase 4) |
+| Chapter title | no | decoration |
+| Background, frame | no | decoration |
+| Power or item selection screens | stays on bottom | opened from a key, shown when needed (Phase 5) |
+
+## Phase 2: understand the UI framework (research)
+
+Status, for the narration (approach A works, no replay needed):
+- Top and bottom battle UI are drawn by 0x0060D39C (top) and the code around
+  0x0060D7E8 (bottom), both through one 2D context (0x14155908 in your
+  states), which also holds the narration's message at +0x3124.
+- The line is drawn by 0x009E9A14(message, context) from the message's own
+  fields: shown flag +0, line +4, x/y +0x14/+0x18, size +0x1C/+0x20, texture
+  coordinates +0x24. Its texture is picked by index (0x14) in the context, so
+  it draws on whichever screen's pass calls it.
+- The fork calls it from the top pass (at 0x0060D60C, registers saved and
+  restored around the call), with the line moved to the bottom centre.
+
+Questions to answer, in this order:
+
+1. **Who calls the dialog flush?** Walk up from 0x00A192E4 to the dialog's UI
+   object: its class, vtable, and draw method.
+2. **How is a screen's UI drawn?** Find the pass that draws the bottom screen's
+   2D UI and the one for the top's. Is there a per-screen list or manager the
+   dialog object belongs to? The top HUD callers (0x009F2F90, 0x009F45FC and
+   so on) lead to the top's equivalent.
+3. **How are textures and materials bound for a sprite?** Find what runs before
+   the dialog's quads go in, and whether that state belongs to the UI object
+   (good for A) or to the pass (makes A harder).
+4. **How is the line's text rendered?** Find the glyph-to-texture path and its
+   clear. This is needed both to move it and for the stacked-text fix.
+5. **What does the projection depend on?** Top and bottom use different pixel
+   spaces (400 vs 320 wide). Find where each pass sets its 2D projection, so a
+   moved element is drawn in top-screen space.
+
+Tools: the harness (call logging at chosen addresses, write tracing, memory
+reads, screenshots), the Ghidra decompile (`analysis/all.c`), and your save
+states. The output is a section in FINDINGS.md that settles approach A or B.
+
+## Phase 3: dialog text on the top screen
+
+Status: steps 1, 2 and 5 done, tested headless on your states 1, 3 and 4
+(centred, scaled with the HUD, shadow kept). Next: your test, then whether
+to keep it on the bottom too (both are shown now), and readability.
+
+1. Prototype in the harness. Add the dialog's draw to the top pass (A), or
+   replay its quad (B). Check with screenshots that the text appears on the top
+   screen, sharp, in the right place, and only while a line is showing.
+2. Placement: by default, centred near the bottom of the top screen like
+   subtitles, scaled by the HUD scale. Adjustable later.
+3. Stop drawing it on the bottom screen, so it isn't shown twice when both
+   screens are visible.
+4. Readability: if the line's texture has no background of its own, add a
+   translucent backing strip, or keep the game's own text box.
+5. Port the prototype into the Zakuro fork (`aim_mouse.rs`, which by then
+   should be renamed to something like `kiu.rs`). Interpret any new hooked
+   functions the same way as the others.
+6. Test across scenes from your save states: air, ground, boss, back-to-back
+   lines, and lines that interrupt each other.
+
+## Phase 4: portraits, then the rest
+
+Status: portraits done. The fork calls the game's portrait drawing
+(0x009E2BB4, portraits at *(context+0xC3C), drawn at 1 - the bottom UI's fade
+at context+0x2454) from the top pass before the narration. Their flush puts
+each speaker in the bottom corner on its side, at ZAKURO_PORTRAIT_SCALE (0.5).
+Tested headless on states 1, 3 and 4; expressions follow the bottom screen's.
+
+Hearts, item box and power icon: done by record and replay. The bottom
+screen's background drawing (0x00A17F70) calls each one (header strip at
+0x00A181CC, item box 0x00A18400, power icon 0x00A18430); the hook keeps the
+call's target and arguments, and the next frame's top pass makes the call
+again, between the portraits and the narration. Its sprites go under the score
+(hearts) or the health bar (item box, power icon), at the HUD scale; the
+chapter title's (0x00A192E4) are left off. ZAKURO_MIRROR_BOTTOM=0 turns it off.
+The pickup popup ("You got treasure!", 0x009EA06C at 0x00A18368) is
+mirrored the same way, at the top screen's middle under the HUD's top
+row, shown and gone with the bottom one's. Checked on state 8 (the
+Sagittarius Bow) at 5:3 and 16:9: the 3D scene after 360 frames is the
+same with it. The item held (used with L) is drawn by the same call, in
+the bottom right corner on a tab (0x009EAC80), its icon the call's last
+flush; on top it goes by itself, bigger, under the power icon. Checked on
+state 9 (your 8.state): shown while held, gone once used.
+Checked over 10 s of play: same score, position and pose as without it.
+
+Dialogue illustrations and boss cards: implemented under the same
+`ZAKURO_MIRROR_BOTTOM` switch. The illustration call at 0x00A18244 replays
+only its image sprites, fitting their combined bounds on the right, eight
+HUD pixels below the hearts and above Pit's portrait. Its black bands and
+borders stay on the bottom screen. Slot 1 from October 31 reproduces the
+blue Hewdraw after 60 frames and was used for the checks.
+
+Boss art/title (0x00A18204), its effects (0x00A18224), and the alternate
+boss text path (0x00A18130) are replayed separately. The reveal uses a
+centered card below the top HUD; combat crops the card's native title strip
+into a compact top-center panel. Pickups move below the boss panel. The
+Twinbellows fixtures contain no separately drawn boss health bar. The native
+art, title and fades are retained rather than introducing a new health UI.
+
+Checked: Medusa's multipart illustration, Hewdraw, and boss introduction
+and combat at 5:3, 16:9 and 21:9, HUD scales 0.7 and 1.0;
+2x hardware rendering and both stereo eyes; illustration/boss removal in
+isolated fixtures. The 23 mouse/UI tests pass, including a regression for
+subtitle centering: the boss replay point shares the native training-HUD
+return address, whose corner placement must only apply outside replay.
+Recordings expire by UI pass, independently of vblank/render pacing.
+With 180 identical firing
+frames per variant in Hewdraw and Twinbellows combat, health and score
+objects match byte-for-byte, and every top-screen pixel outside the mirrored
+UI matches. Natural boss defeat and other bosses still need coverage.
+
+Side finding: the reticle hook now shrinks only the size handed to its
+drawing (0x007C4DC0), not the size the reticle keeps (+0x5C), which may feed
+lock-on. Every hook leaves gameplay the same (10 s comparison); only the
+bottom screen's decorative background animation drifts.
+The game seems to have its own upper-screen captions (CaptionUp_Dynamic
+layouts): if its option works, the narration hook can default to off.
+
+1. Portraits, done the same way. They animate (expressions, slide-ins), so
+   check that the animation still plays on the top screen.
+2. Hearts counter and weapon/item icons, small, anchored to a corner and
+   scaled with the HUD.
+3. Anything else Phase 1 marks as needed.
+
+## Phase 4b: the pause menu on the top screen
+
+Status: working headless on state 5, built. The bottom battle pass
+(0x0060D93C) draws the pause screen with one call, 0x00A01A1C(pause at
+ctx+0x243C, ctx, shown) at 0x0060DBB4. The fork replays it in the top pass
+after the "PAUSED" label (0x0060D68C, reached only while paused), with the
+sprites 1:1 at x+40, what spans the bottom screen (dimming, bands)
+stretched to 400, and Resume, Retreat and Remove Display by the top
+screen's edges (picked by flush caller, main page only). The dialogs over it (Retreat's) are a context of their own
+(0x14A1340C): 2D at 0x00722AF4/0x00722B0C, replayed at 0x00725828; text
+through the 3D renderer at 0x00722BA4-0x00722DB8 with a projection for the
+bottom screen, replayed at 0x007258A0 (right eye) and 0x007258C0 (left eye)
+with the projection's x row times 0.8. Options and its four pages work too.
+
+The frontend lets the mouse go while it is shown and holds it again after,
+and in top-only maps a click on the top screen to the bottom screen
+(`AimMouse::pause_menu_touch`: 40 px to the left, the edge buttons by their
+edges, nothing in the gaps they leave). ZAKURO_PAUSE_TOP=0 turns it off.
+
+Checked: Resume, Retreat (No, Yes), Options and its pages by touch at the
+mapped spots, 30 and 60 FPS, 3x hardware renderer. The pause object's memory
+is the same after 150 frames with and without it, and 300 frames of play
+after Resume give identical screens. Retreat's Yes faults the harness at the
+scene change with or without the hook (harness limit).
+
+Cosmetic: on Options' pages, elements the bottom screen anchors to its
+edges (the OK panel in Reticle/Camera) still sit 40 px in from the top's.
+
+## Phase 4c: the mouse in menus, as on a PC
+
+Status: the pause menu, Options' pages and the dialogs over them working
+headless, built. With a stylus one option is always lit and a touch uses it
+at once. With the mouse now:
+
+- the option under it lights, with the cursor's sound, and nothing is used
+  until a click. Over no option, none is lit.
+- a key (d-pad, A, a gamepad) gives the game's cursor back: the first
+  direction or confirm press lights the option the mouse last lit, without
+  moving or using it (B goes through). The mouse moving gives it back to
+  the mouse. The pause screen opens with the game's cursor.
+- `ZAKURO_MENU_HOVER=0` turns it off. The harness has `hover x y` and
+  `unhover`.
+
+How (FINDINGS, "Menu input"): on the pause screen the hover is given to the
+page as a touch held where the mouse is, not one that began now. The game's
+own hit test then lights the option under it and plays the sound, and only
+a touch that began now uses one. When the page looked and found nothing,
+the cursor (+0x67C) is set to -1, which the game draws as none lit. The
+real touch is put back after, so nothing else sees the hover. Control
+Configuration (Options page 5) drags what is held, so it keeps the stylus's
+way. Volume's sliders and Reticle/Camera's are set by a held touch, so a
+hover over Volume's is given to the row left of the slider and over
+Reticle/Camera's counts as off the menu. A dialog only looks at a touch
+that began now, so for it the hover is checked against its buttons' boxes
+and its cursor (+0x294, -1 none, its own start) set before it compares.
+
+Checked on state 5 and from it, 30 FPS, interpreter and recompiled: the main
+page (Resume, Retreat, Options, a gap, off), keys after a hover over
+nothing (DOWN lights the last lit and stays, UP then moves), a click on
+Resume; Options' list (a gap, the back arrow, one click opens Volume);
+Volume (sliders stay at 0.8 under the hover, a click still sets SFX to
+0.33); Reticle/Camera (sliders stay, OK, Invert Vertical, the middle lights
+none); Retreat's dialog (Yes, No, the gap, off, RIGHT twice, a click on
+No). One sound each time the light moves onto an option, none off one. With
+no mouse used, the pause object after 150 frames and the screens 300 frames
+after Resume are the same as with no hooks.
+
+Next, the menus outside battle (file select, chapter select, the hub's).
+They are not the battle UI (FINDINGS, "Menus outside battle"). Recommended,
+as on a PC: the mouse moves the outline the way the d-pad does, by the
+screen's own function, and a click does what A does. Not a press: a
+press on what is already outlined uses it, and some screens act on taps.
+
+- Shared, once: the part under the mouse, from the touch class's hit test
+  (0x00A38324, the touch object recorded where its no-touch slot,
+  0x00A391E4, runs) to the part's hash and name (its descriptor's +0x18).
+- Each screen, a small entry: its class (vtable), where its outline's
+  hash is, its function to move the outline (given the descriptor's
+  +0x18, or for a list an index), and A's. A hover onto another part
+  calls the move; a click calls the move, then A. A part the screen has
+  no entry for is clicked as a touch, as now.
+
+Status: file select and chapter select built (`MENU_SCREENS`, `outline_menu`
+in the fork), headless, interpreter and recompiled, `trace/menufile.txt`
+and `trace/menuchapter.txt`. The menu's update (its task's thunk) is where
+the calls are made: the hit test, the part's lookup, then the menu's own
+calls, each coming back there. Checked:
+
+- File select: the books, Back and How to Play outlined under the mouse
+  (the book turns, its panel and the cursor's sound as for the keys),
+  nothing over ?HOME or the background; a click opens the book (also while
+  it turns, from what was found), goes back to the title, or shows the
+  guide. After a hover, RIGHT goes on from the mouse's book.
+- Chapter select: a chapter outlined and the list scrolled to it, with its
+  sound 7; Back outlined, and the list again from it; a click goes to the
+  Fiend's Cauldron. UP and RIGHT go on from the mouse's outline.
+- A menu opens with its own outline until the mouse moves. A part no entry
+  outlines (the chapter slider) is touched, as before. A look that finds
+  nothing (a book turning) is tried again for a second.
+
+- Main menu (`trace/s14.state`, Solo to the guide, `trace/menumain.txt`):
+  each button outlined under the mouse with the cursor's sound, nothing
+  over the corner; a click on Together goes where A does. RIGHT goes on
+  from the mouse's button. Interpreter only so far.
+
+- Options and every submenu (`trace/menuoptions.txt`, `menuother.txt`,
+  `menucontrols.txt`, `menumorecontrols.txt`, `menureticle.txt`,
+  `menuvolume.txt`, `menusubtitles.txt`, `menuprofile.txt`,
+  `menuyesno.txt`, `menudialog.txt`): each part outlined under the mouse
+  with its sound, keys going on from it, a click doing what A does
+  (opening the next screen, toggling a More Controls row, choosing a
+  subtitle, the gallery). Not outlined, a click a tap as before: the
+  Music Gallery's list, Control Configuration's steps, Air/Land Battle's
+  sliders and test pad. The sliders need a held touch, not there yet.
+  Interpreter only so far.
+
+- Solo hub (`trace/solo.state`, made from s14; `trace/menusolo.txt`):
+  Move Out, Arms Altar, Practice Range, Idol Toss, Gear, Treasure Hunt
+  and Back outlined under the mouse, with the game's hint and camera.
+  DOWN from Arms Altar continues to Gear. Clicking after keys have moved
+  the selection first lets the queued outline update, then uses A, so it
+  opens the button under the mouse. Interpreter hover and recompiled
+  hover/click checked, including every button's destination; the
+  queued-click regression has a unit test (six mouse tests pass).
+  Windows executable rebuilt at `dist/zakuro-kiu-mouse.exe`; manual
+  Windows testing remains.
+
+- Arms Altar's button menu (`trace/altar.state`, `trace/menualtar.txt`):
+  Redeem Hearts, Fuse Weapons, Convert to Hearts, Gear and Back use the
+  game's outline and hint. Interpreter and recompiled hover checked;
+  RIGHT continues from Redeem Hearts to Fuse Weapons, and a click back
+  under the stationary pointer opens Redeem Hearts correctly. Every
+  button opens the expected screen. With no mouse input, the object and
+  both screens match after 30 frames with hover enabled or disabled.
+  Six mouse tests pass. Windows executable rebuilt and copied to
+  `C:\Users\Patrick\Downloads\zakuro-kiu-mouse.exe`; manual Windows
+  testing remains.
+
+Armory's Gear, weapon categories/list, power list, Redeem Hearts,
+Convert to Hearts and fusion matrix now use native hover previews and
+actions. Wheel scrolls vertical lists; Shift + wheel moves horizontal
+weapon pages and fusion columns. Fractional wheel movement accumulates;
+held touches retain native dragging. Context buttons and sort controls
+retain native touchscreen clicks. Headless checks cover category movement,
+list selection, action panels, viewport scrolling and power-board dragging.
+All seven idle screens match native output on both framebuffers; board
+pickup, movement and release also match native touch. Fifteen core mouse
+tests and the wheel-direction check pass. Windows release rebuilt and
+copied to `C:\Users\Patrick\Downloads\zakuro-kiu-mouse.exe`
+(SHA-256 `d44bf09c2536527494840567c6ca9d29ece56a4cb3c3a7b235387751db1b7889`).
+Manual Windows mouse testing remains.
+
+- Practice Range (`trace/practice.state`, `trace/menupractice.txt`): Air
+  Battle, Land Battle, Gear and Back outlined under the mouse by the
+  game's own key step (its queue at +0x33C, applied by its update), each
+  with the top screen's title and hint, keys going on from the mouse's
+  choice; a click does what A does, starting either practice, opening the
+  Armory or going back. Object, top and bottom screens identical after 30
+  frames with hover on or off (`trace/practice-parity-*.txt`); one unit
+  test. Recompiled checked after 220 frames a click (the loading takes
+  longer there).
+
+- Idol Toss (`trace/idols.state`, `trace/menuidols.txt`): the bowl and
+  Back outlined under the mouse, as a touch outlines them, Back going back
+  on a press and its release. Its parts act on touches, not A, so a press
+  over one is the touch at the pointer (`CLICK_TOUCHES`). The game's bowl
+  does nothing at this save's point; the board's own things are the
+  game's. Object and screens identical after 30 frames with hover on or
+  off (`trace/idols-parity-*.txt`); one unit test.
+
+- Treasure Hunt (`trace/treasure.state`, `trace/menutreasure.txt`): Back
+  outlined under the mouse; the board's tiles are touched where the mouse
+  is, so a press picks the tile under it and the top screen shows its
+  idol, as a native touch does. Object and screens identical after 30
+  frames with hover on or off (`trace/treasure-parity-*.txt`). The tiles
+  themselves are not parts the hit test finds, so nothing is outlined
+  over them.
+
+- Vault (`trace/vault.state`, `trace/menuvault.txt`): its eight parts
+  (Idols, Music Gallery, Power Portrait, Offering, Idol Toss, Records, AR,
+  Back) outlined under the mouse as its keys do, with the top screen's
+  title and hint, and a click opening each as A does - the two viewer
+  screens and Back checked by shot. Object and screens identical after 30
+  frames with hover on or off (`trace/vault-parity-*.txt`); one unit test.
+  Its Idol Toss is the hub's screen with another update; both thunks are
+  registered.
+
+  Its other screens (the Idols viewer, the Music Gallery's list, Power
+  Portrait, Records, AR) are chrome over a viewer and have no outline of
+  their own: a press is the tap that selects a row or leaves, as before,
+  and the Music Gallery's list does not take the wheel yet. Their objects
+  and updates are in FINDINGS for the next pass.
+
+Windows executable rebuilt and copied to `C:\Users\Patrick\Downloads\zakuro-kiu-mouse.exe`
+(SHA-256 `6b259667dbd1b0c4f47d278f49144d6bc6635d5de9542e769ac829a409675252`);
+manual Windows testing remains.
+
+Next: the hub's other menus, each by the same recipe: the outline's
+hash written when a direction moves it (`watch` and `trace`), the function
+that writes it, the update's A, then `call` to try them. For a screen the
+hit test finds no parts of (a board, a list drawn in a viewport), the
+press is the touch where the mouse is. Save states in each, please, and in
+any other menu you use. The dialogs (0x007226C4) may already work there.
+
+Click-and-hold remains native touch: mapped menu buttons wait for release
+to use A, or become a held touch after 12 emulated frames (200 ms) or four
+bottom-screen pixels of movement. The initial point lasts through a 30 FPS
+input poll before following the pointer. Unmapped controls touch immediately.
+Hover stays out of native dragging and its release; focus loss cancels a
+pending click. Ten mouse tests pass. `trace/menugestures.txt` checks a short
+physical press opens Arms Altar only on release; `trace/powerdrag-mouse.txt`
+and `trace/powerdrag-native.txt` compare a power-board drag against native
+touch on both screens. Windows executable rebuilt and copied to Downloads;
+manual Windows testing remains.
+
+## Phase 4d: the Fiend's Cauldron in one window
+
+Status: built, working headless, interpreter and recompiled. The fork
+draws both screens on the top screen through the game's own renderer
+(FINDINGS "The Fiend's Cauldron"): the board picture without its
+background, the intensity panel over the bar sliding with the dial, the
+bar with a smaller dial, Back, the pot and pan, and Move Out, each a part of its screen cropped by its camera's projection
+into a box (`CauldronRules`, one `PlacementRule` per `CauldronRole`, made
+for 16:9 and smaller on a narrower window). The hint stays across the top.
+Clicks map back to the bottom screen, a press of the dial drags along the
+bar, and the mouse over the dial, Move Out or Back lights it as the arrow
+keys do. The mouse is let go while it shows. `ZAKURO_CAULDRON_TOP=0` turns
+it off. Harness: `cauldron`, `ctouch`, `cdrag`, `chover`, `cauldronrule`,
+`cauldronvisible`.
+
+Checked: dial drag 4 → 7.4, Move Out starts the pour, hover over each
+button, the pour, a battle's 300 frames the same with it on.
+
+Left: your test; the board's hearts box lost its dark frame with the
+background (same mesh node), to be fixed on its own; the real bottom screen
+is drawn widened at 16:9 (the widening reaches its camera too).
+
+The ring background (`Bt0010`) is back as the Cauldron's eighth part, `ring`:
+its own PlacementRule, behind the pot by default, editable in F2, drawn
+before the top's 3D so the board and the pot cover it, one picture for both
+eyes. Its rings brighten with the intensity: at 7.4 they show faintly around
+the pot and under Move Out, and the board is unchanged (`trace/s12.state`,
+dial dragged, `cauldronvisible ring 0/1`). See `analysis/CAULDRON_RING.md`.
+
+## Phase 5: playing without the bottom screen
+
+Status: step 1 for powers built, working headless. The ZL key (1 in your
+settings) uses the current power while the mouse is captured, in a battle
+(its top UI drawn in the last 3 frames) and not paused; anywhere else it
+stays ZL. It's no tap: it writes the command the panel's own update writes
+for a touch (FINDINGS, "Powers"), and only when a touch would. Held, it
+uses one. Checked on state 1 (Health Recovery 3 -> 2, the same as a touch),
+the boss intro and an air state with no power (nothing), paused and file
+select (ZL). Next: picking another power (the panel's left and right
+boxes), then items.
+
+1. **Keys for touch actions.** Using a power or an item means tapping the
+   bottom screen. Add bindings in the fork that tap the right spot while the
+   mouse is captured. The positions come from Phase 1.
+2. **Automatic bottom screen.** Add a layout option: in battle with the mouse
+   captured, show only the top screen. In menus, or when a power or item
+   screen opens, bring the bottom screen back. The trigger is either the mouse
+   capture state or a game state flag found in Phase 2.
+3. **Settings.** Move the environment variables (sensitivity, HUD scale,
+   overclock) and new options (dialog position, bottom screen behaviour) into
+   Zakuro's settings menu.
+
+## Phase 6: stacked text fix
+
+If Phase 0 points at the texture cache: find how Zakuro tracks writes to
+texture memory, and why the game's clear of the line texture is missed. It is
+either a GPU memory fill or a CPU write from recompiled code. Fix it so the
+cache invalidates on that write. If it's a general bug, it's worth reporting
+upstream too.
+
+## Phase 7: widescreen, at any aspect
+
+Goal: the top screen fills the window at whatever shape it has (16:9,
+21:9, 32:9, or a window dragged to any size), with a wider view rather
+than a stretched one, no pop-in at the new edges, the HUD and the moved UI
+the right shape and by the window's edges, and the mouse aiming right
+across all of it.
+
+How it works: the game keeps drawing into its 400x240 buffers, with a view
+k times wider squeezed into them, where k = (window width / height) /
+(5/3). The presenter stretches the picture back out to the window, and
+every top-screen 2D draw gets squeezed by 1/k so it comes out the right
+shape. This is how Darkshade's mod works (FINDINGS, "Darkshade's ... patch"),
+with k read every frame instead of fixed at 0.9375 or 0.714.
+
+Status: steps 1-5 built and working headless at 16:9, 21:9 and 32:9
+(air, ground, boss, pause, dialog, 30 and 60 FPS); 5:3 plays identically
+to no hooks over 300 frames. Step 2 took one hook: the perspective lens
+(vtable 0x00D20080, fovy +0x10, aspect +0x14, at 0x00E14BB4 in battle)
+gets the game's aspect times k at the projection getter's entry, and the
+camera's cached projection (bit 2 of camera+8) is cleared when that
+changes. Culling and the aim's ray follow it, nothing seen missing at the
+edges. The ground turn grows with the view's width (atan of its half
+width), so horizontal mouse movement is scaled to keep the same degrees
+(140.1 per test move at all three shapes), and by 1/k in the air. Tested
+by you: aiming at the edges and quick camera turns work. Left: step 6,
+only if raising Resolution costs too much.
+
+### Steps
+
+1. **Window shape** (frontend). Add a "Fit window" option to Top screen
+   shape: in top-only layout, the top screen's width is
+   240 x window width / height, limited to 5:3..32:9. Pass the shape to the
+   core every frame (a field on `AimMouse`, like `hud_scale`), so k
+   follows a resize on the next frame. 16:9 and 21:9 stay as fixed
+   choices. Console (5:3) turns all of this off.
+2. **Wider view** (core). First look for where the game camera's aspect is
+   set (camera+0x40, the aim's camera +0x2BC; "Still to find" in
+   FINDINGS), and multiply it there. If both the projection (0x003901C4)
+   and the culling (0x00756754 grows its box by tan(fovy/2) x aspect) read
+   that field, one write widens both. Fallback: Darkshade's way. At the
+   getter's return (0x003901EC), copy the matrix and scale row 1
+   (m[4..7]) by 1/k. The projection is cached at camera+0x6C, so it must
+   not be scaled in place. The copies need guest memory, from a page
+   Zakuro sets aside, or a 32-slot ring like the mod's. Stereo builds
+   both eyes from this projection (0x008D11B0), so they widen with it.
+3. **No pop-in** (core). If step 2 didn't cover culling, widen the box in
+   0x00756754 by k, along with any other culling that reads fovy or
+   aspect. Check: turn the camera with enemies and scenery just past the
+   old edge, and nothing should appear late.
+4. **Top-screen 2D the right shape** (core). Hook 0x0092E4F8(ctx, screen),
+   which every 2D pass starts with: 0 is top, 1 is bottom (seen in both
+   UI contexts). The sprite flush then knows each batch's screen. Squeeze
+   every top flush's x by 1/k about an anchor: the left or right edge for
+   what sits by one, the centre otherwise, using the same rule as
+   `shrink_hud`'s anchor. Full-width quads (fades, the pause dim) stay
+   full width. The HUD scale, reticle, narration, portraits, mirrored
+   hearts and pause menu placements all run first and keep working,
+   because the squeeze follows them. The pause click mapping
+   (`pause_menu_touch`) undoes the same squeeze. Text drawn through the
+   3D renderer with its own projection (dialog text, 0x0090A5B4) gets
+   row 1 scaled by 1/k too.
+5. **Aim** (core). Correct the reticle bounds at 0x006D14F0's returns
+   (0x006D15B4, 0x006D1764) and the turn from reticle x at 0x006D26C0,
+   both by k, the way the mod does. Divide the mouse's horizontal
+   movement by k so the reticle feels the same speed both ways. Check that
+   shots hit enemies at the edges in the air, and that ground camera
+   turning is unchanged.
+6. **Resolution.** Squeezed into 400 columns, the picture is k times softer
+   horizontally (1.4 at 21:9). Raising Resolution already makes up for
+   that (for example 7x for a 2560x1080 window), at a GPU cost. If that
+   cost matters, add a separate horizontal scale for the top screen to the
+   hardware renderer (surface rows, viewports, transfers, crops), set to
+   k x Resolution. This is optional; it comes last, only if it's needed.
+
+### Checks
+
+- Harness: a `wide <aspect>` command, and screenshots stretched to the
+  aspect for viewing. Use your states for air, ground, boss, pause and
+  dialog at 5:3, 16:9, 21:9 and 32:9, at 30 and 60 FPS. Look for: round
+  things round (hearts icons, reticle), HUD at the edges, nothing missing
+  at the edges, and pause clicks landing.
+- No gameplay change at 5:3: same 300-frame comparison as before.
+- Windows build for you: drag the window through shapes while playing,
+  then air aiming at the edges, ground turning, and the pause menu.
+
+### Unknowns
+
+- Where the aspect is set, and whether culling reads it (step 2 decides
+  whether one hook is enough).
+- 2D on top not drawn through the sprite batch or the text path; found
+  by screenshot review.
+- Effects that read the frame as a texture (the glow pass from the
+  resolution fix) work in buffer space and should be unaffected.
+
+## How each step is checked
+
+- Headless first: harness screenshots before and after, from your save
+  states, at both 30 and 60 FPS, plus a check that game speed is unchanged.
+- Then a Windows build for you, with what to look for.
+- Nothing ships that I haven't seen working headless, unless I say so.
+
+## Risks and unknowns
+
+- The UI framework may not let objects move between screens, for example if
+  each screen's UI is one baked layout. Then approach B is the way.
+- Text textures may be shared or rewritten mid-frame, which affects B.
+- New hooks add interpreted functions. They should be small, and we check
+  frame rate after each.
+- Together (online) mode and menus are out of scope for now.
+
+## Decisions (from you)
+
+1. Dialog sits bottom centre on the top screen, like subtitles.
+2. The bottom screen hides automatically in battle while the mouse is captured.
+3. Powers use the 1 key. 1 is bound to ZL in your settings, so it uses powers
+   only while the mouse is captured and stays ZL otherwise.
+
+## One-screen menus (November 2026)
+
+The existing mouse menus now draw their original models and text on top.
+Button hubs keep individual placements; boards and lists stay together.
+Details use the left third at 16:9 or wider and stack above controls below
+that. Relocated controls are 40% smaller than the initial one-screen layout,
+with edge buttons anchored to their edges. Hints use 42% native size. The
+Solo hint no longer replays scenery behind its text; Idol Toss clears it.
+Isolated models use screen clipping and expanded camera bounds so animations
+are not cut at their hit boxes. The heart bag omits its backing mesh and
+keeps its counter visible at ultrawide ratios, without the native offset-copy
+effect. Hub hit testing tries each relocated model through its own inverse
+transform, including animation outside its nominal box, and refreshes each
+frame under a stationary pointer. The battery sprite is omitted.
+The frontend accepts top
+controls in every screen layout, while native bottom touches remain available.
+The compatibility override is `ZAKURO_MENUS_TOP=0`.
+
+The implementation covers all 26 currently registered menus (the original
+21 plus the subsequently mapped Practice, collection, and treasure pages),
+plus native child pages. Pause menus and the Cauldron keep their existing
+layouts. Host pointer ownership resets after loads, focus loss and resize.
+
+Headless layout captures cover 5:3, 16:9, 21:9 and a narrow window. Core
+placement/input tests and the Vulkan GPU suite pass. Windows pointer testing
+remains an acceptance check. Since 5 November the pipeline draws one view:
+the right eye is dropped on the GPU, replays go into the shown eye only,
+and the 3D settings are hidden (see `docs/agents/screen-transform.md`).
+
+### Full-screen menu backdrop correction
+
+Scenery-only menu pages now fill the viewport instead of being cropped into
+an information thumbnail; actual weapon/file details retain proportional cards. Hint replays hide scene meshes and draw only text;
+the original hint is excluded only during the native text pass. Idol Toss
+omits its bottom background/frame meshes from the overlay while retaining
+the opaque bowl, counters, Back, and their existing input mapping. Its
+translucent waterfall/glow pass is omitted from the overlay so decorative
+water does not end at the old bottom-screen rectangle.
+
+Idol Toss now places Back at the bottom left, its Play Coin and New chance
+counters at the top left, and a roughly 30% larger launcher on the right.
+Each group has its own proportional transform, shared by rendering and
+native touch mapping. The Play Coin button remains interactive at its displayed position.
+
+Solo hub drag physics: the collision solver now compares button polygons in
+the common displayed canvas, rather than the old independent native boxes.
+Collision responses return to native coordinates before model updates.
+The physical-mouse drag harness uses fixed host pixels (`mdragtop`).
+
+Idol Toss coin correction: the complete coin button now fits its source
+bounds. Relocated labels omit the offset text copy. Coin confirmations
+keep the parent backdrop/layout and replay the dialog separately; its own
+buttons take input while the parent controls are blocked. Physical mouse
+checks cover opening the confirmation and cancelling it with No.
+
+Idol Toss scenery (16 November): the egg queue with its rail, the fountain's
+water and its gold pedestal are back as two decorative layers, Egg queue
+and Fountain, and the bowl has its translucent shading again. The mist and
+the black ground stay off: both end in a straight line where the bottom
+screen did. The pre-existing failure of
+`placed_scripted_text_omits_the_same_colour_offset_copy` is unrelated.
+
+### Chapter select layout
+
+Chapter select now keeps the top backdrop full-screen and places proportional
+chapter artwork and text at the top. The chapter controls sit below it,
+with the bottom backdrop/panel meshes omitted. Both groups retain complete
+source rectangles; mouse input uses the same control transform. The
+chapter-specific placement test covers narrow, native, 16:9 and ultrawide
+windows. Chapter hover retains the native selection while the list scrolls,
+so per-frame hit refreshes cannot clear it just before a click.
+The final menu layout suite passes 20 tests. Headless captures verify the
+chapter thumbnail hover and Back outline, and the chapter click script uses
+a point inside the thumbnail (`mfrom 140 60`) through the top-screen mapping.
+
+Windows executable rebuilt from `main` and copied to
+`dist/zakuro-kiu-mouse.exe` (SHA-256
+`260cd369426f3b8ea52ea0a4520371cb8d26f18d509b2d4719761d265dc842e4`); the
+previous build is `dist/zakuro-kiu-mouse-before-save.exe`. Manual
+Windows mouse testing remains.
+
+### Chapter Select List as one row
+
+```
+Relayout the List on Chapter Select: zig-zag strip of 2–3 thumbnails → one horizontal row across the window, just above Back.
+Acceptance: on trace/chapters-many.state at 16:9, a top-screen screenshot shows all 5 open chapters in one row above Back; hovering a Row outlines that chapter and clicking it opens the Fiend's Cauldron; at a width where they do not all fit, wheel steps scroll the row without changing the Outline and keys pull it back to the Outline.
+```
+
+Decided: one row, Chapter 1 at the left; open chapters only; Rows keep the
+native thumbnail (label, laurel, cursor) at a fixed size, so wider windows
+show more; plain and Shift wheel both scroll it, stopping at both ends; a
+short List starts at the left; hover outlines without scrolling, a click is
+A; keys stay native and pull the view to the Outline, the wheel never moves
+the Outline; Back and the Gear Hint strip stay where they were; the native
+scrollbar is gone. `trace/chapters-many.state` is the user's slot 3
+(Chapters 1–5 open, Chapter 5 outlined).
+
+Status: built and checked headless (FINDINGS "Chapter Select List as one
+row"). Windows release rebuilt as `dist/zakuro-kiu-mouse.exe` (SHA-256
+`5ee20608623d60b1e39b25cf7d25e48cc6e2417e001e4639ec0457fb3815f998`; Rows uncropped; editor layers Title, Picture, Stats, Back, Hint strip, then a Row per chapter); the
+previous build is `dist/zakuro-kiu-mouse-before-chapter-row.exe`. Manual
+Windows testing remains.
+
+### Screen Transform pipeline (in progress)
+
+Goal: every game-owned Screen (In-Game Menu, Scripted Menu, Fiend's Cauldron)
+goes through one transformation process — detect, capture, seat, replay, map
+input — with one descriptor per Screen and one `Placement` list shared by
+drawing and hit-testing. Pipelines stages are shared; per-Screen rows carry
+only identity, input mode, outline, activation, layout, and wheel support.
+The eight behaviour invariants become the per-Screen acceptance contract.
+
+A dev-only egui menu editor edits `Placement` geometry, visibility and anchors
+after the `Placement` model exists and before the 26 Scripted Menus migrate.
+It exports canonical `Placement` rows for the committed descriptor; release
+builds load no editor data. It does not edit game content or input semantics.
+
+Migration order: Pause, Retreat Dialog, Options family, Scripted Menus,
+Fiend's Cauldron, each behind its existing env flag until parity passes, then
+the legacy path is deleted. Decided in `docs/adr/0005-screen-transform-pipeline.md`
+and `docs/agents/screen-transform.md`. The Pause slice has landed: `ScreenSpec`
+registry, `ScreenTransform` capture/replay state, and one `Placement` list for
+drawing and touch mapping. Retreat Dialog shares that call table and its hover
+state is owned by the transform. The 26 Scripted Menus now use the same
+`ScreenSpec` registry for detection, outline, activation and layout data
+(`LayoutKind`, with the hub boards and per-Screen hints moved into the rows).
+Parity: core tests pass; 14 save-state captures (file select, chapter select,
+main menu, Options family, Armory, Solo, Altar, Practice, Vault, dialogs) are
+byte-identical before and after both registry merges. `CauldronPlace` is gone:
+Pause, Scripted Menus and the Cauldron share one `Placement` type for drawing
+and hit-testing. The Cauldron is migrated: its row (`TaskProbe`) seats a
+`ScreenLayout` from `CauldronRules` once per frame where the pot's task runs,
+at its value, and drawing, hit-testing and the cursor lighting all read it;
+`CauldronLayout` and its saved dial are gone. Parity: four widths (5:3, 16:9,
+21:9, 4:3) from `trace/s12.state`, 32 captures byte-identical, every hover and
+touch hitting the same Control within 0.0001 bottom-screen pixels, dial drag
+4 → 6.9 and the pour unchanged. The frontend asks one `top_screen_touch`.
+The Cauldron now has its own F2 editor window with seven canvas parts, drag,
+resize and visibility. Edits convert back to design-width rules, including
+the intensity-dependent Panel and Dial. Save layout includes Cauldron rules;
+Reset and Rust/change-request export are available. Pause and Retreat Dialog
+no longer expose stale Scripted Menu layers. Verified through egui pointer
+events, layout save/load, and `trace/s12.state`: the picture moves/resizes
+and hidden Back neither draws nor takes pointer input. Tests: 299 passed.
+Windows executable rebuilt at `dist/zakuro-kiu-mouse.exe` (SHA-256
+`a47d88f5f6be85b8a359c6b061d4ba53210722006782df0854d1e4f80f1dbb50`).
+The pre-transform executable is `dist/zakuro-kiu-mouse-before-cauldron-transform.exe`.
+The Retreat Dialog has its own `DialogRules` (span, panel), apart from
+Pause's: before, hiding Pause's centre hid the dialog. Its question and
+No/Yes were missing on the top screen in the left eye, which is the one a
+flat screen shows: the call table records each site once, so the left
+eye's copies were never kept (`pause_calls_at` now records every entry).
+The words follow the panel through their projection. Checked on
+`trace/s5.state` (START, Retreat): default identical in layout, moved panel
+carries box, buttons and words, hidden panel draws none, a click on the
+moved No (top 247.5,105 → bottom 95,170) closes the dialog. Tests: 301.
+Pause layout rules (`PlacementRule`
+with anchor and scale mode) are editable data. The dev-only editor
+(`--menu-editor`, F2) edits them live and exports `menu-layout-export.txt` with a
+Rust fragment and a change request. The same overlay draws a canvas over the
+live top screen with the active Scripted Menu's layers: body drag moves, corner
+handle resizes, and the override is applied on the next layout. **Save layout**
+writes `menu-layout.toml` in the data directory and the next `--menu-editor`
+run loads it; normal launches ignore it. Next: generalize Scripted overrides
+into rules that survive every aspect width, then aspect previews.
+
+### Midstage Loading in layers
+
+```
+Relayout the Midstage Loading (In-Game Menu): Midstage Progress drawn over the Loading orb and the tip bar → Tip bar, Tip, Loading orb and Midstage Progress are four editor layers, laid out apart by default.
+Acceptance: from the user's slot 3 (Chapter 1, air battle to land battle) at 5:3 and 16:9, no part covers another; in the editor each part moves, resizes and hides alone; entering and leaving show no part elsewhere for a frame.
+```
+
+Status: built and checked in the harness (FINDINGS "Midstage Loading layers").
+Core 277 and frontend 126 tests pass. Windows release rebuilt; the build,
+`dist/zakuro-kiu-mouse.exe` and the Downloads copy have SHA-256
+`490367457cf47c0c00e99bd12981632b56c6997c9384ca157088c154f7a65dcb`. The
+same bytes completed the five-frame Windows startup check from the build
+and a fresh copy; the `dist` path exited 5 while an earlier
+`zakuro-kiu-mouse.exe` was still running. Physical mouse and editor testing
+on Windows remains.
