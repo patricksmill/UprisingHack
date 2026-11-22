@@ -3,7 +3,8 @@
 # each step: "x,y" taps the bottom screen, "B:NAME" presses a button,
 # "W:n" waits n frames; a screenshot is taken after each step.
 from=$1; to=$2; prefix=$3; wait=$4; shift 4
-cd /home/pmill/icarus/trace
+kiu=$(cd "$(dirname "$0")/.." && pwd)
+cd "$kiu/trace"
 script=$(mktemp)
 echo "load $from" > "$script"
 i=0
@@ -18,6 +19,6 @@ for step in "$@"; do
   echo "shot $prefix$i" >> "$script"
 done
 echo "save $to" >> "$script"
-/home/pmill/icarus/tools/kiutrace/target/release/kiutrace ../dumps/kiu.cci "$script" out | grep -v "^\[" | tail -3
-python3 -I /home/pmill/icarus/scripts/sheet.py out "$prefix" "$i" "out/sheet_$prefix.png"
+"$kiu/../target/release/kiutrace" ../dumps/kiu.cci "$script" out | grep -v "^\[" | tail -3
+python3 -I "$kiu/scripts/sheet.py" out "$prefix" "$i" "out/sheet_$prefix.png"
 rm "$script"
