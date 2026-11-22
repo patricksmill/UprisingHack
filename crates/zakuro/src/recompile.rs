@@ -186,10 +186,10 @@ const PINNED: &[Pinned] = &[Pinned {
     program_id: 0x0004_0000_0003_0100,
     code_hash: 0xD6E0_28C6_175A_2B07,
     files: &[
-        ("input_sample.c", include_str!("../../../../../overrides/input_sample.c")),
-        ("memory.c", include_str!("../../../../../overrides/memory.c")),
-        ("scalar.c", include_str!("../../../../../overrides/scalar.c")),
-        ("string.c", include_str!("../../../../../overrides/string.c")),
+        ("input_sample.c", include_str!("../../../kiu/overrides/input_sample.c")),
+        ("memory.c", include_str!("../../../kiu/overrides/memory.c")),
+        ("scalar.c", include_str!("../../../kiu/overrides/scalar.c")),
+        ("string.c", include_str!("../../../kiu/overrides/string.c")),
     ],
 }];
 

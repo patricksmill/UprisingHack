@@ -1,7 +1,8 @@
 [package]
 name = "funclist"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
-recomp3ds = { path = "../3dsrecomp" }
+recomp3ds = { git = "https://github.com/fearkov/3dsrecomp" }

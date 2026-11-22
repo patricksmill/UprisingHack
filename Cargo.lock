@@ -1437,6 +1437,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
+name = "funclist"
+version = "0.1.0"
+dependencies = [
+ "recomp3ds",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2011,6 +2018,17 @@ name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
+
+[[package]]
+name = "kiutrace"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "zakuro-common",
+ "zakuro-core",
+ "zakuro-cpu",
+ "zakuro-gpu",
+]
 
 [[package]]
 name = "kurbo"
@@ -3110,6 +3128,7 @@ dependencies = [
 [[package]]
 name = "recomp-abi"
 version = "0.1.0"
+source = "git+https://github.com/patricksmill/3dsrecomp?branch=kiu#dfdba5e19a15b7fc80501f48cd536e276e0d52fb"
 dependencies = [
  "libloading",
 ]
@@ -3117,6 +3136,7 @@ dependencies = [
 [[package]]
 name = "recomp3ds"
 version = "0.1.0"
+source = "git+https://github.com/patricksmill/3dsrecomp?branch=kiu#dfdba5e19a15b7fc80501f48cd536e276e0d52fb"
 dependencies = [
  "libc",
  "recomp-abi",

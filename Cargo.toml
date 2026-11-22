@@ -7,6 +7,8 @@ members = [
     "crates/zakuro-gpu",
     "crates/zakuro-core",
     "crates/zakuro",
+    "kiu/tools/kiutrace",
+    "kiu/tools/funclist",
 ]
 
 [workspace.package]
@@ -55,7 +57,8 @@ codegen-units = 4
 panic = "unwind"
 debug = 1
 
-# the local recompiler's title-specific hints and the ABI's mouse hook support
+# the port's recompiler fork: title-specific hints and the ABI's mouse hook support.
+# Cargo.lock pins the commit; `cargo update -p recomp3ds` moves it.
 [patch."https://github.com/fearkov/3dsrecomp"]
-recomp-abi = { path = "../3dsrecomp/abi" }
-recomp3ds = { path = "../3dsrecomp" }
+recomp-abi = { git = "https://github.com/patricksmill/3dsrecomp", branch = "kiu" }
+recomp3ds = { git = "https://github.com/patricksmill/3dsrecomp", branch = "kiu" }
