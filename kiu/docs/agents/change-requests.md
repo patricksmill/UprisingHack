@@ -16,7 +16,7 @@ The target is a Control, or a named Screen part when the whole part moves: Board
 - Name the family (`In-Game Menu`, `Scripted Menu`, `Frontend Menu`) when the Screen name alone could fit more than one.
 - "Menu" is not a target. Name the Screen from the Screens table.
 - Use one Screen per request unless the request explicitly lists several Screens.
-- Put no addresses in a request. Anchors live in `analysis/FINDINGS.md`.
+- Put no addresses in a request. Anchors live in `kiu/analysis/FINDINGS.md`.
 
 ## Operations
 

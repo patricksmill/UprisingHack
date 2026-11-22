@@ -5,7 +5,7 @@ How the engineering skills should consume this repo's domain documentation when 
 ## Before exploring, read these
 
 - **`GLOSSARY.md`** at the repo root (if it exists)
-- **`docs/adr/`**: read ADRs that touch the area you're about to work in
+- **`kiu/docs/adr/`**: read ADRs that touch the area you're about to work in
 
 If either does not exist yet, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill creates them lazily when terms or decisions actually get resolved.
 
@@ -16,10 +16,10 @@ Single-context repo:
 ```
 /
 ├── GLOSSARY.md
-├── docs/adr/
-│   ├── 0001-example-decision.md
-│   └── 0002-another-decision.md
-└── tools/
+├── crates/
+└── kiu/docs/adr/
+    ├── 0001-native-ui-pass-replay.md
+    └── ...
 ```
 
 ## Use the glossary's vocabulary

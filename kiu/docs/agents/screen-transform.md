@@ -1,6 +1,6 @@
 # Screen Transform
 
-The contract every game-owned Screen follows to appear on the top screen. Vocabulary is in `GLOSSARY.md`; the decision and its alternatives are in `docs/adr/0005-screen-transform-pipeline.md`.
+The contract every game-owned Screen follows to appear on the top screen. Vocabulary is in `GLOSSARY.md`; the decision and its alternatives are in `kiu/docs/adr/0005-screen-transform-pipeline.md`.
 
 ## Scope
 

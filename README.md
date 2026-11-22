@@ -1,20 +1,20 @@
 <div align="center">
 
 <!-- LOGO PLACEHOLDER: replace with docs/images/logo.png (recommended ~640px wide, transparent PNG) -->
-<img src="docs/images/logo.png" alt="Kid Icarus: Uprising PC logo" width="480">
+<img src="kiu/docs/images/logo.png" alt="Kid Icarus: Uprising PC logo" width="480">
 
 # Kid Icarus: Uprising — PC
 
 **A native-feeling PC port of Kid Icarus: Uprising, with real mouse aim and a single-screen layout.**
 
-Statically recompiled with [3dsrecomp](tools/3dsrecomp) · runs on a fork of [Zakuro](tools/zakuro)
+Statically recompiled with [3dsrecomp](https://github.com/patricksmill/3dsrecomp) · a fork of [Zakuro](https://github.com/fearkov/zakuro)
 
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-informational)
 ![Title](https://img.shields.io/badge/title-0004000000030100%20(USA)-blue)
 ![Status](https://img.shields.io/badge/status-work%20in%20progress-orange)
 
 <!-- HERO SCREENSHOT PLACEHOLDER: docs/images/hero.png (16:9 air battle, 1920x1080) -->
-<img src="docs/images/hero.png" alt="Air battle with mouse aim" width="900">
+<img src="kiu/docs/images/hero.png" alt="Air battle with mouse aim" width="900">
 
 </div>
 
@@ -35,22 +35,22 @@ Statically recompiled with [3dsrecomp](tools/3dsrecomp) · runs on a fork of [Za
 
 ### ⚡ Performance
 - **Ahead-of-time recompiled** game code — no JIT warm-up, no interpreter.
-- **60 FPS patch** included (`dist/60fps/code.ips`).
+- **60 FPS patch**, generated from your own `code.bin` by `kiu/scripts/make_60fps_ips.py` ([how](kiu/docs/BUILDING.md#5-optional-the-60-fps-patch)).
 - Headless benchmark harness to track frame rate across upstream merges.
 
 <!-- SCREENSHOT GRID PLACEHOLDERS: replace each with docs/images/<name>.png -->
 <table>
   <tr>
-    <td><img src="docs/images/ground-battle.png" alt="Ground battle" width="440"></td>
-    <td><img src="docs/images/menus.png" alt="Single-screen menus" width="440"></td>
+    <td><img src="kiu/docs/images/ground-battle.png" alt="Ground battle" width="440"></td>
+    <td><img src="kiu/docs/images/menus.png" alt="Single-screen menus" width="440"></td>
   </tr>
   <tr>
     <td align="center"><sub>Ground battle with mouse-look</sub></td>
     <td align="center"><sub>Menus on one screen</sub></td>
   </tr>
   <tr>
-    <td><img src="docs/images/ultrawide.png" alt="Ultrawide" width="440"></td>
-    <td><img src="docs/images/settings.png" alt="Input settings" width="440"></td>
+    <td><img src="kiu/docs/images/ultrawide.png" alt="Ultrawide" width="440"></td>
+    <td><img src="kiu/docs/images/settings.png" alt="Input settings" width="440"></td>
   </tr>
   <tr>
     <td align="center"><sub>Ultrawide in battle</sub></td>
@@ -65,7 +65,7 @@ Statically recompiled with [3dsrecomp](tools/3dsrecomp) · runs on a fork of [Za
 | Layer | Role |
 | --- | --- |
 | **3dsrecomp** | Translates the game's ARM `code.bin` into native code ahead of time. |
-| **Overrides** | Small C replacements for selected game functions (`overrides/`, tracked in `docs/decomp/LEDGER.md`). |
+| **Overrides** | Small C replacements for selected game functions (`kiu/overrides/`, tracked in `kiu/docs/decomp/LEDGER.md`). |
 | **Zakuro fork** | Runtime: GPU, audio, services, plus the PC frontend, input and screen-layout hooks. |
 | **kiutrace** | Headless harness for save states, scripted input, screenshots and benchmarks. |
 
@@ -89,29 +89,28 @@ Only a handful of game functions are hooked; everything else runs as the origina
 
 ### Build
 
-The Zakuro and 3dsrecomp forks live in their own repositories. Clone them into `tools/`, side by side. Zakuro finds 3dsrecomp at `tools/3dsrecomp`.
-
-1. Clone this repository and both forks:
+1. Clone the repository:
    ```sh
-   git clone https://github.com/patricksmill/UprisingHack icarus
-   cd icarus
-   git clone -b kiu-mouse https://github.com/patricksmill/zakuro tools/zakuro
-   git clone -b kiu https://github.com/patricksmill/3dsrecomp tools/3dsrecomp
+   git clone https://github.com/patricksmill/UprisingHack
+   cd UprisingHack
    ```
-2. Place your dump at `dumps/kiu.cci`.
+2. Place your dump at `kiu/dumps/kiu.cci` (git ignores that folder).
 3. Build and open the library:
    ```sh
-   cargo run --release --manifest-path tools/zakuro/Cargo.toml -p zakuro
+   cargo run --release -p zakuro
    ```
-4. Press **Choose folder…**, pick `dumps/`, and press **Recompile** next to the game. Do this once, and again after each update. If Zakuro finds no C compiler, it offers to download one.
+   Cargo fetches the 3dsrecomp fork itself, at the commit `Cargo.lock` pins.
+4. Press **Choose folder…**, pick `kiu/dumps/`, and press **Recompile** next to the game. Do this once, and again after each update. If Zakuro finds no C compiler, it offers to download one.
 5. Launch the game from the library, or straight from the command line:
    ```sh
-   cargo run --release --manifest-path tools/zakuro/Cargo.toml -p zakuro -- dumps/kiu.cci
+   cargo run --release -p zakuro -- kiu/dumps/kiu.cci
    ```
    Until you recompile, the game runs in the interpreter, which is much slower.
 6. Press **F12** in-game for the emulator menu.
 
-To update, `git pull` in the repository root, `tools/zakuro` and `tools/3dsrecomp`, then recompile.
+To update, `git pull`, rebuild, then recompile.
+
+More detail, including the 60 FPS patch: [kiu/docs/BUILDING.md](kiu/docs/BUILDING.md).
 
 ### Restoring original presentation
 
@@ -130,20 +129,23 @@ Set any of these to `0` to show that feature as the 3DS draws it:
 
 ## Repository Layout
 
+This repository is a fork of [Zakuro](https://github.com/fearkov/zakuro). Upstream's code stays where it is; the port's own work sits in `kiu/`.
+
 | Path | Contents |
 | --- | --- |
-| `tools/zakuro` | Zakuro fork: hooks and frontend |
-| `tools/3dsrecomp` | Recompiler |
-| `tools/kiutrace` | Headless test & benchmark harness |
-| `tools/funclist` | Function list export for Ghidra |
-| `ghidra/` | Headless analysis scripts |
-| `overrides/` | C overrides |
-| `scripts/` | Benchmarks, IPS builder, image conversion |
-| `analysis/` | `FINDINGS.md` (addresses), `PERFORMANCE.md` |
-| `docs/adr/` | Design decisions |
+| `crates/` | Zakuro, with the port's hooks (`zakuro-core/src/aim_mouse/`) and PC frontend (`zakuro/`) |
+| `kiu/overrides/` | C overrides, embedded into Recompile |
+| `kiu/tools/kiutrace` | Headless test & benchmark harness |
+| `kiu/tools/funclist` | Function list export for Ghidra |
+| `kiu/ghidra/` | Headless analysis scripts |
+| `kiu/scripts/` | Benchmarks, IPS builder, image conversion |
+| `kiu/analysis/` | `FINDINGS.md` (addresses), `PERFORMANCE.md` |
+| `kiu/docs/` | Building, design decisions (`adr/`), decomp notes |
 | `GLOSSARY.md` | Project terminology |
 
-Roadmap and open issues: [`PLAN.md`](PLAN.md).
+The recompiler is the [3dsrecomp fork](https://github.com/patricksmill/3dsrecomp), a Cargo dependency.
+
+Roadmap and open issues: [`kiu/PLAN.md`](kiu/PLAN.md).
 
 ---
 
@@ -153,7 +155,7 @@ The port reads a controller's gyroscope into the console's, but the game only ai
 
 Combining it with the port is **experimental and not yet verified**:
 
-- It replaces `code.bin` outright, so it cannot be combined with the 60 FPS patch, which is generated against the original.
+- It replaces `code.bin` outright, so it cannot be combined with the [60 FPS patch](kiu/docs/BUILDING.md#5-optional-the-60-fps-patch), which is generated against the original.
 - Install only its **Base Patch**. Skip its widescreen option: the port has its own.
 - Recompile after installing it.
 

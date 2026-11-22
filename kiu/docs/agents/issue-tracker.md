@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and specs for this repo live as GitHub issues on `patricksmill/icarus-hack`. Use the `gh` CLI for all operations.
+Issues and specs for this repo live as GitHub issues on `patricksmill/UprisingHack`. Use the `gh` CLI for all operations, always with `-R patricksmill/UprisingHack`: this repository is a fork, and without it `gh` targets `fearkov/zakuro`.
 
 ## Conventions
 
@@ -14,7 +14,7 @@ Issues and specs for this repo live as GitHub issues on `patricksmill/icarus-hac
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: post the explanation with `gh issue comment <number> --body "..."`, then `gh issue close <number>`. On an already-closed issue, `gh issue close --comment` drops the comment and still exits 0.
 
-File issues only into `patricksmill/icarus-hack`.
+File issues only into `patricksmill/UprisingHack`.
 
 ## Pull requests as a triage surface
 
@@ -22,7 +22,7 @@ File issues only into `patricksmill/icarus-hack`.
 
 ## When a skill says "publish to the issue tracker"
 
-Create a GitHub issue on `patricksmill/icarus-hack`.
+Create a GitHub issue on `patricksmill/UprisingHack`.
 
 ## When a skill says "fetch the relevant ticket"
 
