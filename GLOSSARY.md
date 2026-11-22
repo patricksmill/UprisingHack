@@ -174,6 +174,7 @@ Canonical names for the Screens a change request can name. Use the game's visibl
 | --- | --- | --- |
 | Pause | In-Game Menu | Main pause page: Resume, Retreat, Options, Remove Display |
 | Retreat Dialog | In-Game Menu | Confirmation over Pause |
+| Midstage Loading | In-Game Menu | The loading between an air and a land battle: Tip bar, Tip, Loading orb, Midstage Progress; no Controls |
 | Control Configuration | In-Game Menu | Options page for binding controls |
 | File Select | Scripted Menu | Three save books |
 | Chapter Select | Scripted Menu | Chapter thumbnails and Back |

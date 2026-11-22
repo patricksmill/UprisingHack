@@ -2430,3 +2430,37 @@ Windows release rebuilt with it; `dist/zakuro-kiu-mouse.exe` and the
 Downloads copy have SHA-256
 `c71d3a0dadf07f79f6538d2f19b3ba7b4c6e14517bcf13631a8644e2b04f2013` and
 completed the five-frame Windows startup check.
+
+## Midstage Loading layers (22 November)
+
+The loading between an air and a land battle (user's slot 3, Chapter 1's
+mid-stage, loading from frame ~130 to ~435) is no Scripted Menu: no MENUID,
+no scene models. Its pictures come from the dialogs' 2D context
+(0x14A1340C, the Retreat Dialog's) with bit 26 of +0x270 set:
+
+- Top pass 0x007255AC keeps that bit in r7 and tests it at 0x00725784.
+  With it set: the tip bar, 0x0092EDA8 at 0x007257D0 (s0..s3 = 0, 181,
+  400, 59) flushed at 0x00725814 (returns to 0x00725818); then 0x00724AE0,
+  whose flush returns to 0x00725828 like the battery's every frame (the
+  battery quad, 382..400 × 0..13, is already dropped there): one turning
+  64-pixel quad, middle about (196.6, 105.3).
+- The tip's words: the 3D renderer, camera call 0x0090A5B4 at 0x00725970
+  with the top projection on the stack in r1 (rows -1/120 and -1/200),
+  then 0x00909ACC(r5 + 0x19C) once per eye.
+- Midstage Progress: the bottom pass 0x00722A50 draws one text, 0x00909ACC
+  at 0x00722DAC (r0 = ctx + 0x204), through the same call sites the
+  Retreat Dialog's words use; it draws no box (0x00722AF4/0x00722B0C are
+  not reached). With Pause on the top screen these replayed at
+  DIALOG_TEXT (0x007258C0) through the dialog's panel rule, so before this
+  change they covered the orb and the tip bar.
+- The bottom pass draws the words for three frames after the top's last
+  loading pass; the next top passes have r7 clear.
+
+The Midstage Loading is a Screen of its own with `LoadingRules` (Tip bar,
+Tip, Loading orb, Midstage Progress); see screen-transform.md. Harness
+`layers`, `layer`, `visible` reach it while it is the Screen last drawn.
+Checked from slot 3 (`pausetop narrtop menutop`): default at 5:3 and 16:9
+keeps the parts apart; moving the orb and Midstage Progress and hiding the
+bar moves and hides each alone; entering and leaving frame by frame show no
+part in another place; a Retreat Dialog later in that battle still draws in
+its own panel.
