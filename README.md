@@ -25,7 +25,7 @@ Statically recompiled with [3dsrecomp](tools/3dsrecomp) · runs on a fork of [Za
 ### 🎯 Controls
 - **True mouse aiming** — absolute reticle in air battles, relative mouse-look camera on the ground.
 - **Fully rebindable** keyboard, mouse and controller input.
-- **Optional gyro aim** for supported controllers.
+- **Optional gyro aim** for supported controllers (experimental: needs [Darkshade's patch](#gyro-aim-and-darkshades-patch)).
 - **Mouse-driven menus** — hover and click call the game's own cursor and confirm logic, so menus behave exactly as they would on hardware.
 
 ### 🖥️ One Screen
@@ -144,6 +144,29 @@ Set any of these to `0` to show that feature as the 3DS draws it:
 | `GLOSSARY.md` | Project terminology |
 
 Roadmap and open issues: [`PLAN.md`](PLAN.md).
+
+---
+
+## Gyro aim and Darkshade's patch
+
+The port reads a controller's gyroscope into the console's, but the game only aims with it once Darkshade's **Kid Icarus: Uprising C-Stick & Gyro Patch** is installed. That patch is not included here; get it from Darkshade's own release.
+
+Combining it with the port is **experimental and not yet verified**:
+
+- It replaces `code.bin` outright, so it cannot be combined with the 60 FPS patch, which is generated against the original.
+- Install only its **Base Patch**. Skip its widescreen option: the port has its own.
+- Recompile after installing it.
+
+---
+
+## Credits
+
+- **[fearkov](https://github.com/fearkov)**, for [Zakuro](https://github.com/fearkov/zakuro), which this repository is a fork of, and [3dsrecomp](https://github.com/fearkov/3dsrecomp).
+- **Darkshade**, for the Kid Icarus: Uprising C-Stick & Gyro Patch. Its widescreen hooks mapped the projection, HUD and reticle code the port's widescreen builds on.
+
+## License
+
+The port is licensed under the [GNU General Public License v3.0 or later](LICENSE). It is built on Zakuro and 3dsrecomp by fearkov, whose code remains available under the [MIT license](LICENSE-MIT); that notice is kept with it.
 
 ---
 
