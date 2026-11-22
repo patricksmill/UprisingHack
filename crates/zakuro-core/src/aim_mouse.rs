@@ -12,7 +12,7 @@ mod menu_top;
 mod screen_transform;
 use menu_top::MenuTop;
 pub use menu_top::{current_menu, IdolPointer};
-pub use screen_transform::{CauldronRole, CauldronRules, DialogRules, PauseRules, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
+pub use screen_transform::{CauldronRole, CauldronRules, DialogRules, LoadingRole, LoadingRules, PauseRules, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
 use screen_transform::{Activate, QuadRole, ScreenLayout, ScreenTransform, CAULDRON_CONTROLS};
 
 /// Kid Icarus: Uprising, the USA cartridge.
@@ -30,7 +30,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 142] = [
+pub const PLACES: [u32; 145] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2, APPLY_CONTROLS, INPUT_FRAME, MOVE_CHOICE_PICK,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -45,6 +45,8 @@ pub const PLACES: [u32; 142] = [
     PASS_BEGIN,
     RETICLE_DRAW,
     TOP_UI_AFTER_HUD,
+    LOADING_PASS,
+    TIP_CAMERA,
     UI_COMMANDS,
     PAUSE_MENU[0].site,
     PAUSE_MENU[1].site,
@@ -110,6 +112,7 @@ pub const PLACES: [u32; 142] = [
     screen_transform::SCRIPTED_UPDATES[24],
     screen_transform::SCRIPTED_UPDATES[25],
     screen_transform::SCRIPTED_UPDATES[26],
+    screen_transform::SCRIPTED_UPDATES[27],
     0x003506C4,
     0x00321720, 0x0032178C, 0x003217F8, 0x00321864,
     0x0026E0A0, 0x0026E114, 0x0026E18C, 0x0026E204,
@@ -670,6 +673,18 @@ const CONTROLS_QUEUED: u32 = 0x118;
 const CONTROLS_DIRECTION: u32 = 0x11D;
 const CONTROLS_HELD: u32 = 0x108;
 const CONTROLS_ROWS: u32 = 0x00318DD0;
+/// 0x003181C0(object, page, 0): Controls (0) or More Controls (1), with
+/// the native slide-in; More Controls' A reaches it. Its page is +0x11D's
+/// bit 0.
+const CONTROLS_PAGE: u32 = 0x003181C0;
+/// Options' Controls part (its first, 6C7DCDF1).
+const OPTIONS_CONTROLS: u32 = 0x6C7D_CDF1;
+/// the menus' global (*0x00D636B4) keeps the Controls Row last used, an
+/// index 0..3 at +0x2B554; 3 is Try It!'s, which Controls' setup opens on
+/// More Controls for and then puts back to 0.
+const CONTROLS_MEMORY: u32 = 0x00D6_36B4;
+const CONTROLS_REMEMBERED: u32 = 0x2B554;
+const CONTROLS_TRY_IT: u32 = 3;
 
 fn outline_controls(system: &mut System, object: u32, found: Found) -> Option<Vec<MenuCall>> {
     if read_word(system, object + BUTTONS_OUTLINED) == found.hash {
@@ -1044,6 +1059,21 @@ const PAUSE_MENU: [ToTop; 9] = [
 /// where the dialogs' words are made again in the top pass.
 const DIALOG_TEXT: u32 = 0x007258C0;
 
+/// the Midstage Loading, between an air and a land battle, is the dialogs'
+/// 2D context with bit 26 of +0x270 set. Their top pass, 0x007255AC, keeps
+/// that bit in r7 and tests it here, just before the tip bar's rectangle
+/// (0x0092EDA8, s0..s3 x, y, width, height) and its flush, which returns to
+/// TIP_BAR_FLUSHED; the Loading orb, 0x00724AE0, follows, its flush
+/// returning to LOADING_ORB_FLUSHED as the battery's does every frame.
+const LOADING_PASS: u32 = 0x00725784;
+const TIP_BAR_FLUSHED: u32 = 0x00725818;
+const LOADING_ORB_FLUSHED: u32 = 0x00725828;
+/// and with r7 set, the tip: its words drawn through the 3D renderer (r0)
+/// with the top screen's projection (r1, on the stack, built afresh each
+/// pass) and a view (r2), here the camera call. The text, 0x00909ACC(r5 +
+/// 0x19C), follows for each eye.
+const TIP_CAMERA: u32 = 0x00725970;
+
 /// how far right the pause menu goes on the top screen, its 320 pixels in
 /// the middle of the top's 400, and so how far left a touch there goes.
 const PAUSE_MENU_OFFSET: f32 = 40.0;
@@ -1402,6 +1432,8 @@ pub struct AimMouse {
     pub pause_on_top: bool,
     /// the Screen Transform process: captured calls and drawn frames.
     transform: ScreenTransform,
+    /// whether the dialogs' top pass under way draws the Midstage Loading.
+    loading_pass: bool,
     /// and the last one Resume, Retreat or Remove Display was drawn by the
     /// top screen's edges in.
     edges_drawn: Option<u64>,
@@ -1499,6 +1531,9 @@ pub struct AimMouse {
     /// whether a click is to use the part under the mouse once it is
     /// outlined.
     menu_click: bool,
+    /// a click used Options' Controls: its Controls Screen opens on More
+    /// Controls, the PC Preferences holding the rest.
+    to_more_controls: bool,
     menu_button_down: bool,
     menu_press: Option<MenuPress>,
     /// Keep hover out of a native drag's release handling too.
@@ -1544,6 +1579,7 @@ impl Default for AimMouse {
             extras_pass: 0,
             pause_on_top: false,
             transform: ScreenTransform::default(),
+            loading_pass: false,
             edges_drawn: None,
             battle_drawn: None,
             cauldron_on_top: false,
@@ -1580,6 +1616,7 @@ impl Default for AimMouse {
             menu_looked: None,
             menu_part: None,
             menu_calls: Vec::new(),
+            to_more_controls: false,
             menu_click: false,
             menu_button_down: false,
             menu_press: None,
@@ -1777,6 +1814,63 @@ impl AimMouse {
         (self.editor_screen() == Some(Screen::RetreatDialog)).then(|| self.dialog_rules())
     }
 
+    /// the Midstage Loading's editable placement rules.
+    pub fn loading_rules(&self) -> LoadingRules {
+        self.transform.loading_rules()
+    }
+
+    /// takes effect from the loading's next frame.
+    pub fn set_loading_rules(&mut self, rules: LoadingRules) {
+        self.transform.set_loading_rules(rules);
+    }
+
+    /// whether the Midstage Loading is shown on the top screen, frame as
+    /// for pause_menu_shown.
+    pub fn loading_shown(&self, frame: u64) -> bool {
+        self.transform.loading_shown(frame)
+    }
+
+    /// whether the layout editor edits the Midstage Loading's rules.
+    fn editing_loading(&self) -> bool {
+        self.pause_on_top && self.editor_screen() == Some(Screen::MidstageLoading)
+    }
+
+    /// the Midstage Loading's rules while the layout editor edits them.
+    pub fn editor_loading_rules(&self) -> Option<LoadingRules> {
+        self.editing_loading().then(|| self.loading_rules())
+    }
+
+    /// the Midstage Loading's parts as editor layers, by LoadingRole, hidden
+    /// ones too, in pixels as shown.
+    fn loading_editor_layers(&self) -> Vec<(String, [f32; 4])> {
+        let boxes = self.loading_rules().boxes(self.widen);
+        LoadingRole::ALL.iter().zip(boxes).enumerate().map(|(index, (role, place))| {
+            let [x, y, width, height] = place.to;
+            (format!("{} #{index}", role.label()), [x * self.widen, y, width * self.widen, height])
+        }).collect()
+    }
+
+    fn loading_editor_visibility(&self) -> Vec<bool> {
+        let rules = self.loading_rules();
+        LoadingRole::ALL.iter().map(|&role| rules.rule(role).visible).collect()
+    }
+
+    /// moves one of the Midstage Loading's parts to `to`, in pixels as shown.
+    fn set_loading_editor_layer(&mut self, index: usize, to: [f32; 4]) {
+        let Some(&role) = LoadingRole::ALL.get(index) else { return };
+        let mut rules = self.loading_rules();
+        let [x, y, width, height] = to;
+        rules.set_box(role, self.widen, [x / self.widen, y, width / self.widen, height]);
+        self.set_loading_rules(rules);
+    }
+
+    fn set_loading_editor_visible(&mut self, index: usize, visible: bool) {
+        let Some(&role) = LoadingRole::ALL.get(index) else { return };
+        let mut rules = self.loading_rules();
+        rules.rule_mut(role).visible = visible;
+        self.set_loading_rules(rules);
+    }
+
     /// caps a Screen at 60, the title's own frames only, or returns it to
     /// the host's rate. Any Screen may be capped this way.
     pub fn set_screen_rate(&mut self, screen: Screen, rate: ScreenRate) {
@@ -1834,7 +1928,7 @@ impl AimMouse {
     /// whether the layout editor edits a Scripted Menu's layers: neither
     /// Pause nor the Cauldron was drawn on the top screen since one was.
     fn editing_scripted(&self) -> bool {
-        !matches!(self.editor_screen(), Some(Screen::Pause | Screen::RetreatDialog | Screen::FiendsCauldron))
+        !matches!(self.editor_screen(), Some(Screen::Pause | Screen::RetreatDialog | Screen::FiendsCauldron | Screen::MidstageLoading))
     }
 
     /// the Cauldron's rules while the layout editor edits them.
@@ -2073,6 +2167,16 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         }
         DIALOG_INPUT => hover_dialog(system),
         TOP_SCENE_3D => top_scene_ring(system),
+        LOADING_PASS => {
+            let (frame, loading) = (system.frames, system.cpu.regs[7] != 0);
+            if let Some(aim_mouse) = &mut system.aim_mouse {
+                aim_mouse.loading_pass = loading && aim_mouse.pause_on_top;
+                if aim_mouse.loading_pass {
+                    aim_mouse.transform.mark_loading(frame);
+                }
+            }
+        }
+        TIP_CAMERA => place_tip(system),
         menu_top::START => { menu_top::begin(system); }
         menu_top::CIRCLE_SHADOW_DRAW => menu_top::circle_shadow(system),
         menu_top::FINISHED => { menu_top::draw(system); }
@@ -2676,11 +2780,18 @@ fn top_screen_pause_menu(system: &mut System, place: u32) {
     };
     let Some(recorded) = aim_mouse.transform.take(index) else { return };
     aim_mouse.transform.mark_drawn(system.frames, index);
-    let screen = ScreenTransform::pause_screen(index);
+    // the Midstage Loading's words come through the dialogs' text calls,
+    // placed by its own Midstage Progress rule; the bottom pass draws them
+    // once more after the top's last loading pass, still the loading's
+    let loading = place == DIALOG_TEXT && (aim_mouse.loading_pass || aim_mouse.transform.loading_shown(system.frames));
+    let screen = if loading { Screen::MidstageLoading } else { ScreenTransform::pause_screen(index) };
+    if loading {
+        aim_mouse.transform.mark_active(Screen::MidstageLoading, system.frames);
+    }
     let layout = aim_mouse.transform.screen_layout(screen, system.frames, aim_mouse.widen);
-    let panel = layout.place(QuadRole::Center);
+    let panel = if loading { layout.place(LoadingRole::Progress) } else { layout.place(QuadRole::Center) };
     // a hidden panel takes the dialog's words with it
-    if screen == Screen::RetreatDialog && place == DIALOG_TEXT && panel.is_none() {
+    if matches!(screen, Screen::RetreatDialog | Screen::MidstageLoading) && place == DIALOG_TEXT && panel.is_none() {
         return top_screen_pause_menu(system, place);
     }
     call_here(system, recorded.target, recorded.regs[0], recorded.regs[1], Drawing::PauseMenu(index), Vec::new());
@@ -3070,6 +3181,19 @@ fn outline_menu(system: &mut System, pc: u32) {
         aim_mouse.menu_click = false;
     }
     aim_mouse.menu_screen = Some((index, object, frame));
+    if std::mem::take(&mut aim_mouse.to_more_controls) {
+        if screen.id == screen_transform::Screen::Controls && read_word(system, object + CONTROLS_DIRECTION) & 1 == 0 {
+            call_here(system, CONTROLS_PAGE, object, 1, Drawing::Menu(2, index), Vec::new());
+            system.cpu.regs[2] = 0;
+            system.cpu.regs[13] = (system.cpu.regs[13] - 0x40) & !7;
+            return;
+        }
+        // Options is still closing: keep it for the Controls Screen
+        if screen.id == screen_transform::Screen::Options {
+            system.aim_mouse.as_mut().unwrap().to_more_controls = true;
+        }
+    }
+    let Some(aim_mouse) = &mut system.aim_mouse else { return };
     menu_top::refresh_hover(aim_mouse, frame);
     if !aim_mouse.menu_hover || aim_mouse.saved.is_some() || system.services.hid.input.touch.is_some()
         || aim_mouse.menu_touched.is_some_and(|last| frame <= last + age) {
@@ -3155,6 +3279,18 @@ fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
         true => {
             if !std::mem::take(&mut aim_mouse.menu_click) { return; }
             let Activate::Call(function) = activate else { return };
+            if ScreenTransform::scripted(index).id == screen_transform::Screen::Options {
+                aim_mouse.to_more_controls = aim_mouse.menu_part.is_some_and(|found| found.hash == OPTIONS_CONTROLS);
+                if aim_mouse.to_more_controls {
+                    // Controls' setup (0x00242360) opens on More Controls
+                    // when the remembered Row is Try It!'s, as coming back
+                    // from it: no frame of Controls first
+                    let menus = read_word(system, CONTROLS_MEMORY);
+                    if menus != 0 {
+                        system.memory.write_bytes(menus + CONTROLS_REMEMBERED, &CONTROLS_TRY_IT.to_le_bytes());
+                    }
+                }
+            }
             Some((function, [object, 0, 0]))
         }
         false => Some(aim_mouse.menu_calls.remove(0)),
@@ -3849,6 +3985,54 @@ fn place_scissor(system: &mut System, place: impl Fn(f32, f32) -> (f32, f32)) {
     }
 }
 
+/// moves the Midstage Loading's tip bar or Loading orb, a flush of the
+/// dialogs' top pass while it draws the loading, to its rule's place; a
+/// hidden one draws nowhere. Whether it was one of them.
+fn place_loading(system: &mut System, widen: f32) -> bool {
+    let Some(aim_mouse) = &system.aim_mouse else { return false };
+    if !aim_mouse.loading_pass {
+        return false;
+    }
+    let role = match system.cpu.regs[14] {
+        TIP_BAR_FLUSHED => LoadingRole::TipBar,
+        LOADING_ORB_FLUSHED => LoadingRole::Orb,
+        _ => return false,
+    };
+    let layout = aim_mouse.transform.screen_layout(Screen::MidstageLoading, system.frames, widen);
+    let Some((at, mut quads)) = flushed_quads(system) else { return true };
+    match layout.place(role) {
+        Some(place) => {
+            for corner in (0..quads.len()).step_by(0x18) {
+                let [x, y] = place.map_point([get(&quads, corner), get(&quads, corner + 4)]);
+                set(&mut quads, corner, x);
+                set(&mut quads, corner + 4, y);
+            }
+        }
+        None => hide_ui(&mut quads),
+    }
+    system.memory.write_bytes(at, &quads);
+    true
+}
+
+/// at the tip's camera call while the Midstage Loading is drawn: its
+/// projection, on the stack and built again each pass, gets the Tip rule's
+/// placement, or one far off the screen when the rule is hidden.
+fn place_tip(system: &mut System) {
+    let Some(aim_mouse) = &system.aim_mouse else { return };
+    if !aim_mouse.loading_pass || drawing(system).is_some() {
+        return;
+    }
+    let layout = aim_mouse.transform.screen_layout(Screen::MidstageLoading, system.frames, aim_mouse.widen);
+    let place = layout.place(LoadingRole::Tip).unwrap_or(Placement { from: [0.0, 0.0, 400.0, 240.0], to: [-10000.0, -10000.0, 1.0, 1.0] });
+    let at = system.cpu.regs[1];
+    let mut bytes = [0u8; 0x40];
+    system.memory.read_bytes(at, &mut bytes);
+    let mut matrix: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|word| u32::from_le_bytes(*word)).collect();
+    place_projection(&mut matrix, place, 400.0);
+    let bytes: Vec<u8> = matrix.iter().flat_map(|word| word.to_le_bytes()).collect();
+    system.memory.write_bytes(at, &bytes);
+}
+
 /// puts the pause menu or a dialog, drawn for the bottom screen, in the
 /// middle of the top screen as big as it is drawn, so a touch there is the
 /// same one moved left, see pause_menu_touch. what spans the bottom screen,
@@ -3981,6 +4165,9 @@ fn shrink_hud(system: &mut System) {
         }
     }
     let widen = widening(system);
+    if drawing(system).is_none() && place_loading(system, widen) {
+        return;
+    }
     match drawing(system) {
         Some(Drawing::Portraits) => return place_portraits(system, widen),
         Some(Drawing::Mirrored(index)) => {
@@ -4554,6 +4741,25 @@ mod tests {
         dialog.panel.visible = false;
         aim_mouse.set_dialog_rules(dialog);
         assert_eq!(aim_mouse.pause_menu_touch(11, 147.5, 105.0), None);
+    }
+
+    /// the layout editor edits the Midstage Loading's parts while it is the
+    /// Screen last drawn, and only with Pause on the top screen.
+    #[test]
+    fn the_editor_edits_the_midstage_loading() {
+        let mut transform = ScreenTransform::default();
+        transform.mark_loading(10);
+        let mut aim_mouse = AimMouse { transform, pause_on_top: true, ..AimMouse::default() };
+        let names: Vec<String> = aim_mouse.editor_layers().into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["Tip bar #0", "Tip #1", "Loading orb #2", "Midstage Progress #3"]);
+        assert!(aim_mouse.editor_loading_rules().is_some() && aim_mouse.editor_scripted_index().is_none());
+        aim_mouse.set_editor_layer(2, [10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(aim_mouse.editor_layers()[2].1, [10.0, 20.0, 30.0, 40.0]);
+        aim_mouse.set_editor_layer_visible(3, false);
+        assert_eq!(aim_mouse.editor_layer_visibility(), [true, true, true, false]);
+        assert!(!aim_mouse.loading_rules().rule(LoadingRole::Progress).visible);
+        aim_mouse.pause_on_top = false;
+        assert!(aim_mouse.editor_layers().is_empty() && aim_mouse.editor_loading_rules().is_none());
     }
 
     /// and the dialog's rules leave Pause alone once it is gone.

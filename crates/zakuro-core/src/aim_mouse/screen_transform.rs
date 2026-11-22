@@ -1,8 +1,8 @@
 //! the one process that puts a game-owned Screen's drawing and input on the
 //! top screen, and the registry of the Screens it knows.
 //!
-//! Pause, its dialog, the 27 Scripted Menus and the Fiend's Cauldron are
-//! here; see docs/agents/screen-transform.md.
+//! Pause, its dialog, the 28 Scripted Menus, the Fiend's Cauldron and the
+//! Midstage Loading are here; see docs/agents/screen-transform.md.
 
 use serde::{Deserialize, Serialize};
 
@@ -43,9 +43,11 @@ pub enum Screen {
     Vault,
     IdolTossVault,
     Idols,
+    PowerPortrait,
     FiendsCauldron,
     Pause,
     RetreatDialog,
+    MidstageLoading,
 }
 
 /// the fastest a Screen may be drawn in High Refresh Mode.
@@ -388,6 +390,39 @@ const IDOLS: &[(&str, [f32; 4])] = &[
     ("MenColViewerBt0002", [260.0, 194.0, 60.0, 46.0]),
 ];
 
+/// The Vault's Power Portrait, `MenColPazUp0000`, back to front: the frame
+/// with its green board (`NN_U1101`), the checkerboard (`NN_U1102`) and the
+/// 60 portrait pieces (`NN_U0001`..`NN_U0060`, shown as powers are earned).
+/// The pieces own the rest, `MN_U1103`, `complete` and `flash` included,
+/// which draw nothing at 15% completion. Probed from slot-2 state
+/// `trace/powerportrait.state`.
+const POWER_PORTRAIT_TOP: &[TopLayer] = &[
+    ("Frame", "MenColPazUp0000", &["NN_U1101"]),
+    ("Checkerboard", "MenColPazUp0000", &["NN_U1102"]),
+    ("Portrait pieces", "MenColPazUp0000", &[]),
+];
+
+/// The Power Portrait's bottom models split by mesh node: `NN_B1000` is the
+/// Current Completion banner and its ring in one mesh, `NN_B1001` the
+/// percentage's digits. `pPlane1` and `comp` draw nothing; the Message
+/// layer owns `pPlane1` so the line of words has a layer of its own.
+const POWER_PORTRAIT_BOTTOM: &[TopLayer] = &[
+    ("Background", "MenCmnBg0000", &[]),
+    ("Message", "MenColPazBt0001", &["pPlane1"]),
+    ("Completion badge", "MenColPazBt0001", &["NN_B1000", "comp"]),
+    ("Completion number", "MenColPazBt0001", &["NN_B1001"]),
+];
+
+/// The Power Portrait's bottom Board (MENUID 47), back to front, then Back.
+/// Node layers are cut at their boxes, so each box covers its artwork.
+const POWER_PORTRAIT: &[(&str, [f32; 4])] = &[
+    ("Background", [0.0, 0.0, 320.0, 240.0]),
+    ("Message", [0.0, 0.0, 320.0, 56.0]),
+    ("Completion badge", [8.0, 78.0, 280.0, 108.0]),
+    ("Completion number", [184.0, 100.0, 96.0, 76.0]),
+    ("CmnBack0000", [0.0, 190.0, 60.0, 50.0]),
+];
+
 /// Armory Controls are cut from the shared Board: their names, values,
 /// rows and highlights are text and models drawn across the whole screen.
 const GEAR: &[(&str, [f32; 4])] = &[
@@ -541,10 +576,11 @@ impl ScreenSpec {
 
 /// the update function of each Scripted Menu, in registry order. Kept
 /// separately so `PLACES` can read it in a const context.
-pub(super) const SCRIPTED_UPDATES: [u32; 27] = [
+pub(super) const SCRIPTED_UPDATES: [u32; 28] = [
     0x002A3EC4, 0x002A3FCC, 0x002A3F9C, 0x00224BA0, 0x001ECB4C, 0x00224C18, 0x001B4C74, 0x001ECBBC, 0x00224BD4,
     0x001ECBF4, 0x0016756C, 0x002A4070, 0x002ECCF4, 0x002A1FD8, 0x002B6DB8, 0x00238CBC, 0x001C9734, 0x00230B5C,
     0x002BB14C, 0x0019CDC8, 0x0019BDC4, 0x0023A9FC, 0x001B4D58, 0x0018AF44, 0x00224B80, 0x001B4D4C, 0x001B4D70,
+    0x0018AEB8,
 ];
 
 pub(super) const SCRIPTED_COUNT: usize = SCRIPTED_UPDATES.len();
@@ -605,6 +641,7 @@ pub(super) static SCREENS: &[ScreenSpec] = &[
     scripted!(24, Vault, 0x00CF8248, outline_vault, Activate::Call(0x00345FDC), LayoutKind::Group { group: VAULT, hint: HINT_VAULT, details: false, heart: false }),
     scripted!(25, IdolTossVault, 0x00CF9400, outline_idol, Activate::Touch, LayoutKind::Idol),
     scripted!(26, Idols, 0x00CF93D8, outline_none, Activate::Touch, LayoutKind::Board { group: IDOLS, hint: None, top_layers: IDOLS_TOP, bottom_layers: IDOLS_BOTTOM, texture_layers: IDOLS_TEXTURE }),
+    scripted!(27, PowerPortrait, 0x00CF9388, outline_none, Activate::Touch, LayoutKind::Board { group: POWER_PORTRAIT, hint: None, top_layers: POWER_PORTRAIT_TOP, bottom_layers: POWER_PORTRAIT_BOTTOM, texture_layers: &[] }),
     ScreenSpec {
         id: Screen::FiendsCauldron,
         family: Family::Cauldron,
@@ -641,7 +678,27 @@ pub(super) static SCREENS: &[ScreenSpec] = &[
         layout: LayoutKind::None,
         rate: ScreenRate::Host,
     },
+    // the loading between an air and a land battle, drawn by the dialogs'
+    // 2D context: its top pass's tip bar, Loading orb and Tip, and the
+    // Midstage Progress words its bottom pass draws through the dialogs'
+    // text calls, the shared call table's from DIALOG_TEXT_CALLS on
+    ScreenSpec {
+        id: Screen::MidstageLoading,
+        family: Family::InGame,
+        identity: Identity::CallSites(&PAUSE_MENU),
+        first_call: DIALOG_TEXT_CALLS,
+        input: InputMode::TouchesOnly,
+        fallback: "ZAKURO_PAUSE_TOP",
+        outline: None,
+        activate: Activate::None,
+        layout: LayoutKind::None,
+        rate: ScreenRate::Host,
+    },
 ];
+
+/// where the dialogs' words start in the shared call table: the bottom
+/// pass's text calls, which the Midstage Loading's words come through too.
+const DIALOG_TEXT_CALLS: usize = 3;
 
 /// a source rectangle on the game's screen and where it shows on the top
 /// screen. Drawing, hit-testing and the future editor all use this mapping.
@@ -1177,6 +1234,133 @@ impl CauldronRules {
     }
 }
 
+/// the Midstage Loading's parts, each with a rule of its own: the grey bar
+/// the tip is on, the tip's words, the spinning Loading orb, and the
+/// bottom screen's Midstage Progress words. New roles go last, so saved
+/// lists keep their order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadingRole {
+    TipBar,
+    Tip,
+    Orb,
+    Progress,
+}
+
+/// how many roles the Midstage Loading has.
+const LOADING_ROLES: usize = 4;
+
+impl LoadingRole {
+    pub const ALL: [LoadingRole; LOADING_ROLES] = [LoadingRole::TipBar, LoadingRole::Tip, LoadingRole::Orb, LoadingRole::Progress];
+
+    /// the name in the rules' Rust and change requests.
+    pub fn name(self) -> &'static str {
+        ["tip bar", "tip", "Loading orb", "Midstage Progress"][self as usize]
+    }
+
+    /// the editor's label, from GLOSSARY.md.
+    pub fn label(self) -> &'static str {
+        ["Tip bar", "Tip", "Loading orb", "Midstage Progress"][self as usize]
+    }
+}
+
+impl From<LoadingRole> for usize {
+    fn from(role: LoadingRole) -> usize {
+        role as usize
+    }
+}
+
+/// the tip bar on the top screen as the game draws it: across the bottom,
+/// 59 high. The tip's words are drawn inside it.
+const TIP_BAR: [f32; 4] = [0.0, 181.0, 400.0, 59.0];
+/// the Loading orb's one turning quad, 64 square about its middle at
+/// (196.6, 105.3) on the top screen.
+const LOADING_ORB: [f32; 4] = [164.6, 73.3, 64.0, 64.0];
+/// the Midstage Progress words on the bottom screen: the heading at the top
+/// left to the last line's foot.
+const MIDSTAGE_PROGRESS: [f32; 4] = [0.0, 0.0, 320.0, 230.0];
+
+/// the Midstage Loading's editable rules, one per `LoadingRole`. A saved
+/// list from before a role was added gets that role's default.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "Vec<PlacementRule>")]
+pub struct LoadingRules([PlacementRule; LOADING_ROLES]);
+
+impl From<Vec<PlacementRule>> for LoadingRules {
+    fn from(saved: Vec<PlacementRule>) -> LoadingRules {
+        let mut rules = LoadingRules::default();
+        for (rule, saved) in rules.0.iter_mut().zip(saved) {
+            *rule = saved;
+        }
+        rules
+    }
+}
+
+impl Default for LoadingRules {
+    /// the tip bar and its tip where the game draws them; Midstage Progress
+    /// above them at four fifths of its size, in the middle, clear of the
+    /// bar; the Loading orb by the right edge, just above the bar.
+    fn default() -> LoadingRules {
+        let rule = |from, to, anchor, scale| PlacementRule { from, to, anchor, anchor_y: 0.0, scale, visible: true };
+        let progress = 0.8;
+        let progress_size = [MIDSTAGE_PROGRESS[2] * progress, MIDSTAGE_PROGRESS[3] * progress];
+        LoadingRules([
+            rule(TIP_BAR, TIP_BAR, 0.0, RuleScale::Stretch),
+            rule(TIP_BAR, TIP_BAR, 0.5, RuleScale::Narrow),
+            rule(LOADING_ORB, [336.0, 125.0, 48.0, 48.0], 1.0, RuleScale::Narrow),
+            rule(MIDSTAGE_PROGRESS, [200.0 - progress_size[0] * 0.5, 0.0, progress_size[0], progress_size[1]], 0.5, RuleScale::Narrow),
+        ])
+    }
+}
+
+impl LoadingRules {
+    pub fn rule(&self, role: LoadingRole) -> PlacementRule {
+        self.0[role as usize]
+    }
+
+    pub fn rule_mut(&mut self, role: LoadingRole) -> &mut PlacementRule {
+        &mut self.0[role as usize]
+    }
+
+    /// every role's placement, hidden ones too.
+    pub fn boxes(&self, widen: f32) -> [Placement; LOADING_ROLES] {
+        LoadingRole::ALL.map(|role| self.rule(role).placement(widen))
+    }
+
+    /// moves a role so that it is placed at `to` in the top screen's 400 by
+    /// 240.
+    pub fn set_box(&mut self, role: LoadingRole, widen: f32, to: [f32; 4]) {
+        let rule = self.rule_mut(role);
+        rule.to = rule.target_for(widen, to);
+    }
+
+    /// seats the rules for a completed title frame, by `LoadingRole`.
+    pub(super) fn layout(&self, frame: u64, widen: f32) -> ScreenLayout {
+        let mut placements = [None; ROLES];
+        for role in LoadingRole::ALL {
+            placements[role as usize] = self.rule(role).visible.then(|| self.rule(role).placement(widen));
+        }
+        ScreenLayout { frame, placements }
+    }
+
+    /// the Rust a layout change would land as, for `Default`.
+    pub fn rust_fragment(&self) -> String {
+        let rules: String = LoadingRole::ALL.iter().map(|&role| format!("    // {}\n    {},\n", role.name(), rule_rust(self.rule(role)))).collect();
+        format!("LoadingRules([\n{rules}])\n")
+    }
+
+    /// what changes from the default Midstage Loading rules, one line per
+    /// rule and one more for a rule hidden or shown.
+    pub fn change_request(&self) -> String {
+        let default = LoadingRules::default();
+        let rules: Vec<_> = LoadingRole::ALL.iter().map(|&role| (role.name(), default.rule(role), self.rule(role))).collect();
+        change_request(
+            "Midstage Loading",
+            &rules,
+            "Acceptance: on the loading between an air and a land battle at 5:3 and 16:9, the tip bar, the tip, the Loading orb and Midstage Progress draw in their rules' rectangles, and none covers another.",
+        )
+    }
+}
+
 /// the process's state for the Screens it knows: the calls captured in the
 /// bottom pass, the frame a Screen was last drawn on the top, and each
 /// Screen's High Refresh Mode rate.
@@ -1200,6 +1384,10 @@ pub(super) struct ScreenTransform {
     /// Dialog's over it.
     pause_rules: PauseRules,
     dialog_rules: DialogRules,
+    /// the Midstage Loading's editable rules, and the frame its top pass
+    /// last drew it.
+    loading_rules: LoadingRules,
+    loading_drawn: Option<u64>,
     /// each Screen's High Refresh Mode rate, declared on its row and
     /// overridable while the title runs. A Screen capped at 60 shows real
     /// frames only, instead of being excluded from the mode.
@@ -1224,6 +1412,8 @@ impl Default for ScreenTransform {
             cauldron_seat: (1.0, None),
             pause_rules: PauseRules::default(),
             dialog_rules: DialogRules::default(),
+            loading_rules: LoadingRules::default(),
+            loading_drawn: None,
             rates: std::array::from_fn(|index| SCREENS[index].rate),
             active: None,
         }
@@ -1261,6 +1451,7 @@ impl ScreenTransform {
     pub fn screen_layout(&self, screen: Screen, frame: u64, widen: f32) -> ScreenLayout {
         match screen {
             Screen::RetreatDialog => self.dialog_rules.layout(frame, widen),
+            Screen::MidstageLoading => self.loading_rules.layout(frame, widen),
             _ => self.pause_rules.layout(frame, widen),
         }
     }
@@ -1289,6 +1480,26 @@ impl ScreenTransform {
 
     pub fn set_dialog_rules(&mut self, rules: DialogRules) {
         self.dialog_rules = rules;
+    }
+
+    pub fn loading_rules(&self) -> LoadingRules {
+        self.loading_rules
+    }
+
+    pub fn set_loading_rules(&mut self, rules: LoadingRules) {
+        self.loading_rules = rules;
+    }
+
+    /// the Midstage Loading's top pass drew it on a completed frame.
+    pub fn mark_loading(&mut self, frame: u64) {
+        self.loading_drawn = Some(frame);
+        self.mark_active(Screen::MidstageLoading, frame);
+    }
+
+    /// whether the Midstage Loading was drawn lately, within the same grace
+    /// as the other Screens.
+    pub fn loading_shown(&self, frame: u64) -> bool {
+        self.loading_drawn.is_some_and(|drawn| frame <= drawn + 3)
     }
 
     fn index(screen: Screen) -> usize {
@@ -1340,10 +1551,12 @@ impl ScreenTransform {
     /// its per-Screen caps are not the console's state, so a load keeps
     /// them.
     pub fn reset(&mut self) {
-        let (pause_rules, dialog_rules, cauldron_rules, rates) = (self.pause_rules, self.dialog_rules, self.cauldron_rules, self.rates);
+        let (pause_rules, dialog_rules, cauldron_rules, loading_rules, rates) =
+            (self.pause_rules, self.dialog_rules, self.cauldron_rules, self.loading_rules, self.rates);
         *self = Self::default();
         self.pause_rules = pause_rules;
         self.dialog_rules = dialog_rules;
+        self.loading_rules = loading_rules;
         self.cauldron_rules = cauldron_rules;
         self.rates = rates;
     }
@@ -1464,6 +1677,58 @@ impl ScreenTransform {
 mod tests {
     use super::*;
 
+    /// the Midstage Loading's default parts keep clear of each other at
+    /// 5:3, 16:9 and 21:9: Midstage Progress above the tip bar, the Loading
+    /// orb beside the words, the tip inside its bar.
+    #[test]
+    fn loading_parts_keep_apart() {
+        let overlap = |a: [f32; 4], b: [f32; 4]| a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+        for widen in [1.0, 427.0 / 400.0, 533.0 / 400.0] {
+            let layout = LoadingRules::default().layout(10, widen);
+            let place = |role| layout.place(role).expect("every part is shown by default").to;
+            let (bar, tip, orb, progress) = (place(LoadingRole::TipBar), place(LoadingRole::Tip), place(LoadingRole::Orb), place(LoadingRole::Progress));
+            // the words' own extent: the heading's left to the stats' right
+            let words = Placement { from: MIDSTAGE_PROGRESS, to: progress }.to_box([8.0, 8.0, 250.0, 214.0]);
+            assert!(!overlap(words, bar) && !overlap(orb, bar) && !overlap(words, orb), "{widen}: {words:?} {orb:?} {bar:?}");
+            assert!(tip[1] >= bar[1] && tip[1] + tip[3] <= bar[1] + bar[3] + 0.001, "{widen}: the tip stays in its bar");
+            assert!(orb[0] + orb[2] <= 400.001 && progress[0] >= 0.0, "{widen}: on the screen");
+        }
+    }
+
+    /// a hidden Midstage Loading rule has no placement, and a list saved
+    /// before a role was added gives it its default.
+    #[test]
+    fn loading_rules_hide_and_load_older_lists() {
+        let mut rules = LoadingRules::default();
+        rules.rule_mut(LoadingRole::Orb).visible = false;
+        assert!(rules.layout(10, 1.0).place(LoadingRole::Orb).is_none());
+        assert!(rules.layout(10, 1.0).place(LoadingRole::Progress).is_some());
+        let saved: Vec<PlacementRule> = LoadingRole::ALL[..2].iter().map(|&role| rules.rule(role)).collect();
+        let loaded = LoadingRules::from(saved);
+        assert_eq!(loaded.rule(LoadingRole::Orb), LoadingRules::default().rule(LoadingRole::Orb));
+        assert!(LoadingRules::default().change_request().contains("No changes from the default Midstage Loading rules"));
+        assert!(rules.change_request().contains("Hide the Loading orb rule on Midstage Loading."));
+    }
+
+    /// moving a part in the editor lands where it was put, at any width,
+    /// and a reset keeps the rules across a console state load.
+    #[test]
+    fn loading_rules_follow_the_editor_and_survive_a_reset() {
+        let mut transform = ScreenTransform::default();
+        let mut rules = LoadingRules::default();
+        let widen = 427.0 / 400.0;
+        rules.set_box(LoadingRole::Progress, widen, [20.0, 10.0, 200.0, 150.0]);
+        let moved = rules.layout(10, widen).place(LoadingRole::Progress).unwrap().to;
+        assert!(moved.iter().zip([20.0, 10.0, 200.0, 150.0]).all(|(a, b)| (a - b).abs() < 0.001), "{moved:?}");
+        transform.set_loading_rules(rules);
+        transform.mark_loading(10);
+        assert_eq!(transform.active(11), Some(Screen::MidstageLoading));
+        assert!(transform.loading_shown(13) && !transform.loading_shown(14));
+        transform.reset();
+        assert_eq!(transform.loading_rules(), rules);
+        assert!(!transform.loading_shown(10));
+    }
+
     #[test]
     fn every_screen_is_registered_once() {
         for (index, spec) in SCREENS.iter().enumerate() {
@@ -1482,7 +1747,7 @@ mod tests {
 
     #[test]
     fn scripted_rows_keep_their_order() {
-        assert_eq!(SCRIPTED_COUNT, 27);
+        assert_eq!(SCRIPTED_COUNT, 28);
         for (index, update) in SCRIPTED_UPDATES.iter().enumerate() {
             assert_eq!(SCREENS[index].update(), Some(*update));
         }

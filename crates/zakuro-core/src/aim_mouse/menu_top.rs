@@ -677,6 +677,8 @@ fn board_text_now(index: usize, model: Option<&str>, idols_list: bool, fuse_phas
     if !bottom_layer_part(index, model) { return board_text(index, model); }
     match model {
         Some("Page counter" | "Title bar" | "Description") => !idols_list,
+        // the Power Portrait's one line of words
+        Some("Message") => true,
         // Fuse Weapons' words belong to whichever of its pages shows
         Some("Sort order") => !fuse_dialog(fuse_phase),
         Some("Fusion dialog") => fuse_dialog(fuse_phase),
@@ -1412,6 +1414,7 @@ impl AimMouse {
     /// the Cauldron's parts, the active Scripted Menu's, or none on Pause.
     pub fn editor_layers(&self) -> Vec<(String, [f32; 4])> {
         if self.editing_cauldron() { return self.cauldron_editor_layers(); }
+        if self.editing_loading() { return self.loading_editor_layers(); }
         if !self.editing_scripted() { return Vec::new(); }
         self.menu_top.parts.iter().enumerate().map(|(index, part)| {
             let name = if self.menu_top.file_select() {
@@ -1458,6 +1461,7 @@ impl AimMouse {
     /// Visibility follows the same stable indices as `editor_layers`.
     pub fn editor_layer_visibility(&self) -> Vec<bool> {
         if self.editing_cauldron() { return self.cauldron_editor_visibility(); }
+        if self.editing_loading() { return self.loading_editor_visibility(); }
         if !self.editing_scripted() { return Vec::new(); }
         self.menu_top.parts.iter().map(|part| part.visible).collect()
     }
@@ -1481,6 +1485,7 @@ impl AimMouse {
 
     pub fn set_editor_layer_visible(&mut self, index: usize, visible: bool) {
         if self.editing_cauldron() { return self.set_cauldron_editor_visible(index, visible); }
+        if self.editing_loading() { return self.set_loading_editor_visible(index, visible); }
         if !self.editing_scripted() { return; }
         let Some(screen) = self.menu_screen.map(|(screen, ..)| screen)
             .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) else { return };
@@ -1497,6 +1502,7 @@ impl AimMouse {
     /// frame.
     pub fn set_editor_layer(&mut self, index: usize, to: [f32; 4]) {
         if self.editing_cauldron() { return self.set_cauldron_editor_layer(index, to); }
+        if self.editing_loading() { return self.set_loading_editor_layer(index, to); }
         if !self.editing_scripted() { return; }
         let screen = self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen));
         // A texture layer rides on the layer drawing its texture: moving
@@ -2348,11 +2354,11 @@ const MENUID_HOME: u8 = 3;
 /// each scripted Screen and the MENUIDs it is shown under, measured on the
 /// trace states. Dialogs show under their parent's MENUID, and both Idol
 /// Tosses under 44, so those take the Screen the input last confirmed.
-const SCREEN_MENUS: [(usize, &[u8]); 27] = [
+const SCREEN_MENUS: [(usize, &[u8]); 28] = [
     (0, &[2]), (1, &[1]), (2, &[4]), (3, &[17]), (4, &[22]), (5, &[19]), (6, &[25]),
     (7, &[23]), (8, &[21]), (9, &[39]), (10, &[45]), (11, &[]), (12, &[3]), (13, &[11]),
     (14, &[14]), (15, &[12]), (16, &[37]), (17, &[26]), (18, &[18]), (19, &[43]),
-    (20, &[42]), (21, &[10]), (22, &[44]), (23, &[13]), (24, &[16]), (25, &[44]), (26, &[46]),
+    (20, &[42]), (21, &[10]), (22, &[44]), (23, &[13]), (24, &[16]), (25, &[44]), (26, &[46]), (27, &[47]),
 ];
 
 /// the MENUIDs a scripted Screen is shown under, empty for any.

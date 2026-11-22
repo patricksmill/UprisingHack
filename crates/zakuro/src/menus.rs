@@ -6,7 +6,7 @@ use std::sync::mpsc::{channel, Receiver};
 
 use egui::{Align, Color32, Layout, RichText, Vec2};
 use winit::keyboard::KeyCode;
-use zakuro_core::aim_mouse::{CauldronRules, DialogRules, NavigationDirection, PauseRules, PlacementRule, RuleScale};
+use zakuro_core::aim_mouse::{CauldronRules, DialogRules, LoadingRules, NavigationDirection, PauseRules, PlacementRule, RuleScale};
 use zakuro_core::services::keyboard::Request;
 
 use crate::library::{Game, Library, ICON_SIZE};
@@ -22,6 +22,7 @@ pub enum EditorRules {
     Pause(PauseRules),
     RetreatDialog(DialogRules),
     Cauldron(CauldronRules),
+    Loading(LoadingRules),
 }
 
 /// what the user asked for
@@ -78,6 +79,8 @@ pub enum Action {
     DialogRules(DialogRules),
     /// the Fiend's Cauldron's rules, edited.
     CauldronRules(CauldronRules),
+    /// the Midstage Loading's rules, edited.
+    LoadingRules(LoadingRules),
     /// a Scripted Menu layer moved by the editor.
     EditorLayer(usize, [f32; 4]),
     /// a Scripted Menu layer hidden or shown again by the editor.
@@ -888,6 +891,11 @@ impl Menus {
                 self.editor_history(before, folders, edited || list.edited, undo || list.undo, redo || list.redo, actions);
                 return NavigationEditorResponse::default();
             }
+            Some(EditorRules::Loading(loading)) => {
+                let list = self.loading_editor(ctx, loading, &layers, &visibility, actions);
+                self.editor_history(before, folders, edited || list.edited, undo || list.undo, redo || list.redo, actions);
+                return NavigationEditorResponse::default();
+            }
             Some(EditorRules::RetreatDialog(dialog)) => {
                 self.dialog_editor(ctx, dialog, actions);
                 self.editor_history(before, folders, edited, undo, redo, actions);
@@ -1118,6 +1126,45 @@ impl Menus {
         });
         if !window_open { self.editor_open = false; }
         if reset { actions.push(Action::CauldronRules(CauldronRules::default())); }
+        if save { actions.push(Action::SaveLayout); }
+        if let Some(message) = message { self.message = Some(message); }
+        list
+    }
+
+    /// the Midstage Loading's window: its four parts listed with Visible
+    /// checkboxes, moved and resized on the canvas, then saved, reset or
+    /// exported as Rust and a change request.
+    fn loading_editor(&mut self, ctx: &egui::Context, rules: LoadingRules, layers: &[(String, [f32; 4])], visibility: &[bool], actions: &mut Vec<Action>) -> LayerListResponse {
+        let mut window_open = true;
+        let (mut save, mut reset) = (false, false);
+        let mut message = None;
+        let mut list = LayerListResponse::default();
+        let room = (ctx.content_rect().height() - 170.0).clamp(120.0, 420.0);
+        egui::Window::new("Menu editor — Midstage Loading").id(egui::Id::new("menu_editor_loading")).open(&mut window_open).default_width(380.0).show(ctx, |ui| {
+            ui.label(RichText::new("Drag a part on the canvas to move it; its corner handle resizes it. Edits apply live.").weak());
+            egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
+                // the loading is not a Scripted Menu, so it keeps no folders
+                list = self.editor_layer_list(ui, layers, visibility, &mut Vec::new(), actions);
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Save layout").on_hover_text("Write the Midstage Loading's rules with the rest of the layout to menu-layout.toml.").clicked() {
+                    save = true;
+                }
+                if ui.button("Reset").clicked() {
+                    reset = true;
+                }
+                if ui.button("Export Rust + change request").clicked() {
+                    let text = format!("// Midstage Loading layout rules\n{}\n// Change request\n{}\n", rules.rust_fragment(), rules.change_request());
+                    message = Some(match std::fs::write("menu-layout-export.txt", text) {
+                        Ok(()) => "Wrote menu-layout-export.txt".to_owned(),
+                        Err(error) => format!("Could not write menu-layout-export.txt: {error}"),
+                    });
+                }
+            });
+        });
+        if !window_open { self.editor_open = false; }
+        if reset { actions.push(Action::LoadingRules(LoadingRules::default())); }
         if save { actions.push(Action::SaveLayout); }
         if let Some(message) = message { self.message = Some(message); }
         list
