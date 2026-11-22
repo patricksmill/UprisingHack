@@ -1367,6 +1367,19 @@ impl AimMouse {
         true
     }
 
+    /// whether the Idol View takes input: Idols shows it and is not on its
+    /// List.
+    pub fn idol_view_shown(&self, frame: u64) -> bool {
+        self.menus_on_top_shown(frame) && !self.menu_top.blocked
+            && self.menu_screen.is_some_and(|(index, ..)| ScreenTransform::scripted(index).id == super::screen_transform::Screen::Idols)
+            && self.menu_top.parts.iter().any(|part| part.top && part.model == Some(IDOL_VIEW_LAYER) && self.menu_top.enabled(part))
+    }
+
+    /// The Idol View Orbit binding's lean, right and up, past its dead zone.
+    pub fn idol_view_stick(&mut self, lean: [f32; 2]) {
+        self.idol_view.stick = lean;
+    }
+
     /// Wheel steps over the Idol View, positive down, Zoom it; whether the
     /// Idol View took them.
     pub(super) fn idol_view_wheel(&mut self, frame: u64, steps: f32) -> bool {

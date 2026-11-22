@@ -1637,6 +1637,7 @@ impl Menus {
                 for slot in 0..2 {
                     let bound = settings.pc.bindings.sources(device, action).get(slot).copied();
                     let text = match (self.rebinding_action == Some((action, device, slot)), bound) {
+                        (true, _) if action.stick() => "move a stick…".to_owned(),
                         (true, _) => "press…".to_owned(),
                         (false, Some(source)) => source.name(),
                         (false, None) => "—".to_owned(),
@@ -1741,6 +1742,8 @@ fn binding_refused(error: crate::bindings::BindError) -> String {
     match error {
         crate::bindings::BindError::Required(action) => format!("{} must keep an input on each device.", action.name()),
         crate::bindings::BindError::NotOnDevice(action) => format!("{} takes keyboard and mouse inputs only.", action.name()),
+        crate::bindings::BindError::WrongKind(action) if action.stick() => format!("{} takes a stick.", action.name()),
+        crate::bindings::BindError::WrongKind(action) => format!("{} takes a button, not a stick.", action.name()),
         crate::bindings::BindError::NoSuchSlot => "There are two inputs an action.".to_owned(),
     }
 }
