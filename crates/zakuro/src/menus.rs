@@ -97,6 +97,16 @@ pub enum Action {
     SaveLayout,
 }
 
+/// a name the editor gave one Screen's layer, in place of the one the
+/// port lists it by.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EditorName {
+    pub screen: usize,
+    /// the layer's index, as the editor lists it.
+    pub part: usize,
+    pub name: String,
+}
+
 /// a named group of one Screen's editor layers. Linked, picking any member
 /// picks them all, so they move, scale and nudge together.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -120,6 +130,7 @@ struct EditorSnapshot {
     visibility: Vec<bool>,
     order: Vec<usize>,
     folders: Vec<EditorFolder>,
+    names: Vec<EditorName>,
 }
 
 /// at most this many edits are kept to undo.
@@ -197,6 +208,10 @@ pub struct Menus {
     pub editor_order: Vec<usize>,
     /// every Screen's layer folders, saved with the layout.
     pub editor_folders: Vec<EditorFolder>,
+    /// every Screen's layer names, saved with the layout.
+    pub editor_names: Vec<EditorName>,
+    /// the layer whose name is being written, and the words so far.
+    editor_naming: Option<(usize, String)>,
     /// the edits to step back through and forward again, the latest last.
     editor_undo: Vec<EditorSnapshot>,
     editor_redo: Vec<EditorSnapshot>,
@@ -733,6 +748,7 @@ impl Menus {
             self.editor_undo.clear();
             self.editor_redo.clear();
             self.editor_renaming = None;
+            self.editor_naming = None;
         }
         // this Screen's folders, kept to layers it has
         let mut folders: Vec<EditorFolder> = self.editor_screen.map_or(Vec::new(), |screen| {
@@ -745,7 +761,10 @@ impl Menus {
             visibility: visibility.clone(),
             order: self.editor_order.clone(),
             folders: folders.clone(),
+            names: self.screen_names(),
         };
+        // the canvas labels each layer by the name it was given
+        let labels: Vec<String> = layers.iter().enumerate().map(|(index, (name, _))| self.layer_name(index).unwrap_or(name).to_owned()).collect();
         let order = self.editor_order.clone();
         let mut edited = false;
         let (mut undo, mut redo) = (false, false);
@@ -799,7 +818,7 @@ impl Menus {
                     .filter(|(index, (_, to))| shown(*index) && rect_of(*to).contains(point))
                     .min_by_key(|(index, _)| front(*index))
                     .map(|(index, _)| index);
-                for (index, (name, to)) in layers.iter().enumerate() {
+                for (index, (_, to)) in layers.iter().enumerate() {
                     let rect = rect_of(*to);
                     let active = shown(index);
                     let picked = group.contains(&index);
@@ -813,7 +832,7 @@ impl Menus {
                         egui::Color32::from_rgb(160, 200, 220)
                     };
                     painter.rect_stroke(rect, 0.0, egui::Stroke::new(if active && picked { 2.0 } else { 1.0 }, colour), egui::StrokeKind::Inside);
-                    painter.text(rect.min + egui::vec2(2.0, 2.0), egui::Align2::LEFT_TOP, name, egui::FontId::monospace(10.0), colour);
+                    painter.text(rect.min + egui::vec2(2.0, 2.0), egui::Align2::LEFT_TOP, &labels[index], egui::FontId::monospace(10.0), colour);
                     // a hidden layer has no handle: it cannot be dragged until shown
                     if active {
                         painter.rect_filled(egui::Rect::from_min_size(rect.max - egui::vec2(7.0, 7.0), egui::vec2(7.0, 7.0)), 0.0, colour);
@@ -1021,14 +1040,17 @@ impl Menus {
     ) -> LayerListResponse {
         let can_undo = !self.editor_undo.is_empty();
         let can_redo = !self.editor_redo.is_empty();
-        layer_list(ui, layers, visibility, &self.editor_order, &mut self.editor_layer, &mut self.editor_group, folders, self.editor_screen, &mut self.editor_renaming, [can_undo, can_redo], actions)
+        let mut names = self.screen_names();
+        let list = layer_list(ui, layers, visibility, &self.editor_order, &mut self.editor_layer, &mut self.editor_group, folders, &mut names, self.editor_screen, &mut self.editor_renaming, &mut self.editor_naming, [can_undo, can_redo], actions);
+        self.keep_names(names);
+        list
     }
 
     /// keep this frame's folders, then step back or forward through the
     /// edits, or remember how the Screen was before an edit made now.
     /// `before` is the Screen as this frame found it, before its actions.
     fn editor_history(&mut self, before: EditorSnapshot, folders: Vec<EditorFolder>, edited: bool, undo: bool, redo: bool, actions: &mut Vec<Action>) {
-        let edited = edited || folders != before.folders;
+        let edited = edited || folders != before.folders || self.screen_names() != before.names;
         let now = EditorSnapshot { folders, ..before.clone() };
         if undo || redo {
             // this frame's own edits give way to the step
@@ -1045,9 +1067,11 @@ impl Menus {
                 }
                 if snapshot.order != before.order { actions.push(Action::EditorLayerOrder(snapshot.order.clone())); }
                 self.keep_folders(snapshot.folders);
+                self.keep_names(snapshot.names);
                 return;
             }
             self.keep_folders(before.folders);
+            self.keep_names(before.names);
             return;
         }
         if edited && self.editor_undo.last() != Some(&before) {
@@ -1056,6 +1080,25 @@ impl Menus {
             self.editor_redo.clear();
         }
         self.keep_folders(now.folders);
+    }
+
+    /// the names given to this Screen's layers.
+    fn screen_names(&self) -> Vec<EditorName> {
+        let Some(screen) = self.editor_screen else { return Vec::new() };
+        self.editor_names.iter().filter(|name| name.screen == screen).cloned().collect()
+    }
+
+    /// the name given to a layer of this Screen, if any.
+    fn layer_name(&self, index: usize) -> Option<&str> {
+        let screen = self.editor_screen?;
+        self.editor_names.iter().find(|name| name.screen == screen && name.part == index).map(|name| name.name.as_str())
+    }
+
+    /// this Screen's names in place of the ones kept for it.
+    fn keep_names(&mut self, names: Vec<EditorName>) {
+        let Some(screen) = self.editor_screen else { return };
+        self.editor_names.retain(|name| name.screen != screen);
+        self.editor_names.extend(names);
     }
 
     /// this Screen's folders in place of the ones kept for it.
@@ -2726,6 +2769,41 @@ mod tests {
     /// a layer's Visible checkbox hides it from the canvas while keeping it
     /// listed, and showing it again restores the same box and pointer.
     #[test]
+    fn a_double_clicked_layer_takes_the_name_written_and_an_empty_one_gives_its_own_back() {
+        let layers = vec![layer("MenColViewBt0003 #0", [10.0, 10.0, 50.0, 20.0]), layer("hint #1", [100.0, 10.0, 50.0, 20.0])];
+        let mut editor = Editor::new(layers, [500.0, 0.0, 400.0, 240.0]);
+        editor.menus.editor_screen = Some(24);
+        editor.frame(Vec::new());
+        let name_at = |editor: &Editor| {
+            let checkbox = editor.drawn.visibility[0].rect;
+            egui::pos2(checkbox.max.x + 30.0, checkbox.center().y)
+        };
+        let rename = |editor: &mut Editor, words: &str| {
+            let at = name_at(editor);
+            editor.click(at);
+            editor.click(at);
+            editor.frame(Vec::new());
+            let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+            editor.frame(vec![key(egui::Key::A), egui::Event::Text(words.to_owned())]);
+            editor.frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+            editor.frame(Vec::new());
+        };
+        rename(&mut editor, "Palutena");
+        assert_eq!(editor.menus.editor_names, vec![EditorName { screen: 24, part: 0, name: "Palutena".to_owned() }]);
+        assert_eq!(editor.menus.layer_name(0), Some("Palutena"), "the canvas does not show the name");
+        // the rename is one edit to undo
+        let undo = egui::Event::Key { key: egui::Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        editor.modifiers = egui::Modifiers::COMMAND;
+        editor.frame(vec![undo]);
+        editor.modifiers = egui::Modifiers::default();
+        assert!(editor.menus.editor_names.is_empty(), "undo kept the name: {:?}", editor.menus.editor_names);
+
+        rename(&mut editor, "Palutena");
+        rename(&mut editor, "  ");
+        assert!(editor.menus.editor_names.is_empty(), "an empty name was kept: {:?}", editor.menus.editor_names);
+    }
+
+    #[test]
     fn restacking_keeps_the_selection_s_own_order() {
         let order = [0, 1, 2, 3, 4];
         assert_eq!(restack(&order, &[3], Restack::Forward), [0, 1, 3, 2, 4]);
@@ -2888,8 +2966,10 @@ fn layer_list(
     selected: &mut Option<usize>,
     group: &mut Vec<usize>,
     folders: &mut Vec<EditorFolder>,
+    names: &mut Vec<EditorName>,
     screen: Option<usize>,
     renaming: &mut Option<usize>,
+    naming: &mut Option<(usize, String)>,
     [can_undo, can_redo]: [bool; 2],
     actions: &mut Vec<Action>,
 ) -> LayerListResponse {
@@ -2923,6 +3003,13 @@ fn layer_list(
         }
     });
     ui.label(RichText::new("Ctrl or Shift selects several to move or scale together. A linked folder's layers always move together.").small().weak());
+    if screen.is_some() {
+        ui.label(RichText::new("Double-click a layer to rename it; an empty name gives back the one it had.").small().weak());
+    }
+    // a layer's name as listed: the one it was given, else the port's
+    let label = |names: &[EditorName], index: usize| names.iter().find(|name| name.part == index).map_or_else(|| layers[index].0.clone(), |name| name.name.clone());
+    // the words written for a layer, once its name field lets go
+    let mut named = None;
     if can_order {
         ui.label(RichText::new("The top of the list is in front. Drag \u{2630} to restack; Ctrl+] and Ctrl+[ step the selection forward and back, with Shift to the front or back.").small().weak());
         if !group.is_empty() && !ui.ctx().text_edit_focused() {
@@ -2955,7 +3042,8 @@ fn layer_list(
     let mut dropped = None;
     for &index in &order {
         let Some(at) = folders.iter().position(|folder| folder.parts.contains(&index)) else {
-            let (_, row) = layer_row(ui, index, &layers[index].0, shown(index), false, can_order, adding, selected, group, actions, &mut boxes, &mut response.edited);
+            let (_, row, done) = layer_row(ui, index, &label(names, index), &layers[index].0, shown(index), false, can_order, adding, screen.is_some(), naming, selected, group, actions, &mut boxes, &mut response.edited);
+            if done { named = naming.take(); }
             dropped = dropped.or(drop_on(ui, &row, index));
             continue;
         };
@@ -3018,10 +3106,19 @@ fn layer_list(
         });
         if !folders[at].collapsed {
             for &member in &members {
-                let (out, row) = layer_row(ui, member, &layers[member].0, shown(member), true, can_order, adding, selected, group, actions, &mut boxes, &mut response.edited);
+                let (out, row, done) = layer_row(ui, member, &label(names, member), &layers[member].0, shown(member), true, can_order, adding, screen.is_some(), naming, selected, group, actions, &mut boxes, &mut response.edited);
                 if out { take_out = Some(member); }
+                if done { named = naming.take(); }
                 dropped = dropped.or(drop_on(ui, &row, member));
             }
+        }
+    }
+    if let (Some((index, written)), Some(screen)) = (named, screen) {
+        // an empty name, or the port's own, gives the layer back its own
+        let written = written.trim();
+        names.retain(|name| name.part != index);
+        if !written.is_empty() && written != layers[index].0 {
+            names.push(EditorName { screen, part: index, name: written.to_owned() });
         }
     }
     if let Some((moving, onto, below)) = dropped {
@@ -3064,17 +3161,21 @@ fn layer_row(
     ui: &mut egui::Ui,
     index: usize,
     name: &str,
+    original: &str,
     visible: bool,
     nested: bool,
     draggable: bool,
     adding: bool,
+    nameable: bool,
+    naming: &mut Option<(usize, String)>,
     selected: &mut Option<usize>,
     group: &mut Vec<usize>,
     actions: &mut Vec<Action>,
     boxes: &mut [Option<egui::Response>],
     edited: &mut bool,
-) -> (bool, egui::Response) {
+) -> (bool, egui::Response, bool) {
     let mut take_out = false;
+    let mut done = false;
     let row = ui.horizontal(|ui| {
         if nested { ui.add_space(18.0); }
         if draggable {
@@ -3092,7 +3193,20 @@ fn layer_row(
             *edited = true;
         }
         boxes[index] = Some(response);
-        if ui.selectable_label(group.contains(&index), name).clicked() {
+        if let Some((_, written)) = naming.as_mut().filter(|(layer, _)| *layer == index) {
+            let edit = ui.add(egui::TextEdit::singleline(written).desired_width(160.0));
+            if edit.lost_focus() {
+                done = true;
+            } else if !edit.has_focus() {
+                edit.request_focus();
+            }
+            return;
+        }
+        let label = ui.selectable_label(group.contains(&index), name);
+        let label = if name != original { label.on_hover_text(format!("{original}. Double-click to rename.")) } else if nameable { label.on_hover_text("Double-click to rename.") } else { label };
+        if nameable && label.double_clicked() {
+            *naming = Some((index, name.to_owned()));
+        } else if label.clicked() {
             if !adding {
                 *group = vec![index];
                 *selected = Some(index);
@@ -3108,7 +3222,7 @@ fn layer_row(
             take_out = true;
         }
     });
-    (take_out, row.response)
+    (take_out, row.response, done)
 }
 
 /// a layer dragged over a row: a line where it would go, and on release
