@@ -1,7 +1,7 @@
 //! the one process that puts a game-owned Screen's drawing and input on the
 //! top screen, and the registry of the Screens it knows.
 //!
-//! Pause, its dialog, the 28 Scripted Menus, the Fiend's Cauldron and the
+//! Pause, its dialog, the 29 Scripted Menus, the Fiend's Cauldron and the
 //! Midstage Loading are here; see docs/agents/screen-transform.md.
 
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,7 @@ pub enum Screen {
     IdolTossVault,
     Idols,
     PowerPortrait,
+    ChapterResults,
     FiendsCauldron,
     Pause,
     RetreatDialog,
@@ -115,6 +116,218 @@ pub(super) const ALTAR: &[(&str, [f32; 4])] = &[
     ("MenAlterBt0004", [130.0, 150.0, 190.0, 90.0]),
     ("MenAlterBt9999", [0.0, 192.0, 58.0, 48.0]),
     ("MenAlterBt0001", [0.0, 0.0, 198.0, 108.0]),
+];
+/// The Solo Hub's top screen: the hall. `MenCmnUpFace0000` draws nothing
+/// here; the heart counter is its own part already.
+const SOLO_TOP: &[TopLayer] = &[
+    ("Hall", "MenSgHomeUp0001", &[]),
+];
+/// The Main Menu's top: paper, ink wash, ornaments, the Solo title, its flourish and Pit's silhouette.
+const MAIN_TOP: &[TopLayer] = &[
+    ("Paper background", "MenTopUp0010", &["DN_U0000"]),
+    ("Ink wash", "MenTopUp0000", &["NN_U0006"]),
+    ("Ornaments", "MenTopUp00*", &[]),
+    ("Title flourish", "MenTopUp0010", &["NN_U0008"]),
+    ("Page title", "MenTopUp0000", &["NN_U0007"]),
+    ("Silhouette", "MenTopUp0000", &["NN_U0009"]),
+];
+/// Options pages share one backdrop mesh (`...Up0000`) and a page picture (`...Up0001`).
+const OPTIONS_TOP: &[TopLayer] = &[
+    ("Paper background", "MenOptionTopUp0000", &["NN_U1000"]),
+    ("Corner flourish", "MenOptionTopUp0000", &["NN_U0100"]),
+    ("Lower ornaments", "MenOptionTopUp0000", &["NN_U0005"]),
+    ("Ornaments", "MenOptionTopUp0000", &[]),
+    ("Picture", "MenOptionTopUp0001", &[]),
+];
+const OTHER_TOP: &[TopLayer] = &[
+    ("Paper background", "MenOptionTopUp0000", &["NN_U1000"]),
+    ("Corner flourish", "MenOptionTopUp0000", &["NN_U0100"]),
+    ("Lower ornaments", "MenOptionTopUp0000", &["NN_U0005"]),
+    ("Ornaments", "MenOptionTopUp0000", &[]),
+    ("Picture", "MenOptionOtherUp0001", &[]),
+];
+const CONTROLS_TOP: &[TopLayer] = &[
+    ("Paper background", "MenOptionControlUp0000", &["NN_U1000"]),
+    ("Corner flourish", "MenOptionControlUp0000", &["NN_U0100"]),
+    ("Lower ornaments", "MenOptionControlUp0000", &["NN_U0005"]),
+    ("Ornaments", "MenOptionControlUp0000", &[]),
+    ("Picture", "MenOptionControlUp0001", &[]),
+];
+const RETICLE_CAMERA_TOP: &[TopLayer] = &[
+    ("Paper background", "MenOptionCtlTpnUp0000", &["NN_U1000"]),
+    ("Corner flourish", "MenOptionCtlTpnUp0000", &["NN_U0100"]),
+    ("Lower ornaments", "MenOptionCtlTpnUp0000", &["NN_U0005"]),
+    ("Ornaments", "MenOptionCtlTpnUp0000", &[]),
+    ("Picture", "MenOptionCtlTpnUp0001", &[]),
+];
+const SUBTITLES_TOP: &[TopLayer] = &[
+    ("Picture", "MenOptionOtherCaptionUp0001", &[]),
+];
+const VOLUME_TOP: &[TopLayer] = &[
+    ("Paper background", "MenOptionSoundUp0000", &["NN_U1000"]),
+    ("Corner flourish", "MenOptionSoundUp0000", &["NN_U0100"]),
+    ("Lower ornaments", "MenOptionSoundUp0000", &["NN_U0005"]),
+    ("Ornaments", "MenOptionSoundUp0000", &[]),
+    ("Picture", "MenOptionSoundUp0001", &[]),
+];
+const PROFILE_TOP: &[TopLayer] = &[
+    ("Paper background", "MenOptionTopUp0000", &["NN_U1000"]),
+    ("Corner flourish", "MenOptionTopUp0000", &["NN_U0100"]),
+    ("Lower ornaments", "MenOptionTopUp0000", &["NN_U0005"]),
+    ("Ornaments", "MenOptionTopUp0000", &[]),
+    ("Picture", "MenOptionNameUp0001", &[]),
+];
+/// Profile's question over the file card: lined paper, rainbow, the black
+/// ink splat behind the words, ornaments, the file's numeral, red border.
+const PROFILE_CHOICE_TOP: &[TopLayer] = &[
+    ("Paper background", "MenSelFileUp0001", &["NN_U0000"]),
+    ("Rainbow", "MenSelFileUp0001", &["NN_U0001"]),
+    ("Ink splat", "MenSelFileUp0001", &["NN_B0004"]),
+    ("Ornaments", "MenSelFileUp0001", &[]),
+    ("File number", "MenSelFileUp0001", &["FileNum01", "FileNum02", "FileNum03"]),
+    ("Red border", "MenSelFileUp0002", &[]),
+];
+const SPOTPASS_TOP: &[TopLayer] = &[
+    ("Paper background", "MenOptionTopUp0000", &["NN_U1000"]),
+    ("Corner flourish", "MenOptionTopUp0000", &["NN_U0100"]),
+    ("Lower ornaments", "MenOptionTopUp0000", &["NN_U0005"]),
+    ("Ornaments", "MenOptionTopUp0000", &[]),
+    ("Picture", "MenOptionOtherUp0005", &[]),
+];
+/// The Arms Altar: the hall, its ink frame and the floating weapons.
+const ALTAR_TOP: &[TopLayer] = &[
+    ("Hall", "MenAlterUp0000", &["NN_U0100"]),
+    ("Ink frame", "MenAlterUp0000", &[]),
+    ("Weapons", "MenAlterUp0001", &[]),
+];
+/// Redeem Hearts' card by model.
+const REDEEM_TOP: &[TopLayer] = &[
+    ("Paper background", "MenAlterbuyUp0100", &[]),
+    ("Weapon showcase", "MenAlterbuyUp0101", &[]),
+    ("Hearts", "MenAlterbuyUp0102", &[]),
+    ("Price tag", "MenAlterbuyUp0103", &[]),
+];
+/// Convert to Hearts' card by model.
+const CONVERT_TOP: &[TopLayer] = &[
+    ("Paper background", "MenAltersoldUp0100", &[]),
+    ("Weapon", "MenAltersoldUp0101", &[]),
+    ("Value card", "MenAltersoldUp0103", &[]),
+    ("Heart bar", "MenAltersoldUp0104", &[]),
+    ("Heart total", "MenAltersoldUp0105", &[]),
+    ("Bonus board", "MenAltersoldUp0106", &[]),
+];
+/// Armory Categories: paper, category emblem, weapon shadow, weapon.
+const CATEGORIES_TOP: &[TopLayer] = &[
+    ("Paper background", "MenEquipUp0100", &[]),
+    ("Category emblem", "MenEquipUp0101", &["NN_U0000"]),
+    ("Weapon shadow", "MenEquipUp0101", &["NN_U0002"]),
+    ("Weapon", "MenEquipUp0101", &["NN_U0001"]),
+];
+/// Practice Range: paper, emblem, arrows and the title plate.
+const PRACTICE_TOP: &[TopLayer] = &[
+    ("Paper background", "MenTrymissionUp0000", &["NN_U0000"]),
+    ("Emblem", "MenTrymissionUp0000", &["NN_U0001", "NN_U0003"]),
+    ("Arrows", "MenTrymissionUp0000", &["NN_U0002"]),
+    ("Title plate", "MenTrymissionUp0002", &[]),
+];
+/// Treasure Hunt: frame, Palutena, description paper, Power bar and reward icon.
+const TREASURE_TOP: &[TopLayer] = &[
+    ("Frame", "MenStockroomUp0000", &[]),
+    ("Palutena", "MenStockroomUp0014", &["NN_U0000"]),
+    ("Description paper", "MenStockroomUp0002", &[]),
+    ("Power bar", "MenStockroomUp0001", &[]),
+    ("Reward icon", "MenStockroomUp0014", &[]),
+];
+/// The Vault: background, ornaments, Pit's silhouette and the title.
+const VAULT_TOP: &[TopLayer] = &[
+    ("Paper background", "MenCollectionTopUp0000", &["back_00"]),
+    ("Ornaments", "MenCollectionTopUp0000", &[]),
+    ("Silhouette", "MenCollectionTopUp0001", &[]),
+    ("Page title", "MenCollectionTopUp0005", &[]),
+];
+/// Chapter Results (MENUID 34, `MenOnlineRsltte*`): the results after a
+/// chapter, then each reward with Take. Probed from the user's desktop
+/// slot 5 (a Power's reward page). Its other pages' models (the score
+/// board) stay together in Results board on both screens.
+const RESULTS_TOP: &[TopLayer] = &[
+    ("Paper background", "MenOnlineRsltteUp0001", &["bg_play", "kazari"]),
+    ("Results board", "MenOnlineRsltteUp*", &[]),
+    ("Name bar", "MenOnlineRsltteUp0006", &["MN_U6001", "nameBase"]),
+    ("Seal", "MenOnlineRsltteUp0007", &["hanko", "hanko2"]),
+    ("Reward icon", "MenOnlineRsltteUp0005", &["NN_U5002"]),
+];
+
+/// Chapter Results' bottom, back to front; the score board's models are the
+/// rest of `MenOnlineRsltteBt*`. The named parts list their nodes so the
+/// prefix owner, earlier in the table, does not take them.
+const RESULTS_BOTTOM: &[TopLayer] = &[
+    ("Background", "MenOnlineRsltteBt0000", &["back", "kazari", "moyou"]),
+    ("Results board", "MenOnlineRsltteBt*", &[]),
+    ("Message bar", "MenOnlineRsltteBt0008", &["bace2", "base2"]),
+    ("Message", "MenOnlineRsltteBt0010", &["MN_B1010"]),
+    ("Take", "MenOnlineRsltteBt0001", &["base", "cursor"]),
+    ("Window", "MenCmnWindowBt0000", &[]),
+];
+
+/// Chapter Results' bottom Board with native boxes.
+const RESULTS: &[(&str, [f32; 4])] = &[
+    ("Background", [0.0, 0.0, 320.0, 240.0]),
+    ("Results board", [0.0, 0.0, 320.0, 240.0]),
+    ("Message bar", [8.0, 18.0, 304.0, 68.0]),
+    ("Message", [8.0, 18.0, 304.0, 68.0]),
+    ("Take", [176.0, 196.0, 116.0, 44.0]),
+    ("Window", [0.0, 0.0, 320.0, 240.0]),
+];
+/// Idol Toss's top screen (both rows): the backdrop (the sky and rays in a
+/// reveal) and the new Idol (`Dol*`), drawn only while it is revealed.
+/// `MenColVisionUp0001`, `...Up0003` and `...Up0004` drew nothing idle or
+/// in a reveal. `MenColVisionUp0001`
+/// draws nothing.
+const IDOL_TOSS_TOP: &[TopLayer] = &[
+    ("Backdrop", "MenColVisionUp0000", &[]),
+    ("Idol", "Dol*", &[]),
+];
+/// Redeem Hearts' bottom Board, back to front, with native boxes: the
+/// backdrops, the weapon list, its icons and Cursor, the header, Back and
+/// the Buy dialog.
+const REDEEM: &[(&str, [f32; 4])] = &[
+    ("MenAlterbuyBt0100", [0.0, 0.0, 320.0, 240.0]),
+    ("MenAlterbuyBt0101", [0.0, 0.0, 320.0, 240.0]),
+    ("MenAlterbuyBt0120", [0.0, 22.0, 320.0, 170.0]),
+    ("MenAlterbuyBt0131", [0.0, 22.0, 320.0, 170.0]),
+    ("MenAlterbuyBt0125", [0.0, 22.0, 320.0, 170.0]),
+    ("MenAlterbuyBt0123", [0.0, 0.0, 320.0, 22.0]),
+    ("MenAlterbuyBt8888", [0.0, 0.0, 320.0, 240.0]),
+    ("MenAlterbuyBt9999", [0.0, 190.0, 60.0, 50.0]),
+    ("MenAlterbuyBt0130", [0.0, 0.0, 320.0, 240.0]),
+];
+/// Convert to Hearts' bottom Board, as Redeem Hearts', with its scroll bar.
+const CONVERT: &[(&str, [f32; 4])] = &[
+    ("MenAltersoldBt0100", [0.0, 0.0, 320.0, 240.0]),
+    ("MenAltersoldBt0101", [0.0, 0.0, 320.0, 240.0]),
+    ("MenAltersoldBt0120", [0.0, 22.0, 320.0, 170.0]),
+    ("MenAltersoldBt0124", [0.0, 22.0, 320.0, 170.0]),
+    ("MenAltersoldBt0121", [0.0, 22.0, 320.0, 170.0]),
+    ("MenAltersoldBt0125", [0.0, 22.0, 320.0, 170.0]),
+    ("MenAltersoldBt0132", [296.0, 22.0, 24.0, 170.0]),
+    ("MenAltersoldBt0123", [0.0, 0.0, 320.0, 22.0]),
+    ("MenAltersoldBt9999", [0.0, 190.0, 60.0, 50.0]),
+    ("MenAltersoldBt0130", [0.0, 0.0, 320.0, 240.0]),
+];
+/// Treasure Hunt's bottom, one part per model: tile board, the
+/// tiles, feathers, Back and the reward dialog. The board's pieces share
+/// the whole screen's box so they stay together until moved. The bottom's
+/// backdrop (`MenStockroomBt0000`, with a black matte and a red block
+/// off its edges) is left out, as the other hubs' backdrops are.
+const TREASURE: &[(&str, [f32; 4])] = &[
+    ("MenStockroomBt0001", [0.0, 0.0, 320.0, 240.0]),
+    ("MenStockroomBt0021", [0.0, 0.0, 320.0, 240.0]),
+    ("MenStockroomBt0003", [0.0, 0.0, 320.0, 240.0]),
+    ("MenStockroomBt0002", [284.0, 0.0, 36.0, 80.0]),
+    ("MenStockroomBt0004", [0.0, 0.0, 320.0, 240.0]),
+    ("MenStockroomBt9999", [0.0, 196.0, 50.0, 44.0]),
+    ("MenStockroomBt0010", [0.0, 0.0, 320.0, 240.0]),
+    ("MenCmnWindowBt0000", [0.0, 0.0, 320.0, 240.0]),
 ];
 const MAIN: &[(&str, [f32; 4])] = &[
     ("MenTopBt0000", [260.0, 178.0, 60.0, 62.0]),
@@ -477,9 +690,9 @@ pub(super) enum LayoutKind {
     /// animated 3D books, Controls and a separately editable information Board.
     FileSelect,
     /// one part fitted to the viewport, scaled by the menu factor.
-    Generic { hint: Option<[f32; 4]>, details: bool },
+    Generic { hint: Option<[f32; 4]>, details: bool, top_layers: &'static [TopLayer] },
     /// the game's fixed board of models.
-    Group { group: &'static [(&'static str, [f32; 4])], hint: Option<[f32; 4]>, details: bool, heart: bool },
+    Group { group: &'static [(&'static str, [f32; 4])], hint: Option<[f32; 4]>, details: bool, heart: bool, top_layers: &'static [TopLayer] },
     /// Controls cut from the whole native Board, beside the details card.
     Board { group: &'static [(&'static str, [f32; 4])], hint: Option<[f32; 4]>, top_layers: &'static [TopLayer], bottom_layers: &'static [TopLayer], texture_layers: &'static [TextureLayer] },
     /// Idol Toss's counters, Back and launcher, placed apart.
@@ -512,7 +725,11 @@ impl LayoutKind {
     }
 
     pub fn top_layers(self) -> &'static [TopLayer] {
-        match self { LayoutKind::Board { top_layers, .. } => top_layers, _ => &[] }
+        match self {
+            LayoutKind::Board { top_layers, .. } | LayoutKind::Group { top_layers, .. } | LayoutKind::Generic { top_layers, .. } => top_layers,
+            LayoutKind::Idol => IDOL_TOSS_TOP,
+            _ => &[],
+        }
     }
 
     /// top layers drawn by moving a texture inside its model's mesh.
@@ -576,11 +793,11 @@ impl ScreenSpec {
 
 /// the update function of each Scripted Menu, in registry order. Kept
 /// separately so `PLACES` can read it in a const context.
-pub(super) const SCRIPTED_UPDATES: [u32; 28] = [
+pub(super) const SCRIPTED_UPDATES: [u32; 29] = [
     0x002A3EC4, 0x002A3FCC, 0x002A3F9C, 0x00224BA0, 0x001ECB4C, 0x00224C18, 0x001B4C74, 0x001ECBBC, 0x00224BD4,
     0x001ECBF4, 0x0016756C, 0x002A4070, 0x002ECCF4, 0x002A1FD8, 0x002B6DB8, 0x00238CBC, 0x001C9734, 0x00230B5C,
     0x002BB14C, 0x0019CDC8, 0x0019BDC4, 0x0023A9FC, 0x001B4D58, 0x0018AF44, 0x00224B80, 0x001B4D4C, 0x001B4D70,
-    0x0018AEB8,
+    0x0018AEB8, 0x00260868,
 ];
 
 pub(super) const SCRIPTED_COUNT: usize = SCRIPTED_UPDATES.len();
@@ -616,32 +833,33 @@ macro_rules! scripted {
 pub(super) static SCREENS: &[ScreenSpec] = &[
     scripted!(0, FileSelect, 0x00CEC3F4, outline_file, Activate::Call(0x003374D0), LayoutKind::FileSelect),
     scripted!(1, ChapterSelect, 0x00CF243C, outline_chapter, Activate::Call(0x003675C0), LayoutKind::Chapter),
-    scripted!(2, MainMenu, 0x00CFBD9C, outline_buttons, Activate::Call(0x0036F59C), LayoutKind::Group { group: MAIN, hint: HINT_BOTTOM, details: false, heart: false }),
-    scripted!(3, Options, 0x00CEAE98, outline_queued, Activate::Call(0x002FB9E0), LayoutKind::Group { group: OPTIONS, hint: HINT_BOTTOM, details: false, heart: false }),
-    scripted!(4, Other, 0x00CF2368, outline_other, Activate::Call(0x002D50FC), LayoutKind::Group { group: OTHER, hint: HINT_BOTTOM, details: false, heart: false }),
-    scripted!(5, Controls, 0x00CF84DC, outline_controls, Activate::Call(0x003186E8), LayoutKind::Group { group: CONTROLS, hint: HINT_BOTTOM, details: false, heart: false }),
-    scripted!(6, ReticleCamera, 0x00CF9B60, outline_queued, Activate::Call(0x0029B26C), LayoutKind::Group { group: RETICLE_CAMERA, hint: HINT_BOTTOM, details: false, heart: false }),
-    scripted!(7, Subtitles, 0x00CFA034, outline_subtitles, Activate::Call(0x002E5448), LayoutKind::Group { group: SUBTITLES, hint: None, details: true, heart: false }),
-    scripted!(8, Volume, 0x00CF2390, outline_volume, Activate::Call(0x002D56CC), LayoutKind::Group { group: VOLUME, hint: HINT_BOTTOM, details: false, heart: false }),
-    scripted!(9, Profile, 0x00CF8E8C, outline_profile, Activate::Call(0x002E2F4C), LayoutKind::Group { group: PROFILE, hint: HINT_BOTTOM, details: false, heart: false }),
-    scripted!(10, ProfileYesNo, 0x00CEC41C, outline_yes_no, Activate::Call(0x001C16D4), LayoutKind::Group { group: PROFILE_CHOICE, hint: HINT_BOTTOM, details: false, heart: false }),
-    scripted!(11, SpotPassDialog, 0x00CF8270, outline_dialog, Activate::Call(0x00314DF8), LayoutKind::Group { group: SPOTPASS_CHOICE, hint: HINT_BOTTOM, details: false, heart: false }),
-    scripted!(12, SoloHub, 0x00CFC3D0, outline_solo, Activate::Call(0x00370300), LayoutKind::Group { group: SOLO, hint: HINT_BOTTOM, details: false, heart: true }),
-    scripted!(13, ArmsAltar, 0x00CFCA28, outline_altar, Activate::Call(0x00322C34), LayoutKind::Group { group: ALTAR, hint: HINT_BOTTOM, details: false, heart: false }),
+    scripted!(2, MainMenu, 0x00CFBD9C, outline_buttons, Activate::Call(0x0036F59C), LayoutKind::Group { group: MAIN, hint: HINT_BOTTOM, details: false, heart: false, top_layers: MAIN_TOP }),
+    scripted!(3, Options, 0x00CEAE98, outline_queued, Activate::Call(0x002FB9E0), LayoutKind::Group { group: OPTIONS, hint: HINT_BOTTOM, details: false, heart: false, top_layers: OPTIONS_TOP }),
+    scripted!(4, Other, 0x00CF2368, outline_other, Activate::Call(0x002D50FC), LayoutKind::Group { group: OTHER, hint: HINT_BOTTOM, details: false, heart: false, top_layers: OTHER_TOP }),
+    scripted!(5, Controls, 0x00CF84DC, outline_controls, Activate::Call(0x003186E8), LayoutKind::Group { group: CONTROLS, hint: HINT_BOTTOM, details: false, heart: false, top_layers: CONTROLS_TOP }),
+    scripted!(6, ReticleCamera, 0x00CF9B60, outline_queued, Activate::Call(0x0029B26C), LayoutKind::Group { group: RETICLE_CAMERA, hint: HINT_BOTTOM, details: false, heart: false, top_layers: RETICLE_CAMERA_TOP }),
+    scripted!(7, Subtitles, 0x00CFA034, outline_subtitles, Activate::Call(0x002E5448), LayoutKind::Group { group: SUBTITLES, hint: None, details: true, heart: false, top_layers: SUBTITLES_TOP }),
+    scripted!(8, Volume, 0x00CF2390, outline_volume, Activate::Call(0x002D56CC), LayoutKind::Group { group: VOLUME, hint: HINT_BOTTOM, details: false, heart: false, top_layers: VOLUME_TOP }),
+    scripted!(9, Profile, 0x00CF8E8C, outline_profile, Activate::Call(0x002E2F4C), LayoutKind::Group { group: PROFILE, hint: HINT_BOTTOM, details: false, heart: false, top_layers: PROFILE_TOP }),
+    scripted!(10, ProfileYesNo, 0x00CEC41C, outline_yes_no, Activate::Call(0x001C16D4), LayoutKind::Group { group: PROFILE_CHOICE, hint: HINT_BOTTOM, details: false, heart: false, top_layers: PROFILE_CHOICE_TOP }),
+    scripted!(11, SpotPassDialog, 0x00CF8270, outline_dialog, Activate::Call(0x00314DF8), LayoutKind::Group { group: SPOTPASS_CHOICE, hint: HINT_BOTTOM, details: false, heart: false, top_layers: SPOTPASS_TOP }),
+    scripted!(12, SoloHub, 0x00CFC3D0, outline_solo, Activate::Call(0x00370300), LayoutKind::Group { group: SOLO, hint: HINT_BOTTOM, details: false, heart: true, top_layers: SOLO_TOP }),
+    scripted!(13, ArmsAltar, 0x00CFCA28, outline_altar, Activate::Call(0x00322C34), LayoutKind::Group { group: ALTAR, hint: HINT_BOTTOM, details: false, heart: false, top_layers: ALTAR_TOP }),
     scripted!(14, ArmoryGear, 0x00CEC2B8, outline_armory, Activate::None, LayoutKind::Board { group: GEAR, hint: HINT_TOP, top_layers: GEAR_TOP, bottom_layers: &[], texture_layers: &[] }),
-    scripted!(15, ArmoryRedeemHearts, 0x00CEFCA8, outline_armory, Activate::None, LayoutKind::Generic { hint: None, details: true }),
-    scripted!(16, ArmoryConvertToHearts, 0x00CEEBFC, outline_armory, Activate::None, LayoutKind::Generic { hint: None, details: true }),
+    scripted!(15, ArmoryRedeemHearts, 0x00CEFCA8, outline_armory, Activate::None, LayoutKind::Board { group: REDEEM, hint: None, top_layers: REDEEM_TOP, bottom_layers: &[], texture_layers: &[] }),
+    scripted!(16, ArmoryConvertToHearts, 0x00CEEBFC, outline_armory, Activate::None, LayoutKind::Board { group: CONVERT, hint: None, top_layers: CONVERT_TOP, bottom_layers: &[], texture_layers: &[] }),
     scripted!(17, ArmoryFuseWeapons, 0x00CEE148, outline_armory, Activate::None, LayoutKind::Board { group: FUSE, hint: HINT_BOTTOM, top_layers: FUSE_TOP, bottom_layers: FUSE_BOTTOM, texture_layers: &[] }),
     scripted!(18, ArmoryPowers, 0x00CEC2E0, outline_armory, Activate::None, LayoutKind::Board { group: POWERS, hint: None, top_layers: POWERS_TOP, bottom_layers: &[], texture_layers: &[] }),
     scripted!(19, ArmoryWeapons, 0x00CEE1E8, outline_armory, Activate::None, LayoutKind::Board { group: WEAPON_LIST, hint: HINT_BOTTOM, top_layers: WEAPONS_TOP, bottom_layers: &[], texture_layers: &[] }),
-    scripted!(20, ArmoryCategories, 0x00CEE1C0, outline_armory, Activate::None, LayoutKind::Board { group: CATEGORIES, hint: HINT_TOP, top_layers: &[], bottom_layers: &[], texture_layers: &[] }),
-    scripted!(21, PracticeRange, 0x00CF0154, outline_practice, Activate::Call(0x0030B5B4), LayoutKind::Group { group: PRACTICE, hint: HINT_PRACTICE, details: false, heart: false }),
+    scripted!(20, ArmoryCategories, 0x00CEE1C0, outline_armory, Activate::None, LayoutKind::Board { group: CATEGORIES, hint: HINT_TOP, top_layers: CATEGORIES_TOP, bottom_layers: &[], texture_layers: &[] }),
+    scripted!(21, PracticeRange, 0x00CF0154, outline_practice, Activate::Call(0x0030B5B4), LayoutKind::Group { group: PRACTICE, hint: HINT_PRACTICE, details: false, heart: false, top_layers: PRACTICE_TOP }),
     scripted!(22, IdolTossSolo, 0x00CF9400, outline_idol, Activate::Touch, LayoutKind::Idol),
-    scripted!(23, TreasureHunt, 0x00CEEDD8, outline_treasure, Activate::Touch, LayoutKind::Generic { hint: HINT_TREASURE, details: false }),
-    scripted!(24, Vault, 0x00CF8248, outline_vault, Activate::Call(0x00345FDC), LayoutKind::Group { group: VAULT, hint: HINT_VAULT, details: false, heart: false }),
+    scripted!(23, TreasureHunt, 0x00CEEDD8, outline_treasure, Activate::Touch, LayoutKind::Group { group: TREASURE, hint: HINT_TREASURE, details: false, heart: false, top_layers: TREASURE_TOP }),
+    scripted!(24, Vault, 0x00CF8248, outline_vault, Activate::Call(0x00345FDC), LayoutKind::Group { group: VAULT, hint: HINT_VAULT, details: false, heart: false, top_layers: VAULT_TOP }),
     scripted!(25, IdolTossVault, 0x00CF9400, outline_idol, Activate::Touch, LayoutKind::Idol),
     scripted!(26, Idols, 0x00CF93D8, outline_none, Activate::Touch, LayoutKind::Board { group: IDOLS, hint: None, top_layers: IDOLS_TOP, bottom_layers: IDOLS_BOTTOM, texture_layers: IDOLS_TEXTURE }),
     scripted!(27, PowerPortrait, 0x00CF9388, outline_none, Activate::Touch, LayoutKind::Board { group: POWER_PORTRAIT, hint: None, top_layers: POWER_PORTRAIT_TOP, bottom_layers: POWER_PORTRAIT_BOTTOM, texture_layers: &[] }),
+    scripted!(28, ChapterResults, 0x00CF7414, outline_none, Activate::Touch, LayoutKind::Board { group: RESULTS, hint: None, top_layers: RESULTS_TOP, bottom_layers: RESULTS_BOTTOM, texture_layers: &[] }),
     ScreenSpec {
         id: Screen::FiendsCauldron,
         family: Family::Cauldron,
@@ -1747,7 +1965,7 @@ mod tests {
 
     #[test]
     fn scripted_rows_keep_their_order() {
-        assert_eq!(SCRIPTED_COUNT, 28);
+        assert_eq!(SCRIPTED_COUNT, 29);
         for (index, update) in SCRIPTED_UPDATES.iter().enumerate() {
             assert_eq!(SCREENS[index].update(), Some(*update));
         }
