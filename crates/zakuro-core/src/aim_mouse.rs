@@ -30,7 +30,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 145] = [
+pub const PLACES: [u32; 146] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2, APPLY_CONTROLS, INPUT_FRAME, MOVE_CHOICE_PICK,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -113,6 +113,7 @@ pub const PLACES: [u32; 145] = [
     screen_transform::SCRIPTED_UPDATES[25],
     screen_transform::SCRIPTED_UPDATES[26],
     screen_transform::SCRIPTED_UPDATES[27],
+    screen_transform::SCRIPTED_UPDATES[28],
     0x003506C4,
     0x00321720, 0x0032178C, 0x003217F8, 0x00321864,
     0x0026E0A0, 0x0026E114, 0x0026E18C, 0x0026E204,

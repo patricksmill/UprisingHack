@@ -378,7 +378,8 @@ fn draw_order(system: &mut System, bottom: u32, parts: &[Part], replay_details: 
         && system.aim_mouse.as_ref().is_none_or(|mouse| mouse.menu_top.enabled(&parts[index]))).collect();
     order.sort_by_key(|&index| {
         let part = &parts[index];
-        if part.top { return (if part.model.is_some() { 0 } else { usize::MAX }, 0); }
+        // The heart counter is over the top's node layers (the Solo Hub's hall).
+        if part.top { return (if part.model.is_some() { 0 } else { usize::MAX }, usize::from(part.model == Some("MenCmnUpHeart0000"))); }
         // Idol Toss's scenery is behind its bowl and Controls.
         if let Some(group) = part.idol { return (1, usize::from(!group.scenery())); }
         // A node layer draws where its model does, in its table's order.
@@ -750,6 +751,11 @@ fn top_layer(layers: &'static [super::screen_transform::TopLayer], model: &str, 
         .map(|&(layer, ..)| layer)
 }
 
+/// whether the Screen's heart counter is a top part of its own.
+fn heart_layout(index: usize) -> bool {
+    index < ScreenTransform::scripted_len() && ScreenTransform::scripted(index).layout.heart()
+}
+
 /// Armory Controls keep the details card beside them.
 fn armory_board(index: usize) -> bool {
     index < ScreenTransform::scripted_len() && matches!(ScreenTransform::scripted(index).layout, LayoutKind::Board { .. })
@@ -775,6 +781,9 @@ const BOARD_TEXT: &[&str] = &[
     "MenEquipBt0120", "MenEquipBt0121", "MenEquipBt0122", "MenEquipBt0123",
     "MenEquipBt0204", "MenEquipBt0211", "MenEquipBt0212",
     "MenColViewlistBt0000", "MenColViewlistBt0003",
+    "MenAlterbuyBt0120", "MenAlterbuyBt0123", "MenAlterbuyBt0130",
+    "MenAltersoldBt0120", "MenAltersoldBt0123", "MenAltersoldBt0130",
+    "MenStockroomBt0001",
 ];
 
 /// Chapter Select's layers before its Rows, in editor order: name, whether
@@ -955,7 +964,9 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
         for &(name, from) in groups {
             // Preserve each button's position between its original edges.
             // A box touching an edge stays flush with that edge as it shrinks.
-            let anchor = [from[0] / (320.0 - from[2]), from[1] / (240.0 - from[3])];
+            // a box as wide or tall as the screen has no edge to keep: it is centred
+            let keep = |at: f32, room: f32| if room < 1.0 { 0.5 } else { at / room };
+            let anchor = [keep(from[0], 320.0 - from[2]), keep(from[1], 240.0 - from[3])];
             let size = [from[2] * scale, from[3] * scale];
             let bottom = if name == "MenSgHomeBt0006" { hint.map_or(0.0, |hint| hint[3] * HINT_SCALE + 4.0) } else { 0.0 };
             let to = [controls[0] + (controls[2] - size[0]) * anchor[0],
@@ -1499,7 +1510,7 @@ impl AimMouse {
             } else if part.chapter {
                 CHAPTER_LAYERS.get(index).map_or("controls", |&(name, ..)| name).to_owned()
             } else if self.menu_screen.is_some_and(|(screen, ..)| screen == 11) && !self.menu_top.idol_dialog {
-                match index { 0 => "Dialog", 1 => "No", 2 => "Yes", _ => "hint" }.to_owned()
+                match index { 0 => "Dialog", 1 => "No", 2 => "Yes", _ => part.model.unwrap_or("hint") }.to_owned()
             } else if let Some(group) = part.idol {
                 group.name().to_owned()
             } else { part.model.map_or_else(|| if part.top { "hint" } else { "controls" }.to_owned(), str::to_owned) };
@@ -2249,12 +2260,26 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
             // File Select's backdrop groups are meshes too: the Board owns its words.
             if place == TOP_TEXT && (mouse.menu_top.file_select() || mouse.menu_top.active.is_some_and(|(index, ..)|
                 mouse.menu_top.part(step / 8).is_some_and(|part|
-                    top_layers(index).iter().any(|&(layer, ..)| Some(layer) == part.model)))) {
+                    top_layers(index).iter().any(|&(layer, ..)| Some(layer) == part.model)
+                    // the heart counter's part owns its number, as in the native pass
+                    || (part.backdrop && heart_layout(index))))) {
                 // Mesh-only layers must not allocate another copy of the details text.
                 system.cpu.regs[15] = TOP_TEXT_DRAWN;
                 return true;
             }
             mouse.menu_top.drawing_text = place == TOP_TEXT;
+            // The leftover top replay keeps its words off the hint band, as
+            // the native pass does: the hint part draws those words.
+            if place == TOP_TEXT {
+                if let (Some((index, ..)), Some(part)) = (mouse.menu_top.active, mouse.menu_top.part(step / 8).cloned()) {
+                    if part.backdrop && !details_of(index) && !top_layers(index).is_empty() {
+                        if let Some([_, y, _, height]) = hint_of(index) {
+                            let from = [0.0, if y == 0.0 { height } else { 0.0 }, 400.0, 240.0 - height];
+                            mouse.menu_top.clip = Some((Placement { from, to: part.place.to_box(from) }, true));
+                        }
+                    }
+                }
+            }
             mouse.menu_top.text_parent = mouse.saved.take().map(Box::new);
             set_clip(system, Drawing::Viewport(place), Vec::new());
             return true;
@@ -2430,11 +2455,11 @@ const MENUID_HOME: u8 = 3;
 /// each scripted Screen and the MENUIDs it is shown under, measured on the
 /// trace states. Dialogs show under their parent's MENUID, and both Idol
 /// Tosses under 44, so those take the Screen the input last confirmed.
-const SCREEN_MENUS: [(usize, &[u8]); 28] = [
+const SCREEN_MENUS: [(usize, &[u8]); 29] = [
     (0, &[2]), (1, &[1]), (2, &[4]), (3, &[17]), (4, &[22]), (5, &[19]), (6, &[25]),
     (7, &[23]), (8, &[21]), (9, &[39]), (10, &[45]), (11, &[]), (12, &[3]), (13, &[11]),
     (14, &[14]), (15, &[12]), (16, &[37]), (17, &[26]), (18, &[18]), (19, &[43]),
-    (20, &[42]), (21, &[10]), (22, &[44]), (23, &[13]), (24, &[16]), (25, &[44]), (26, &[46]), (27, &[47]),
+    (20, &[42]), (21, &[10]), (22, &[44]), (23, &[13]), (24, &[16]), (25, &[44]), (26, &[46]), (27, &[47]), (28, &[34]),
 ];
 
 /// the MENUIDs a scripted Screen is shown under, empty for any.
@@ -2666,8 +2691,11 @@ fn draw_part(system: &mut System, top: u32, next: usize) -> bool {
                 let model = read_word(system, at);
                 let name = model_name(system, model);
                 let selected = part.model.is_some_and(|layer| layer == name);
+                // A model that is its own top part (the heart counter) is
+                // never also in the Details card.
+                let own_part = heart_layout(index) && name == "MenCmnUpHeart0000";
                 let shown = |node: &str| if part.backdrop {
-                    top_layer(top_layers(index), &name, node).is_none()
+                    !own_part && top_layer(top_layers(index), &name, node).is_none()
                 } else if part.model.is_some_and(|layer| top_layers(index).iter().any(|&(name, ..)| name == layer)) {
                     top_layer(top_layers(index), &name, node) == part.model
                 } else { selected && (part.model != Some("MenCmnUpHeart0000") || node != "capbase") };
@@ -2707,7 +2735,9 @@ fn draw_part(system: &mut System, top: u32, next: usize) -> bool {
         // other models leave the replay, which would otherwise exhaust the
         // game's drawing buffer once per layer.
         let owner = bottom_layers(index).iter().find(|&&(layer, ..)| Some(layer) == part.model).map(|&(_, owner, _)| owner);
-        filter_models(system, drawing, false, true, &mut moved, |name| Some(name) == owner);
+        // An owner ending in `*` owns every model whose name starts with the rest.
+        let owned = |name: &str| owner.is_some_and(|owner| owner.strip_suffix('*').map_or(owner == name, |prefix| name.starts_with(prefix)));
+        filter_models(system, drawing, false, true, &mut moved, |name| owned(name));
         let layers = read_word(system, scene + SCENE_LAYERS);
         for layer in BOTTOM_LAYERS {
             let list = read_word(system, layers + layer * LAYER_SIZE + 4);
@@ -2717,7 +2747,7 @@ fn draw_part(system: &mut System, top: u32, next: usize) -> bool {
             for at in (start..end).step_by(4) {
                 let model = read_word(system, at);
                 let name = model_name(system, model);
-                if Some(name.as_str()) != owner { continue; }
+                if !owned(&name) { continue; }
                 show_nodes(system, &mut moved, model, |node| top_layer(bottom_layers(index), &name, node) == part.model);
             }
         }
