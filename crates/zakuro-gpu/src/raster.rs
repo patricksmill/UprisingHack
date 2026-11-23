@@ -1368,7 +1368,12 @@ fn to_screen(vertex: &Vertex, viewport: (f32, f32, f32, f32)) -> Option<Screen> 
 
     // window coords, y points up, from the bottom of the buffer, like the PICA's viewport is defined,
     // it places vertices on a 16th of a pixel
-    let snap = |c: f32| (c * 16.0).round() / 16.0;
+    // 2D (w of 1) goes on whole pixels: a native pixel is drawn when its centre is inside an edge, which for
+    // the axis aligned quads UI is made of is the edge rounded to a whole pixel, so the gaps of under a pixel
+    // the game leaves between a sprite's slices cover no pixel natively and none upscaled either, not a sliver
+    let flat = w == 1.0;
+    // an edge through a centre keeps that pixel to its left or below, like the PICA fills it
+    let snap = |c: f32| if flat { (c - 0.5).ceil() } else { (c * 16.0).round() / 16.0 };
     Some(Screen {
         x: snap(vx + (ndc_x * 0.5 + 0.5) * vw),
         y: snap(vy + (ndc_y * 0.5 + 0.5) * vh),

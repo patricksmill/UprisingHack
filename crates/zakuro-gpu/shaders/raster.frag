@@ -10,6 +10,8 @@ layout(location = 3) noperspective in float in_depth;
 layout(location = 4) in vec4 in_quaternion;
 // the view vector, and in w texture coord set 0's w
 layout(location = 5) in vec4 in_view;
+// a flat 2D triangle's texture coord set 0 rectangle, min past max when it has none
+layout(location = 6) flat in vec4 in_bounds;
 
 layout(location = 0) out vec4 out_color;
 
@@ -50,6 +52,8 @@ layout(constant_id = 28) const uint DEPTH_MODE = 0u;
 // it keeps lighting and the procedural texture's switch, lots of code it skips when they're off
 // it masks the rest like hardware.rs masks the constants, so both draw the same
 layout(constant_id = 29) const uint DYNAMIC = 0u;
+// sprite.geom runs b4 it and hands over in_bounds
+layout(constant_id = 30) const uint SPRITE_BOUNDS = 0u;
 
 layout(set = 0, binding = 0) uniform sampler2D texture0;
 layout(set = 0, binding = 1) uniform sampler2D texture1;
@@ -150,6 +154,18 @@ vec4 sample_unit(uint unit, vec2 uv) {
     bool border_s = (wrap_s & 3u) == 1u && (st.x < 0.0 || st.x >= 1.0);
     bool border_t = (wrap_t & 3u) == 1u && (st.y < 0.0 || st.y >= 1.0);
     return border_s || border_t ? unpack_color(units[unit].y) : sampled;
+}
+
+// set 0 kept half a texel inside a sprite's rectangle: the PICA samples a sprite drawn 1:1 at its texels'
+// centres, upscaled the fragments by its edges sample nearer it, and filtering blends in the texels outside
+// it, a transparent border or the atlas' next sprite, as a sliver along the edge
+vec2 inside_sprite(vec2 uv) {
+    if (SPRITE_BOUNDS == 0u || in_bounds.x > in_bounds.z) {
+        return uv;
+    }
+    vec2 half_texel = 0.5 / vec2(textureSize(texture0, 0));
+    vec2 low = in_bounds.xy + half_texel;
+    return clamp(uv, low, max(in_bounds.zw - half_texel, low));
 }
 
 precise float lookup(uint table, uint entry, float delta) {
@@ -634,7 +650,7 @@ void main() {
     if ((texture_config & 1u) != 0u) {
         // a projected texture (type 3 in bits 28 to 30 of the unit's config) divides its coords by set 0's w
         bool projected = ((units[0].x >> 28) & 7u) == 3u;
-        textures[0] = sample_unit(0u, projected ? in_texcoords01.xy / in_view.w : in_texcoords01.xy);
+        textures[0] = sample_unit(0u, projected ? in_texcoords01.xy / in_view.w : inside_sprite(in_texcoords01.xy));
     }
     if ((texture_config & 2u) != 0u) {
         textures[1] = sample_unit(1u, in_texcoords01.zw);
