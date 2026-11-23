@@ -387,11 +387,18 @@ fn merge_order(full: &[usize], saved: Option<&[usize]>) -> Vec<usize> {
 /// leftover top replay over everything: a Board's Details card is its
 /// words, beside the Controls. A Group's leftover is scenery (the Vault's
 /// item picture), so it stays with the top's layers, behind the Controls.
+#[cfg(test)]
 fn draw_order(system: &mut System, bottom: u32, parts: &[Part], replay_details: bool, details_front: bool, layers_below: &'static [super::screen_transform::TopLayer]) -> Vec<usize> {
     let mut order = full_order(system, bottom, parts, details_front, layers_below);
-    order.retain(|&index| (!parts[index].backdrop || replay_details)
+    order.retain(|&index| drawable(&parts[index], replay_details)
         && system.aim_mouse.as_ref().is_none_or(|mouse| mouse.menu_top.enabled(&parts[index])));
     order
+}
+
+/// whether a part replays from the draw order: the Details card only when
+/// split layers replay it.
+fn drawable(part: &Part, replay_details: bool) -> bool {
+    !part.backdrop || replay_details
 }
 
 /// Every part's place in the game's stacking, back to front, whether it
@@ -413,7 +420,8 @@ fn full_order(system: &mut System, bottom: u32, parts: &[Part], details_front: b
         }
     }
     let mut order: Vec<usize> = (0..parts.len()).collect();
-    order.sort_by_key(|&index| {
+    // each key searches the names: work it out once per part
+    order.sort_by_cached_key(|&index| {
         let part = &parts[index];
         // The leftover goes over the top's node layers, the hint band over
         // it (the Vault's item picture runs under it), and the heart
@@ -1991,25 +1999,27 @@ pub(super) fn begin(system: &mut System) -> bool {
     mouse.menu_top.started = system.frames;
     let saved_order = mouse.menu_top.orders.iter().find(|&&(screen, _)| screen == edits)
         .map(|(_, order)| order.iter().map(|&part| shown(part)).collect::<Vec<_>>());
-    mouse.menu_top.parts = parts;
     const FILE_SELECT_ORDER: [usize; 16] = [7, 8, 9, 10, 11, 12, 13, 14, 15, 6, 0, 1, 2, 3, 4, 5];
-    let parts = mouse.menu_top.parts.clone();
-    let (drawn, full) = if mouse.menu_top.file_select() {
+    let file_select = mouse.menu_top.file_select();
+    let full: Vec<usize> = if file_select {
         // Background and information first; interactive Controls above them.
-        let drawn: Vec<usize> = FILE_SELECT_ORDER.into_iter().filter(|&index| mouse.menu_top.enabled(&parts[index])).collect();
-        let full = FILE_SELECT_ORDER.into_iter().chain((0..parts.len()).filter(|index| !FILE_SELECT_ORDER.contains(index))).collect();
-        (drawn, full)
+        FILE_SELECT_ORDER.into_iter().chain((0..parts.len()).filter(|index| !FILE_SELECT_ORDER.contains(index))).collect()
     } else {
-        let mut drawn = draw_order(system, bottom, &parts, !top_layers(index).is_empty(), armory_board(index), bottom_layers(index));
-        // A texture layer draws through its owner's mesh, never by itself.
-        drawn.retain(|&part| texture_layer(index, parts[part].model).is_none());
-        (drawn, full_order(system, bottom, &parts, armory_board(index), bottom_layers(index)))
+        full_order(system, bottom, &parts, armory_board(index), bottom_layers(index))
     };
     // The editor's saved order comes over the game's; a part it does not
     // name (new since it was saved) keeps its place after its neighbour.
     let layer_order = merge_order(&full, saved_order.as_deref());
-    let order = layer_order.iter().copied().filter(|part| drawn.contains(part)).collect();
     let menu_top = &mut system.aim_mouse.as_mut().unwrap().menu_top;
+    let replay_details = !top_layers(index).is_empty();
+    let order = layer_order.iter().copied().filter(|&at| {
+        let part = &parts[at];
+        menu_top.enabled(part) && if file_select { FILE_SELECT_ORDER.contains(&at) } else {
+            // A texture layer draws through its owner's mesh, never by itself.
+            drawable(part, replay_details) && texture_layer(index, part.model).is_none()
+        }
+    }).collect();
+    menu_top.parts = parts;
     menu_top.ordered = saved_order.is_some();
     menu_top.layer_order = layer_order;
     menu_top.draw_order = order;

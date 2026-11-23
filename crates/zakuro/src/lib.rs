@@ -3096,7 +3096,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).expect("the test's folder goes");
     }
 
-    /// a Scripted layer hidden without ever being moved is saved on its own.
     #[test]
     fn layer_orders_and_names_are_saved_with_the_layout() {
         let dir = temp_data_dir("layout-orders");
@@ -3111,6 +3110,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).expect("the test's folder goes");
     }
 
+    /// a Scripted layer hidden without ever being moved is saved on its own.
     #[test]
     fn a_hidden_layer_is_saved_without_a_move() {
         let dir = temp_data_dir("layout-hidden");

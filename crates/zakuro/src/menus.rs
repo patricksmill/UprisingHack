@@ -2766,8 +2766,6 @@ mod tests {
         assert!(editor.drawn.options.is_empty(), "a decorative hint was offered link targets");
     }
 
-    /// a layer's Visible checkbox hides it from the canvas while keeping it
-    /// listed, and showing it again restores the same box and pointer.
     #[test]
     fn a_double_clicked_layer_takes_the_name_written_and_an_empty_one_gives_its_own_back() {
         let layers = vec![layer("MenColViewBt0003 #0", [10.0, 10.0, 50.0, 20.0]), layer("hint #1", [100.0, 10.0, 50.0, 20.0])];
@@ -2852,6 +2850,8 @@ mod tests {
         assert_eq!(editor.menus.editor_layer, Some(0), "the layer stacked in front did not take the click");
     }
 
+    /// a layer's Visible checkbox hides it from the canvas while keeping it
+    /// listed, and showing it again restores the same box and pointer.
     #[test]
     fn a_hidden_layer_stays_listed_but_takes_no_canvas_pointer() {
         let mut editor = Editor::new(
@@ -2956,7 +2956,6 @@ fn vec4(ui: &mut egui::Ui, label: &str, values: &mut [f32; 4]) -> bool {
 /// be put in folders: a folder lists its layers under it where its first
 /// one would be, selects them all, shows or hides them all, and, linked,
 /// keeps them selected together. Undo and Redo step through the edits.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn layer_list(
     ui: &mut egui::Ui,
