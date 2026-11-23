@@ -1584,7 +1584,7 @@ Picture and Stats are not separate assets: each part replays the whole top
 drawing (`MenStageselectUp0000` without its `PN_U0002` background, plus the
 font text) and its `CHAPTER_LAYERS` rectangle is what keeps it from showing
 the others. Back is a rectangle of the bottom drawing. Rows draw only their
-thumbnail's nodes, unclipped, from a source centred on `chapter_center`.
+thumbnail's nodes, unclipped, from a source centred on its bone (now `ListLens`).
 
 Those rectangles and `chapter_center`'s scale were measured from renders
 whose lenses were already widened: a state saved at one width and loaded in
@@ -1613,6 +1613,32 @@ fixed here.
 Windows release rebuilt as `dist/zakuro-kiu-mouse.exe`, SHA-256
 `3cbce89304341a358a1d3144f4a75a6565860cba24d591368376922911a6d05e`.
 The previous executable is `dist/zakuro-kiu-mouse-before-resize-projection.exe`.
+
+## Chapter Select Rows slid as the game scrolled its List
+
+Hovering a Row picks its chapter, and the game then glides its own (hidden)
+List to it, the root bone 8 units per chapter. Each Row's source follows its
+bone, so the art should stay put in its slot, but `chapter_center`'s fixed
+`160.7 + 9.68 × x` was not where a Row's placed drawing puts a bone: the art
+slid 1.2 native top pixels per chapter scrolled (5 across Chapters 1–5 on
+`states/5.state`, about 25 at 1080p), back and forth with every hover.
+
+The bottom camera (`scene + SCENE_CAMERAS + screen × 4`) has its 3x4 view
+at `+0x3C` (here only z − 40) and its projection at `+0x6C`, turned like
+the top's: row 0 goes up the screen (3.33 × y), row 1 across from the right
+(−2.051 × x, already widened). A Row's drawing goes through
+`cropped_projection`, which undoes the lens's widening (`lens_widen`, 1.218
+here), so a bone draws at `160 + 9.99 × x`. `ListLens` now reads the camera
+each frame, before any Row crops it, and projects bones and laurels through
+it. Rows at every outlined chapter and every frame of the game's glide are
+then still within 0.01 px. There was no frame lag; the scale was all of it.
+
+The wheel scrolled whole Rows, so each notch jumped. The row's scroll is now
+fractional: the wheel and keys set a target and the shown scroll eases 30%
+of the way each frame, so a Row glides about 10 frames. A Row part-way in at
+either end is placed too, and every Row that starts inside the window is
+shown: at 16:9 five fit whole and the sixth peeks in at the right edge. A chapter outlined by hovering its Row no longer
+pulls the row, so a half-shown Row does not slide out from under the mouse.
 
 ## Native Options inventory (settings plan, slice 1)
 

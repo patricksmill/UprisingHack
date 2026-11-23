@@ -3304,6 +3304,18 @@ fn next_menu_call(system: &mut System, index: usize, object: u32, at: u32) {
     system.cpu.regs[13] = at;
 }
 
+/// how much wider than a screen of size pixels the camera's perspective
+/// lens now is (1 for any other lens): the across share a placed drawing
+/// undoes.
+fn lens_widen(system: &mut System, camera: u32, size: [f32; 2]) -> f32 {
+    let lens = read_word(system, camera + 4);
+    let widen = match lens != 0 && read_word(system, lens) == PERSPECTIVE_LENS {
+        true => f32::from_bits(read_word(system, lens + LENS_ASPECT)) * size[1] / size[0],
+        false => 1.0,
+    };
+    if widen.is_finite() && widen > 0.0 { widen } else { 1.0 }
+}
+
 /// a camera's projection, as it is and turned to show only the part from of
 /// a screen of size pixels in the whole view, when it has one kept. a lens
 /// made wider than the screen's own shape (by widen_view, or saved so) has
@@ -3313,12 +3325,7 @@ fn cropped_projection(system: &mut System, camera: u32, from: [f32; 4], size: [f
     if camera == 0 || read_word(system, camera + 8) & 4 == 0 {
         return None;
     }
-    let lens = read_word(system, camera + 4);
-    let widen = match lens != 0 && read_word(system, lens) == PERSPECTIVE_LENS {
-        true => f32::from_bits(read_word(system, lens + LENS_ASPECT)) * size[1] / size[0],
-        false => 1.0,
-    };
-    let widen = if widen.is_finite() && widen > 0.0 { widen } else { 1.0 };
+    let widen = lens_widen(system, camera, size);
     let mut matrix = [0u8; 64];
     system.memory.read_bytes(camera + 0x6C, &mut matrix);
     let mut m: Vec<f32> = matrix.as_chunks::<4>().0.iter().map(|word| f32::from_le_bytes(*word)).collect();
