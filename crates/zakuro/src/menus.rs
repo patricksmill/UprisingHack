@@ -983,14 +983,10 @@ impl Menus {
         let mut navigation = NavigationEditorResponse::default();
         let room = (ctx.content_rect().height() - 170.0).clamp(120.0, 420.0);
         egui::Window::new("Menu editor — Pause").id(egui::Id::new("menu_editor_pause")).open(&mut window_open).default_width(420.0).show(ctx, |ui| {
-            ui.label(RichText::new("Edits apply live. F2 closes and reopens this window.").weak());
+            ui.label(RichText::new("Drag a part on the canvas to move it; its corner handle resizes it. Parts the page now shown leaves out wait off the canvas. Edits apply live.").weak());
             egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
-                changed |= rule_editor(ui, "span", &mut rules.span);
-                changed |= rule_editor(ui, "center", &mut rules.center);
-                changed |= rule_editor(ui, "left", &mut rules.left);
-                changed |= rule_editor(ui, "right", &mut rules.right);
-                changed |= rule_editor(ui, "corner", &mut rules.corner);
-                list = self.editor_layer_list(ui, &layers, &visibility, &mut folders, actions);
+                // Pause is not a Scripted Menu, so it keeps no folders
+                list = self.editor_layer_list(ui, &layers, &visibility, &mut Vec::new(), actions);
                 navigation = navigation_editor(ui, &layers, &navigation_controls, navigation_directions, self.editor_layer, actions);
                 if !layers.is_empty() && ui.button("Export layers").clicked() {
                     message = Some(match export_layers(&layers, &visibility) {

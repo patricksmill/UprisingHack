@@ -12,8 +12,8 @@ mod menu_top;
 mod screen_transform;
 use menu_top::MenuTop;
 pub use menu_top::{current_menu, IdolPointer};
-pub use screen_transform::{CauldronRole, CauldronRules, DialogRules, LoadingRole, LoadingRules, PauseRules, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
-use screen_transform::{Activate, QuadRole, ScreenLayout, ScreenTransform, CAULDRON_CONTROLS};
+pub use screen_transform::{CauldronRole, CauldronRules, DialogRules, LoadingRole, LoadingRules, PauseRules, QuadRole, PAUSE_PARTS, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
+use screen_transform::{Activate, ScreenLayout, ScreenTransform, CAULDRON_CONTROLS};
 
 /// Kid Icarus: Uprising, the USA cartridge.
 pub const PROGRAM_ID: u64 = 0x0004_0000_0003_0100;
@@ -1090,6 +1090,22 @@ const PAUSE_BUTTON_ROWS: std::ops::Range<f32> = 55.0..111.0;
 const RESUME_RIGHT: f32 = 148.0;
 const RETREAT_LEFT: f32 = 172.0;
 
+/// where the first page's dimming and band are flushed from, and an
+/// Options page's dimming.
+const PAUSE_FIRST_PAGE: u32 = 0x00A0D22C;
+const PAUSE_OPTIONS_DIMMING: u32 = 0x00A01FC8;
+/// a row of buttons' frame, icon, words and end caps (the Options button on
+/// the first page, the Options page's rows), its Back arrow and the loot.
+const PAUSE_ROW: [u32; 4] = [0x00A04710, 0x00A04B34, 0x00A04D14, 0x00A04F00];
+const PAUSE_BACK: u32 = 0x00A05C70;
+const PAUSE_LOOT: [u32; 3] = [0x00A0E290, 0x00A0E338, 0x00A01A4C];
+/// the top screen's own pause parts, by where their flushes return to: the
+/// Hint's bar and its words (Options pages), and the Paused label, flushed
+/// straight from the top battle pass.
+const PAUSE_HINT_BAR: u32 = 0x00A0CA34;
+const PAUSE_HINT: u32 = 0x00A0CC04;
+const PAUSED_LABEL: u32 = 0x0060D68C;
+
 /// and for Remove Display, in the bottom right corner from 193 and 204 on,
 /// which goes to the top screen's.
 const REMOVE_DISPLAY: [u32; 2] = [0x00A0D524, 0x00A0D5DC];
@@ -1438,6 +1454,13 @@ pub struct AimMouse {
     /// and the last one Resume, Retreat or Remove Display was drawn by the
     /// top screen's edges in.
     edges_drawn: Option<u64>,
+    /// each Pause part's last frame drawn and the box it was drawn in then,
+    /// in its own screen's pixels (the bottom's, or the top's for the Hint
+    /// and the Paused label): what the editor outlines and a click hits.
+    pause_drawn: [Option<(u64, [f32; 4])>; PAUSE_PARTS],
+    /// whether the pause screen drawing now is its first page, with Resume
+    /// and Retreat, rather than an Options page: its dimming says which.
+    pause_first_page: bool,
     /// the frame the top screen's battle UI was last drawn in, which it is
     /// in every frame of a battle and in no menu's.
     battle_drawn: Option<u64>,
@@ -1582,6 +1605,8 @@ impl Default for AimMouse {
             transform: ScreenTransform::default(),
             loading_pass: false,
             edges_drawn: None,
+            pause_drawn: [None; PAUSE_PARTS],
+            pause_first_page: true,
             battle_drawn: None,
             cauldron_on_top: false,
             touched_part: None,
@@ -1800,6 +1825,76 @@ impl AimMouse {
 
     pub fn set_pause_rules(&mut self, rules: PauseRules) {
         self.transform.set_pause_rules(rules);
+    }
+
+    /// keeps that a Pause part was drawn in `frame`, over `bounds`, with
+    /// what else it drew in that frame.
+    fn pause_seen(&mut self, role: QuadRole, frame: u64, bounds: [f32; 4]) {
+        let seen = &mut self.pause_drawn[role as usize];
+        *seen = Some(match *seen {
+            Some((at, kept)) if at == frame => (frame, [kept[0].min(bounds[0]), kept[1].min(bounds[1]), kept[2].max(bounds[2]), kept[3].max(bounds[3])]),
+            _ => (frame, bounds),
+        });
+    }
+
+    /// the box a Pause part was drawn over in the newest frame Pause drew,
+    /// as x, y, width and height of its own screen; none for a part that
+    /// frame left out, such as Resume on an Options page.
+    fn pause_part_box(&self, role: QuadRole) -> Option<[f32; 4]> {
+        let newest = self.pause_drawn.iter().flatten().map(|&(at, _)| at).max()?;
+        let (at, [left, top, right, bottom]) = self.pause_drawn[role as usize]?;
+        // the top screen's parts are drawn in the top pass, a frame's other
+        // parts in its bottom pass, so allow a frame between them
+        (at + 1 >= newest).then_some([left, top, right - left, bottom - top])
+    }
+
+    /// whether the layout editor edits Pause's parts.
+    pub(crate) fn editing_pause(&self) -> bool {
+        self.pause_on_top && self.editor_screen() == Some(Screen::Pause)
+    }
+
+    /// Pause's parts as editor layers, by QuadRole, hidden ones too, in
+    /// pixels as shown. A part the page now drawn leaves out lies off the
+    /// canvas, so it covers nothing there.
+    pub(crate) fn pause_editor_layers(&self) -> Vec<(String, [f32; 4])> {
+        let rules = self.pause_rules();
+        QuadRole::ALL.iter().enumerate().map(|(index, &role)| {
+            match self.pause_part_box(role) {
+                Some(part) => {
+                    let [x, y, width, height] = rules.rule(role).placement(self.widen).to_box(part);
+                    (format!("{} #{index}", role.label()), [x * self.widen, y, width * self.widen, height])
+                }
+                None => (format!("{} #{index} (not on this page)", role.label()), [-10000.0, -10000.0, 1.0, 1.0]),
+            }
+        }).collect()
+    }
+
+    pub(crate) fn pause_editor_visibility(&self) -> Vec<bool> {
+        let rules = self.pause_rules();
+        QuadRole::ALL.iter().map(|&role| rules.rule(role).visible).collect()
+    }
+
+    /// moves one of Pause's parts so what it draws now lies at `to`, in
+    /// pixels as shown.
+    pub(crate) fn set_pause_editor_layer(&mut self, index: usize, to: [f32; 4]) {
+        let Some(&role) = QuadRole::ALL.get(index) else { return };
+        let Some(part) = self.pause_part_box(role) else { return };
+        let mut rules = self.pause_rules();
+        let rule = rules.rule_mut(role);
+        let place = rule.placement(self.widen);
+        let shown = place.to_box(part);
+        let [x, y, width, height] = to;
+        if !(width > 0.0 && height > 0.0 && shown[2] > 0.0 && shown[3] > 0.0) { return; }
+        let moved = Placement { from: shown, to: [x / self.widen, y, width / self.widen, height] };
+        rule.to = rule.target_for(self.widen, moved.to_box(place.to));
+        self.set_pause_rules(rules);
+    }
+
+    pub(crate) fn set_pause_editor_visible(&mut self, index: usize, visible: bool) {
+        let Some(&role) = QuadRole::ALL.get(index) else { return };
+        let mut rules = self.pause_rules();
+        rules.rule_mut(role).visible = visible;
+        self.set_pause_rules(rules);
     }
 
     pub fn dialog_rules(&self) -> DialogRules {
@@ -2054,6 +2149,29 @@ impl AimMouse {
             // the dialog is all in its panel, placed both ways
             let [x, y] = layout.place(QuadRole::Center)?.unmap_point([x, y]);
             return ((0.0..320.0).contains(&x) && (0.0..240.0).contains(&y)).then_some((x, y));
+        }
+        let inside = |point: [f32; 2]| (0.0..320.0).contains(&point[0]) && (0.0..240.0).contains(&point[1]);
+        let drawn = |role: QuadRole| {
+            self.pause_drawn[role as usize].filter(|&(at, _)| frame <= at + 3)
+                .map(|(_, [left, top, right, bottom])| [left, top, right - left, bottom - top])
+        };
+        let within = |part: [f32; 4], [x, y]: [f32; 2]| x >= part[0] && x < part[0] + part[2] && y >= part[1] && y < part[1] + part[3];
+        if QuadRole::ALL.iter().any(|&role| drawn(role).is_some()) {
+            // the Controls where they are drawn, front-most first
+            for &role in QuadRole::ALL.iter().rev().filter(|role| role.control()) {
+                let (Some(part), Some(place)) = (drawn(role), layout.place(role)) else { continue };
+                if within(place.to_box(part), [x, y]) {
+                    let point = place.unmap_point([x, y]);
+                    return inside(point).then_some((point[0], point[1]));
+                }
+            }
+            // then the Panel, but not where a part of its own was drawn
+            // before it was moved or hidden
+            let point = layout.place(QuadRole::Center)?.unmap_point([x, y]);
+            let owned = QuadRole::ALL.iter()
+                .filter(|&&role| !matches!(role, QuadRole::Span | QuadRole::Band | QuadRole::Center) && !role.top())
+                .any(|&role| drawn(role).is_some_and(|part| within(part, point)));
+            return (!owned && inside(point)).then_some((point[0], point[1]));
         }
         let edges = self.edges_drawn.is_some_and(|drawn| frame <= drawn + 3);
         let (left, right, middle, corner) = (
@@ -4052,49 +4170,122 @@ fn place_pause_menu(system: &mut System, widen: f32, index: usize) {
     let (buttons, corner) = (PAUSE_BUTTONS.contains(&caller), REMOVE_DISPLAY.contains(&caller));
     let Some((at, mut quads)) = flushed_quads(system) else { return };
     let frame = system.frames;
-    // the dialog is placed both ways, Pause across only
     let screen = ScreenTransform::pause_screen(index);
     let dialog = screen == Screen::RetreatDialog;
-    let Some(layout) = system.aim_mouse.as_ref().map(|aim_mouse| aim_mouse.transform.screen_layout(screen, frame, widen)) else { return };
+    let Some(aim_mouse) = system.aim_mouse.as_mut() else { return };
+    // the dimming comes first, and says which page the rest is on
+    if caller == PAUSE_FIRST_PAGE {
+        aim_mouse.pause_first_page = true;
+    } else if caller == PAUSE_OPTIONS_DIMMING {
+        aim_mouse.pause_first_page = false;
+    }
+    let first_page = aim_mouse.pause_first_page;
+    let layout = aim_mouse.transform.screen_layout(screen, frame, widen);
     for quad in (0..quads.len()).step_by(0x60) {
-        let xs = (0..4).map(|corner| get(&quads, quad + corner * 0x18));
-        let (left, right) = xs.fold((f32::MAX, f32::MIN), |(left, right), x| (left.min(x), right.max(x)));
+        let bounds = quad_bounds(&quads[quad..quad + 0x60]);
+        let [left, top, right, bottom] = bounds;
         let across = left <= 0.5 && right >= 319.5;
+        let whole = across && top <= 0.5 && bottom >= 239.5;
         // Resume on the left, Retreat on the right
         let by_right = corner || (buttons && left + right >= 320.0);
-        let role = if across {
+        let role = if dialog {
+            // the dialog has its dimming and its panel only
+            if across { QuadRole::Span } else { QuadRole::Center }
+        } else if whole {
             QuadRole::Span
+        } else if across {
+            QuadRole::Band
         } else if corner {
             QuadRole::Corner
         } else if buttons {
             if by_right { QuadRole::RightButton } else { QuadRole::LeftButton }
+        } else if caller == PAUSE_BACK {
+            QuadRole::Back
+        } else if PAUSE_LOOT.contains(&caller) {
+            QuadRole::Loot
+        } else if PAUSE_ROW.contains(&caller) {
+            if first_page {
+                QuadRole::OptionsButton
+            } else {
+                let row = ((top + bottom) * 0.5 - OPTIONS_ROWS_TOP) / ROW_STEP;
+                QuadRole::ROWS[(row.max(0.0) as usize).min(QuadRole::ROWS.len() - 1)]
+            }
         } else {
             QuadRole::Center
         };
+        if !dialog {
+            aim_mouse.pause_seen(role, frame, bounds);
+        }
         let Some(place) = layout.place(role) else {
-            // a hidden rule draws its group nowhere, and pause_menu_touch
-            // finds nothing there either
+            // a hidden part is drawn nowhere, and pause_menu_touch finds
+            // nothing there either
             hide_ui(&mut quads[quad..quad + 0x60]);
             continue;
         };
         for corner in (quad..quad + 0x60).step_by(0x18) {
-            if dialog {
-                let [x, y] = place.map_point([get(&quads, corner), get(&quads, corner + 4)]);
-                set(&mut quads, corner, x);
-                set(&mut quads, corner + 4, y);
-            } else {
-                let x = place.map_x(get(&quads, corner));
-                set(&mut quads, corner, x);
-            }
+            let [x, y] = place.map_point([get(&quads, corner), get(&quads, corner + 4)]);
+            set(&mut quads, corner, x);
+            set(&mut quads, corner + 4, y);
         }
     }
     system.memory.write_bytes(at, &quads);
     if buttons || corner {
-        let frame = system.frames;
         if let Some(aim_mouse) = &mut system.aim_mouse {
             aim_mouse.edges_drawn = Some(frame);
         }
     }
+}
+
+/// the top of the Options page's first row, bottom screen pixels; the next
+/// rows are ROW_STEP lower.
+const OPTIONS_ROWS_TOP: f32 = 47.0;
+use screen_transform::ROW_STEP;
+
+/// a quad's left, top, right and bottom.
+fn quad_bounds(quad: &[u8]) -> [f32; 4] {
+    let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for corner in (0..0x60).step_by(0x18) {
+        let (x, y) = (get(quad, corner), get(quad, corner + 4));
+        bounds = [bounds[0].min(x), bounds[1].min(y), bounds[2].max(x), bounds[3].max(y)];
+    }
+    bounds
+}
+
+/// moves the top screen's own pause parts, the Hint's bar and words and the
+/// Paused label, to their rules' places while Pause is shown on the top
+/// screen; a hidden one draws nowhere. Whether the flush was one of them.
+fn place_pause_top(system: &mut System, widen: f32) -> bool {
+    let role = match system.cpu.regs[14] {
+        PAUSE_HINT_BAR => QuadRole::HintBar,
+        PAUSE_HINT => QuadRole::Hint,
+        PAUSED_LABEL => QuadRole::PausedLabel,
+        _ => return false,
+    };
+    let frame = system.frames;
+    let Some(aim_mouse) = &system.aim_mouse else { return false };
+    if !aim_mouse.pause_on_top || !aim_mouse.transform.shown(frame) || aim_mouse.transform.active(frame) == Some(Screen::RetreatDialog) {
+        return false;
+    }
+    let layout = aim_mouse.transform.screen_layout(Screen::Pause, frame, widen);
+    let Some((at, mut quads)) = flushed_quads(system) else { return true };
+    for quad in (0..quads.len()).step_by(0x60) {
+        let bounds = quad_bounds(&quads[quad..quad + 0x60]);
+        if let Some(aim_mouse) = system.aim_mouse.as_mut() {
+            aim_mouse.pause_seen(role, frame, bounds);
+        }
+        match layout.place(role) {
+            Some(place) => {
+                for corner in (quad..quad + 0x60).step_by(0x18) {
+                    let [x, y] = place.map_point([get(&quads, corner), get(&quads, corner + 4)]);
+                    set(&mut quads, corner, x);
+                    set(&mut quads, corner + 4, y);
+                }
+            }
+            None => hide_ui(&mut quads[quad..quad + 0x60]),
+        }
+    }
+    system.memory.write_bytes(at, &quads);
+    true
 }
 
 /// puts the portraits, drawn for the bottom screen, in the top screen's
@@ -4173,7 +4364,7 @@ fn shrink_hud(system: &mut System) {
         }
     }
     let widen = widening(system);
-    if drawing(system).is_none() && place_loading(system, widen) {
+    if drawing(system).is_none() && (place_loading(system, widen) || place_pause_top(system, widen)) {
         return;
     }
     match drawing(system) {

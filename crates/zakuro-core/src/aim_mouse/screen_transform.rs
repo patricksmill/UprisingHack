@@ -962,14 +962,73 @@ impl Placement {
     }
 }
 
-/// the kinds of quad the pause screen flushes, each with its own placement.
+/// the parts of the pause screen, each with its own placement: the kinds
+/// of quad its flushes draw, and the top screen's own Hint and Paused
+/// label. Center is the Panel: whatever no other part owns, such as an
+/// Options page's sliders. New parts go last, so saved indices keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum QuadRole {
+pub enum QuadRole {
     Span = 0,
     Center = 1,
     LeftButton = 2,
     RightButton = 3,
     Corner = 4,
+    Band = 5,
+    OptionsButton = 6,
+    Loot = 7,
+    Row1 = 8,
+    Row2 = 9,
+    Row3 = 10,
+    Row4 = 11,
+    Back = 12,
+    HintBar = 13,
+    Hint = 14,
+    PausedLabel = 15,
+}
+
+/// how many parts the pause screen has.
+pub const PAUSE_PARTS: usize = 16;
+
+impl QuadRole {
+    pub const ALL: [QuadRole; PAUSE_PARTS] = [
+        QuadRole::Span, QuadRole::Center, QuadRole::LeftButton, QuadRole::RightButton, QuadRole::Corner,
+        QuadRole::Band, QuadRole::OptionsButton, QuadRole::Loot, QuadRole::Row1, QuadRole::Row2,
+        QuadRole::Row3, QuadRole::Row4, QuadRole::Back, QuadRole::HintBar, QuadRole::Hint, QuadRole::PausedLabel,
+    ];
+
+    /// the Options page's rows, top to bottom.
+    pub const ROWS: [QuadRole; 4] = [QuadRole::Row1, QuadRole::Row2, QuadRole::Row3, QuadRole::Row4];
+
+    /// the name in the rules' Rust, change requests and saved layouts.
+    pub fn name(self) -> &'static str {
+        [
+            "span", "center", "left", "right", "corner", "band", "options", "loot",
+            "row1", "row2", "row3", "row4", "back", "hint_bar", "hint", "label",
+        ][self as usize]
+    }
+
+    /// the editor's label, from GLOSSARY.md.
+    pub fn label(self) -> &'static str {
+        [
+            "Dimming", "Panel", "Resume", "Retreat", "Remove Display", "Band", "Options", "Loot",
+            "Option row 1", "Option row 2", "Option row 3", "Option row 4", "Back", "Hint bar", "Hint", "Paused label",
+        ][self as usize]
+    }
+
+    /// whether the part is drawn by the top screen's own pass, in its 400
+    /// across, rather than replayed from the bottom screen's 320.
+    pub fn top(self) -> bool {
+        matches!(self, QuadRole::HintBar | QuadRole::Hint | QuadRole::PausedLabel)
+    }
+
+    /// whether a click on the part touches the bottom screen there.
+    pub fn control(self) -> bool {
+        matches!(
+            self,
+            QuadRole::LeftButton | QuadRole::RightButton | QuadRole::Corner | QuadRole::OptionsButton
+                | QuadRole::Row1 | QuadRole::Row2 | QuadRole::Row3 | QuadRole::Row4 | QuadRole::Back
+        )
+    }
 }
 
 impl From<QuadRole> for usize {
@@ -978,8 +1037,11 @@ impl From<QuadRole> for usize {
     }
 }
 
-/// the most roles one Screen's layout seats: the Cauldron's nine.
-const ROLES: usize = 9;
+/// the most roles one Screen's layout seats: Pause's sixteen.
+const ROLES: usize = PAUSE_PARTS;
+
+/// how many roles the Fiend's Cauldron has.
+const CAULDRON_ROLES: usize = 9;
 
 /// one Screen's placements for a completed title frame, indexed by its
 /// role enum (`QuadRole`, `CauldronRole`). A rule that was hidden has no
@@ -1123,75 +1185,202 @@ fn change_request(screen: &str, rules: &[(&str, PlacementRule, PlacementRule)], 
     lines.join("\n") + "\n"
 }
 
-/// the pause screen's editable rules, one per quad role.
+/// the pause screen's editable rules, one per part (`QuadRole`). Rules
+/// saved before a part was split out load with its default; Resume's,
+/// Retreat's and Remove Display's old whole-screen defaults load as their
+/// boxes, which place them the same.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "SavedPauseRules")]
 pub struct PauseRules {
     pub span: PlacementRule,
     pub center: PlacementRule,
     pub left: PlacementRule,
     pub right: PlacementRule,
     pub corner: PlacementRule,
+    pub band: PlacementRule,
+    pub options: PlacementRule,
+    pub loot: PlacementRule,
+    pub row1: PlacementRule,
+    pub row2: PlacementRule,
+    pub row3: PlacementRule,
+    pub row4: PlacementRule,
+    pub back: PlacementRule,
+    pub hint_bar: PlacementRule,
+    pub hint: PlacementRule,
+    pub label: PlacementRule,
 }
+
+/// a saved list of Pause rules, any of them missing.
+#[derive(Deserialize)]
+struct SavedPauseRules {
+    span: Option<PlacementRule>,
+    center: Option<PlacementRule>,
+    left: Option<PlacementRule>,
+    right: Option<PlacementRule>,
+    corner: Option<PlacementRule>,
+    band: Option<PlacementRule>,
+    options: Option<PlacementRule>,
+    loot: Option<PlacementRule>,
+    row1: Option<PlacementRule>,
+    row2: Option<PlacementRule>,
+    row3: Option<PlacementRule>,
+    row4: Option<PlacementRule>,
+    back: Option<PlacementRule>,
+    hint_bar: Option<PlacementRule>,
+    hint: Option<PlacementRule>,
+    label: Option<PlacementRule>,
+}
+
+impl From<SavedPauseRules> for PauseRules {
+    fn from(saved: SavedPauseRules) -> PauseRules {
+        let default = PauseRules::default();
+        // a whole-screen rule as Resume, Retreat and Remove Display had
+        // before they had boxes: the same place, from their box
+        let boxed = |saved: Option<PlacementRule>, default: PlacementRule, offset: f32| match saved {
+            Some(rule) if rule == whole_pause_rule(offset, rule.anchor, rule.visible) => PlacementRule { visible: rule.visible, ..default },
+            Some(rule) => rule,
+            None => default,
+        };
+        PauseRules {
+            span: saved.span.unwrap_or(default.span),
+            center: saved.center.unwrap_or(default.center),
+            left: boxed(saved.left, default.left, 0.0),
+            right: boxed(saved.right, default.right, 2.0 * PAUSE_MENU_OFFSET),
+            corner: boxed(saved.corner, default.corner, 2.0 * PAUSE_MENU_OFFSET),
+            band: saved.band.unwrap_or(default.band),
+            options: saved.options.unwrap_or(default.options),
+            loot: saved.loot.unwrap_or(default.loot),
+            row1: saved.row1.unwrap_or(default.row1),
+            row2: saved.row2.unwrap_or(default.row2),
+            row3: saved.row3.unwrap_or(default.row3),
+            row4: saved.row4.unwrap_or(default.row4),
+            back: saved.back.unwrap_or(default.back),
+            hint_bar: saved.hint_bar.unwrap_or(default.hint_bar),
+            hint: saved.hint.unwrap_or(default.hint),
+            label: saved.label.unwrap_or(default.label),
+        }
+    }
+}
+
+/// the rule Resume, Retreat and Remove Display had before they had boxes.
+fn whole_pause_rule(offset: f32, anchor: f32, visible: bool) -> PlacementRule {
+    PlacementRule { from: [0.0, 0.0, 320.0, 240.0], to: [offset, 0.0, 320.0, 240.0], anchor, anchor_y: 0.0, scale: RuleScale::Narrow, visible }
+}
+
+/// the boxes of the bottom screen's 320 by 240 the pause screen's parts are
+/// drawn in: Resume, Retreat and Remove Display by its edges, the Options
+/// button on the first page, the loot below it, the Options page's four
+/// rows and its Back.
+pub(super) const RESUME_BOX: [f32; 4] = [0.0, 55.0, 148.0, 56.0];
+pub(super) const RETREAT_BOX: [f32; 4] = [172.0, 55.0, 148.0, 56.0];
+pub(super) const REMOVE_DISPLAY_BOX: [f32; 4] = [193.0, 204.0, 127.0, 36.0];
+const OPTIONS_BOX: [f32; 4] = [26.0, 119.0, 268.0, 30.0];
+const LOOT_BOX: [f32; 4] = [3.0, 157.0, 71.0, 36.0];
+/// the Options page's first row; the next are ROW_STEP lower.
+const ROW_BOX: [f32; 4] = [26.0, 47.0, 268.0, 30.0];
+pub(super) const ROW_STEP: f32 = 27.0;
+const BACK_BOX: [f32; 4] = [2.0, 197.0, 47.0, 41.0];
+/// and the top screen's own: the Hint's bar across its foot, the Hint's
+/// words on it, and the Paused label in the top left corner.
+const HINT_BAR_BOX: [f32; 4] = [0.0, 186.0, 400.0, 54.0];
+const HINT_BOX: [f32; 4] = [90.0, 205.0, 220.0, 16.0];
+const PAUSED_LABEL_BOX: [f32; 4] = [0.0, 5.0, 172.0, 34.0];
 
 impl Default for PauseRules {
     fn default() -> PauseRules {
         let from = [0.0, 0.0, 320.0, 240.0];
         let rule = |to, anchor| PlacementRule { from, to, anchor, anchor_y: 0.0, scale: RuleScale::Narrow, visible: true };
+        // a box of the bottom screen, moved right by `offset` and narrowed
+        // about the bottom screen's x `about`, as the whole screen was
+        let part = |from: [f32; 4], offset: f32, about: f32| PlacementRule {
+            from,
+            to: [from[0] + offset, from[1], from[2], from[3]],
+            anchor: (about - from[0]) / from[2],
+            anchor_y: 0.0,
+            scale: RuleScale::Narrow,
+            visible: true,
+        };
+        let middle = |from| part(from, PAUSE_MENU_OFFSET, 160.0);
+        let row = |index: f32| middle([ROW_BOX[0], ROW_BOX[1] + index * ROW_STEP, ROW_BOX[2], ROW_BOX[3]]);
+        // the top screen's own parts stay where the game draws them, and
+        // narrow on a wider one as its other 2D does: the Hint about the
+        // middle, the Paused label by the left edge, the bar not at all
+        let top = |from: [f32; 4], about: f32, scale| PlacementRule { from, to: from, anchor: (about - from[0]) / from[2], anchor_y: 0.0, scale, visible: true };
         PauseRules {
             span: PlacementRule { scale: RuleScale::Stretch, ..rule([0.0, 0.0, 400.0, 240.0], 0.0) },
             center: rule([PAUSE_MENU_OFFSET, 0.0, 320.0, 240.0], 0.5),
-            left: rule([0.0, 0.0, 320.0, 240.0], 0.0),
-            right: rule([2.0 * PAUSE_MENU_OFFSET, 0.0, 320.0, 240.0], 1.0),
-            corner: rule([2.0 * PAUSE_MENU_OFFSET, 0.0, 320.0, 240.0], 1.0),
+            left: part(RESUME_BOX, 0.0, 0.0),
+            right: part(RETREAT_BOX, 2.0 * PAUSE_MENU_OFFSET, 320.0),
+            corner: part(REMOVE_DISPLAY_BOX, 2.0 * PAUSE_MENU_OFFSET, 320.0),
+            band: PlacementRule { scale: RuleScale::Stretch, ..rule([0.0, 0.0, 400.0, 240.0], 0.0) },
+            options: middle(OPTIONS_BOX),
+            loot: middle(LOOT_BOX),
+            row1: row(0.0),
+            row2: row(1.0),
+            row3: row(2.0),
+            row4: row(3.0),
+            back: middle(BACK_BOX),
+            hint_bar: top(HINT_BAR_BOX, 0.0, RuleScale::Fixed),
+            hint: top(HINT_BOX, 200.0, RuleScale::Narrow),
+            label: top(PAUSED_LABEL_BOX, 0.0, RuleScale::Narrow),
         }
     }
 }
 
 impl PauseRules {
+    pub fn rule(&self, role: QuadRole) -> PlacementRule {
+        let mut rules = *self;
+        *rules.rule_mut(role)
+    }
+
+    pub fn rule_mut(&mut self, role: QuadRole) -> &mut PlacementRule {
+        match role {
+            QuadRole::Span => &mut self.span,
+            QuadRole::Center => &mut self.center,
+            QuadRole::LeftButton => &mut self.left,
+            QuadRole::RightButton => &mut self.right,
+            QuadRole::Corner => &mut self.corner,
+            QuadRole::Band => &mut self.band,
+            QuadRole::OptionsButton => &mut self.options,
+            QuadRole::Loot => &mut self.loot,
+            QuadRole::Row1 => &mut self.row1,
+            QuadRole::Row2 => &mut self.row2,
+            QuadRole::Row3 => &mut self.row3,
+            QuadRole::Row4 => &mut self.row4,
+            QuadRole::Back => &mut self.back,
+            QuadRole::HintBar => &mut self.hint_bar,
+            QuadRole::Hint => &mut self.hint,
+            QuadRole::PausedLabel => &mut self.label,
+        }
+    }
+
     /// the Rust row a layout change would land as.
     pub fn rust_fragment(&self) -> String {
-        format!(
-            "PauseRules {{\n    span: {},\n    center: {},\n    left: {},\n    right: {},\n    corner: {},\n}}\n",
-            rule_rust(self.span), rule_rust(self.center), rule_rust(self.left), rule_rust(self.right), rule_rust(self.corner)
-        )
+        let rules: String = QuadRole::ALL.iter().map(|&role| format!("    {}: {},\n", role.name(), rule_rust(self.rule(role)))).collect();
+        format!("PauseRules {{\n{rules}}}\n")
     }
 
     /// what changes from the default Pause rules, one line per rule and one
     /// more for a rule hidden or shown.
     pub fn change_request(&self) -> String {
         let default = PauseRules::default();
+        let rules: Vec<_> = QuadRole::ALL.iter().map(|&role| (role.label(), default.rule(role), self.rule(role))).collect();
         change_request(
             "Pause",
-            &[
-                ("span", default.span, self.span),
-                ("center", default.center, self.center),
-                ("left", default.left, self.left),
-                ("right", default.right, self.right),
-                ("corner", default.corner, self.corner),
-            ],
-            "Acceptance: on a Pause capture the five rules resolve to the exported rectangles, and hit-testing lights the Control inside each.",
+            &rules,
+            "Acceptance: on a Pause capture and on its Options page each part draws in its exported rectangle, and a click on a moved Control (Resume, Retreat, Options, an Option row, Back) picks it.",
         )
     }
 
     /// seats the rules for a completed title frame. `frame` is the title's
     /// own: in-between pictures never seat a second, blended layout.
     pub(super) fn layout(self, frame: u64, widen: f32) -> ScreenLayout {
-        let place = |rule: PlacementRule| rule.visible.then(|| rule.placement(widen));
-        // in QuadRole order
-        ScreenLayout {
-            frame,
-            placements: [
-                place(self.span),
-                place(self.center),
-                place(self.left),
-                place(self.right),
-                place(self.corner),
-                None,
-                None,
-                None,
-                None,
-            ],
+        let mut placements = [None; ROLES];
+        for role in QuadRole::ALL {
+            let rule = self.rule(role);
+            placements[role as usize] = rule.visible.then(|| rule.placement(widen));
         }
+        ScreenLayout { frame, placements }
     }
 }
 
@@ -1256,7 +1445,7 @@ pub enum CauldronRole {
 }
 
 impl CauldronRole {
-    pub const ALL: [CauldronRole; ROLES] = [
+    pub const ALL: [CauldronRole; CAULDRON_ROLES] = [
         CauldronRole::Top,
         CauldronRole::Panel,
         CauldronRole::Bar,
@@ -1333,7 +1522,7 @@ pub(super) const CAULDRON_CONTROLS: [CauldronControl; 5] = [
 /// role was added gets that role's default.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(from = "Vec<PlacementRule>")]
-pub struct CauldronRules([PlacementRule; ROLES]);
+pub struct CauldronRules([PlacementRule; CAULDRON_ROLES]);
 
 impl From<Vec<PlacementRule>> for CauldronRules {
     fn from(saved: Vec<PlacementRule>) -> CauldronRules {
@@ -1400,7 +1589,7 @@ impl CauldronRules {
     /// every role's placement at the pot's value, hidden ones too: the
     /// panel's and the dial's source slide with it, and both sit centred
     /// on the bar where it shows the value, wherever the bar is.
-    pub fn boxes(&self, widen: f32, value: f32) -> [Placement; ROLES] {
+    pub fn boxes(&self, widen: f32, value: f32) -> [Placement; CAULDRON_ROLES] {
         let mut boxes = CauldronRole::ALL.map(|role| self.rule(role).placement(widen));
         let point = boxes[CauldronRole::Bar as usize].map_x(DIAL_ZERO + value * DIAL_STEP);
         for (role, from_step) in [(CauldronRole::Panel, PANEL_STEP), (CauldronRole::Dial, DIAL_STEP)] {
@@ -1976,8 +2165,15 @@ mod tests {
         let near = |value: f32, expected: f32| (value - expected).abs() < 0.001;
         assert!(near(place(QuadRole::Center).to[0], 200.0 - 160.0 / 1.4));
         assert!(near(place(QuadRole::Center).to[2], 320.0 / 1.4));
-        assert!(near(place(QuadRole::RightButton).to[0], 400.0 - 320.0 / 1.4));
-        assert!(near(place(QuadRole::LeftButton).to[0], 0.0));
+        assert!(near(place(QuadRole::RightButton).map_x(320.0), 400.0));
+        assert!(near(place(QuadRole::RightButton).map_x(172.0), 400.0 - 148.0 / 1.4));
+        assert!(near(place(QuadRole::LeftButton).map_x(0.0), 0.0));
+        // a split part narrows about the same middle as the Panel
+        for role in [QuadRole::Row2, QuadRole::Back, QuadRole::Loot, QuadRole::OptionsButton] {
+            for x in [30.0, 160.0, 290.0] {
+                assert!(near(place(role).map_x(x), place(QuadRole::Center).map_x(x)), "{role:?} at {x}");
+            }
+        }
         assert_eq!(place(QuadRole::Span).to[2], 400.0);
     }
 
@@ -2074,7 +2270,7 @@ mod tests {
         let mut edited = rules;
         edited.center.to[0] = 60.0;
         let request = edited.change_request();
-        assert!(request.contains("Move the center rule on Pause"));
+        assert!(request.contains("Move the Panel rule on Pause"));
         assert!(request.contains("Acceptance:"));
     }
 

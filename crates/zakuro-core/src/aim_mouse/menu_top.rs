@@ -1549,10 +1549,12 @@ impl AimMouse {
     }
 
     /// the edited Screen's layers: label and target box, in pixels as shown.
-    /// the Cauldron's parts, the active Scripted Menu's, or none on Pause.
+    /// the Cauldron's parts, the Loading's, Pause's or the active Scripted
+    /// Menu's.
     pub fn editor_layers(&self) -> Vec<(String, [f32; 4])> {
         if self.editing_cauldron() { return self.cauldron_editor_layers(); }
         if self.editing_loading() { return self.loading_editor_layers(); }
+        if self.editing_pause() { return self.pause_editor_layers(); }
         if !self.editing_scripted() { return Vec::new(); }
         self.menu_top.parts.iter().enumerate().map(|(index, part)| {
             let name = if self.menu_top.file_select() {
@@ -1600,6 +1602,7 @@ impl AimMouse {
     pub fn editor_layer_visibility(&self) -> Vec<bool> {
         if self.editing_cauldron() { return self.cauldron_editor_visibility(); }
         if self.editing_loading() { return self.loading_editor_visibility(); }
+        if self.editing_pause() { return self.pause_editor_visibility(); }
         if !self.editing_scripted() { return Vec::new(); }
         self.menu_top.parts.iter().map(|part| part.visible).collect()
     }
@@ -1661,6 +1664,7 @@ impl AimMouse {
     pub fn set_editor_layer_visible(&mut self, index: usize, visible: bool) {
         if self.editing_cauldron() { return self.set_cauldron_editor_visible(index, visible); }
         if self.editing_loading() { return self.set_loading_editor_visible(index, visible); }
+        if self.editing_pause() { return self.set_pause_editor_visible(index, visible); }
         if !self.editing_scripted() { return; }
         let Some(screen) = self.menu_screen.map(|(screen, ..)| screen)
             .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) else { return };
@@ -1678,6 +1682,7 @@ impl AimMouse {
     pub fn set_editor_layer(&mut self, index: usize, to: [f32; 4]) {
         if self.editing_cauldron() { return self.set_cauldron_editor_layer(index, to); }
         if self.editing_loading() { return self.set_loading_editor_layer(index, to); }
+        if self.editing_pause() { return self.set_pause_editor_layer(index, to); }
         if !self.editing_scripted() { return; }
         let screen = self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen));
         // A texture layer rides on the layer drawing its texture: moving
@@ -1746,6 +1751,7 @@ impl AimMouse {
         self.top_projection = None;
         self.placed.clear();
         self.top_moved.clear();
+        self.pause_drawn = Default::default();
         self.transform.reset();
         self.battle_drawn = None;
     }
