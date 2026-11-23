@@ -689,8 +689,6 @@ pub(super) enum LayoutKind {
     Chapter,
     /// animated 3D books, Controls and a separately editable information Board.
     FileSelect,
-    /// one part fitted to the viewport, scaled by the menu factor.
-    Generic { hint: Option<[f32; 4]>, details: bool, top_layers: &'static [TopLayer] },
     /// the game's fixed board of models.
     Group { group: &'static [(&'static str, [f32; 4])], hint: Option<[f32; 4]>, details: bool, heart: bool, top_layers: &'static [TopLayer] },
     /// Controls cut from the whole native Board, beside the details card.
@@ -703,14 +701,14 @@ impl LayoutKind {
     pub fn hint(self) -> Option<[f32; 4]> {
         match self {
             LayoutKind::None | LayoutKind::Chapter | LayoutKind::FileSelect => None,
-            LayoutKind::Generic { hint, .. } | LayoutKind::Group { hint, .. } | LayoutKind::Board { hint, .. } => hint,
+            LayoutKind::Group { hint, .. } | LayoutKind::Board { hint, .. } => hint,
             LayoutKind::Idol => HINT_IDOL,
         }
     }
 
     pub fn details(self) -> bool {
         match self {
-            LayoutKind::Generic { details, .. } | LayoutKind::Group { details, .. } => details,
+            LayoutKind::Group { details, .. } => details,
             LayoutKind::FileSelect | LayoutKind::Board { .. } => true,
             LayoutKind::None | LayoutKind::Chapter | LayoutKind::Idol => false,
         }
@@ -726,7 +724,7 @@ impl LayoutKind {
 
     pub fn top_layers(self) -> &'static [TopLayer] {
         match self {
-            LayoutKind::Board { top_layers, .. } | LayoutKind::Group { top_layers, .. } | LayoutKind::Generic { top_layers, .. } => top_layers,
+            LayoutKind::Board { top_layers, .. } | LayoutKind::Group { top_layers, .. } => top_layers,
             LayoutKind::Idol => IDOL_TOSS_TOP,
             _ => &[],
         }

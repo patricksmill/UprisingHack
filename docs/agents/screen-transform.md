@@ -31,7 +31,7 @@ struct ScreenSpec {
     input: InputMode,           // PressA(addr) | TouchesOnly | ClickAsTouch
     outline: Option<OutlineFn>, // fn(&mut System, u32, Found) -> Vec<MenuCall>
     activate: Activate,         // game call or native touch
-    layout: LayoutKind,         // row-driven: None, FileSelect, Chapter, Generic, Group, Idol
+    layout: LayoutKind,         // row-driven: None, FileSelect, Chapter, Group, Board, Idol
     wheel: Option<WheelFn>,
     fallback: &'static str,     // the env flag that restores native drawing
 }
@@ -125,7 +125,7 @@ Existing save states are the baseline; a Screen without a scenario is unported.
 
 ## Committed layout
 
-`kiu/menu-layout.toml` is built into the executable and is the layout every normal launch uses: layer moves, hidden layers, navigation links and the Pause, Retreat Dialog, Cauldron and Midstage Loading rules. `--menu-editor` reads the data folder's `menu-layout.toml` instead, falling back to the committed one until **Save layout** writes it. To ship an edit, Save layout, copy the data folder's `menu-layout.toml` over `kiu/menu-layout.toml`, and rebuild.
+`kiu/menu-layout.toml` is built into the executable and is the layout every normal launch uses: layer moves, hidden layers, layer orders, navigation links and the Pause, Retreat Dialog, Cauldron and Midstage Loading rules. `--menu-editor` reads the data folder's `menu-layout.toml` instead, falling back to the committed one until **Save layout** writes it. To ship an edit, Save layout, copy the data folder's `menu-layout.toml` over `kiu/menu-layout.toml`, and rebuild.
 
 ## Editor
 
@@ -139,7 +139,9 @@ Every Screen except File Select and Chapter Select also lists the game's own top
 
 Every Scripted Menu item has a **Visible** checkbox, including HOME hint, backgrounds, information Boards and Hint strips. Pause exposes the same checkbox inside each rule group. Hidden items remain in the list with their geometry and stable indices so they can be shown again; their gray editor bounds have no drag handle and cannot intercept canvas selection or dragging. Hidden Scripted Controls cannot receive pointer input or be chosen as explicit navigation destinations. Visibility changes cancel any held Synthetic Touch. Hiding is a visual layout setting, not deletion of native game state or keyboard/controller bindings.
 
-**Folders** group a Scripted Menu's layers in the list: **New folder** puts the selection in one, a folder's name selects its layers (double-click renames it), its checkbox shows or hides them all, **Add** moves the selection in and **Take out** or **Ungroup** removes layers or the folder. A **Linked** folder keeps its layers selected together, so picking any of them on the canvas or in the list moves, scales and nudges them all. Folders are kept per Screen in `menu-layout.toml` under `folders`; the Cauldron, Pause and the Retreat Dialog have none. **Undo** and **Redo** (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, and buttons over the list) step through drags, nudges, visibility changes and folder edits on the current layer list; changing Screens clears them.
+**Stacking**: a Scripted Menu's layer list runs front to back, in the order the Screen draws them, as in Photoshop. Drag a row's ☰ handle onto another row to put it in front of that row (upper half) or behind it (lower half); a selected layer takes the whole selection with it. Ctrl+] and Ctrl+[ step the selection one place forward or back, and Ctrl+Shift+] and Ctrl+Shift+[ send it to the front or back. **Game order** puts the layers back in the game's own stacking. Once arranged, the same order decides hit-testing: where Controls overlap, the front one takes the pointer, on the canvas and in the game. Orders are kept per Screen as stable part indices, back to front, in `menu-layout.toml` under `orders`, and older files have none. A part added since an order was saved keeps its place after its neighbour in the game's order (`merge_order`). The Cauldron, the Midstage Loading, Pause and the Retreat Dialog keep their own order. In the game's order, the leftover top replay draws over the top's node layers and under the hint band and the heart counter, except on a Board, where it is the Details card's words and stays in front.
+
+**Folders** group a Scripted Menu's layers in the list: **New folder** puts the selection in one, a folder's name selects its layers (double-click renames it), its checkbox shows or hides them all, **Add** moves the selection in and **Take out** or **Ungroup** removes layers or the folder. A **Linked** folder keeps its layers selected together, so picking any of them on the canvas or in the list moves, scales and nudges them all. Folders are kept per Screen in `menu-layout.toml` under `folders`; the Cauldron, Pause and the Retreat Dialog have none. **Undo** and **Redo** (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, and buttons over the list) step through drags, nudges, visibility changes, restacking and folder edits on the current layer list; changing Screens clears them.
 
 **Save layout** persists hidden Screen/part pairs even when no geometry was moved, plus each Pause rule's visibility. Loading a console state keeps visibility; the next editor-enabled launch restores saved visibility. Older files without visibility data default to all items visible. Export includes visibility alongside geometry.
 
@@ -171,7 +173,7 @@ A left press on the Idol layer (14), off every Control, Orbits the Idol View ins
 
 Power Portrait (the Vault's, Screen 27) is one Board. Its bottom Placements are Background (0, `MenCmnBg0000`), Message (1, the line of words), Completion badge (2, banner and ring), Completion number (3) and Back (4); the top's are Details card (5), Frame (6), Checkerboard (7) and Portrait pieces (8). The Message layer owns `pPlane1`, a node that draws nothing, so the bottom text pass replays only there. Node layers are cut at their boxes, so each default box covers its artwork. The Screen keeps no Outline: a click is a touch at the Placement-mapped point. Acceptance: from `trace/powerportrait.state`, move Frame, Checkerboard and Portrait pieces apart and Message and Completion number away from the badge; each moves alone, hiding Background keeps the words, and a click on Back at a moved place returns to the Vault.
 
-Group and Generic rows take `top_layers` too, appended after the Top screen (or Details card) so saved indices keep. The leftover Top screen layer keeps any node no layer owns. On heart Screens (Solo Hub) the heart counter keeps its own part and number and draws over the node layers. Top layers per Screen, back to front:
+Group rows take `top_layers` too, appended after the Top screen (or Details card) so saved indices keep. The leftover Top screen layer keeps any node no layer owns. On heart Screens (Solo Hub) the heart counter keeps its own part and number and draws over the node layers. Top layers per Screen, back to front:
 
 - Main Menu: Paper background, Ink wash, Ornaments, Title flourish, Page title, Silhouette.
 - Options, Other, Controls, Reticle/Camera, Volume, Profile, SpotPass Dialog: Paper background, Corner flourish, Lower ornaments, Ornaments (the shared `...Up0000` backdrop), Picture (the page's `...Up0001`; SpotPass's `MenOptionOtherUp0005`, Profile's `MenOptionNameUp0001`).

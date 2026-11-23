@@ -53,6 +53,10 @@ struct SavedLayout {
     hidden: Vec<(usize, usize)>,
     #[serde(default)]
     layers: Vec<SavedLayer>,
+    /// Scripted Menu layer orders the editor arranged, absent in older
+    /// files, which keep the game's order.
+    #[serde(default)]
+    orders: Vec<SavedOrder>,
     /// absent in files written before Pause rules were kept.
     #[serde(default)]
     pause: Option<PauseRules>,
@@ -73,6 +77,14 @@ struct SavedLayout {
     /// the editor's layer folders, by Screen; absent in older files.
     #[serde(default)]
     folders: Vec<menus::EditorFolder>,
+}
+
+/// one Screen's layers as the editor stacked them: stable part indices,
+/// back to front.
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+struct SavedOrder {
+    screen: usize,
+    parts: Vec<usize>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -114,6 +126,7 @@ fn save_layout(
     loading: LoadingRules,
     navigation: Vec<NavigationLink>,
     hidden: Vec<(usize, usize)>,
+    orders: Vec<(usize, Vec<usize>)>,
     folders: &[menus::EditorFolder],
 ) -> Result<PathBuf, String> {
     let saved = SavedLayout {
@@ -124,6 +137,7 @@ fn save_layout(
         cauldron: Some(cauldron),
         loading: Some(loading),
         hidden,
+        orders: orders.into_iter().map(|(screen, parts)| SavedOrder { screen, parts }).collect(),
         folders: folders.to_vec(),
     };
     let path = layout_path(data_dir);
@@ -179,7 +193,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
 
     let data_dir = options.data.clone().map(PathBuf::from).or_else(default_data_dir);
     // the editor works on the data folder's layout; a normal launch, the port's
-    let (layout_overrides, pause_rules, dialog_rules, cauldron_rules, loading_rules, navigation, hidden, folders, layout_error) = {
+    let (layout_overrides, pause_rules, dialog_rules, cauldron_rules, loading_rules, navigation, hidden, orders, folders, layout_error) = {
         match if options.menu_editor { load_layout(&data_dir) } else { Ok(default_layout()) } {
             Ok(saved) => (
                 saved.layers.into_iter().map(|layer| (layer.screen, layer.part, layer.to)).collect(),
@@ -189,12 +203,13 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
                 saved.loading.unwrap_or_default(),
                 saved.navigation,
                 saved.hidden,
+                saved.orders.into_iter().map(|order| (order.screen, order.parts)).collect(),
                 saved.folders,
                 None,
             ),
             Err(error) => {
                 log::warn!("{error}");
-                (Vec::new(), PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), Vec::new(), Vec::new(), Some(error))
+                (Vec::new(), PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Some(error))
             }
         }
     };
@@ -229,6 +244,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         loading_rules,
         navigation,
         hidden,
+        orders,
         game: None,
         menus: {
             let mut menus = Menus::default();
@@ -535,6 +551,9 @@ struct App {
     /// the editor's hidden Scripted Menu parts, by screen and part, kept
     /// across a restart and a console state load.
     hidden: Vec<(usize, usize)>,
+    /// the editor's Scripted Menu layer orders, by screen, kept like the
+    /// hidden parts.
+    orders: Vec<(usize, Vec<usize>)>,
     game: Option<Running>,
     library: Library,
     menus: Menus,
@@ -1096,6 +1115,7 @@ impl App {
                 mouse.set_loading_rules(self.loading_rules);
                 mouse.set_editor_navigation(self.navigation.clone());
                 mouse.set_editor_hidden_layers(self.hidden.clone());
+                mouse.set_editor_orders(self.orders.clone());
             }
             // at 60 FPS the game has half a 3DS's time for each frame, which
             // its busiest scenes need more than: ZAKURO_OVERCLOCK times the
@@ -2006,11 +2026,11 @@ impl App {
     fn act(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         match action {
             Action::SaveLayout => {
-                let (layers, pause, dialog, cauldron, loading, navigation, hidden) = match self.game.as_ref().and_then(|game| game.system.aim_mouse.as_ref()) {
-                    Some(mouse) => (mouse.editor_overrides(), mouse.pause_rules(), mouse.dialog_rules(), mouse.cauldron_rules(), mouse.loading_rules(), mouse.editor_navigation(), mouse.editor_hidden_layers()),
-                    None => (self.layout_overrides.clone(), self.pause_rules, self.dialog_rules, self.cauldron_rules, self.loading_rules, self.navigation.clone(), self.hidden.clone()),
+                let (layers, pause, dialog, cauldron, loading, navigation, hidden, orders) = match self.game.as_ref().and_then(|game| game.system.aim_mouse.as_ref()) {
+                    Some(mouse) => (mouse.editor_overrides(), mouse.pause_rules(), mouse.dialog_rules(), mouse.cauldron_rules(), mouse.loading_rules(), mouse.editor_navigation(), mouse.editor_hidden_layers(), mouse.editor_orders()),
+                    None => (self.layout_overrides.clone(), self.pause_rules, self.dialog_rules, self.cauldron_rules, self.loading_rules, self.navigation.clone(), self.hidden.clone(), self.orders.clone()),
                 };
-                let written = save_layout(&self.data_dir, &layers, pause, dialog, cauldron, loading, navigation.clone(), hidden.clone(), &self.menus.editor_folders);
+                let written = save_layout(&self.data_dir, &layers, pause, dialog, cauldron, loading, navigation.clone(), hidden.clone(), orders.clone(), &self.menus.editor_folders);
                 let path = layout_path(&self.data_dir);
                 self.menus.message = Some(match written {
                     Ok(path) => {
@@ -2021,6 +2041,7 @@ impl App {
                         self.loading_rules = loading;
                         self.navigation = navigation;
                         self.hidden = hidden;
+                        self.orders = orders;
                         format!("Saved the layout to {}", path.display())
                     }
                     Err(error) => format!("Could not save {}: {error}", path.display()),
@@ -2049,6 +2070,12 @@ impl App {
                     self.cauldron_rules = mouse.cauldron_rules();
                     self.loading_rules = mouse.loading_rules();
                     self.hidden = mouse.editor_hidden_layers();
+                }
+            }
+            Action::EditorLayerOrder(order) => {
+                if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
+                    mouse.set_editor_layer_order(order);
+                    self.orders = mouse.editor_orders();
                 }
             }
             Action::LoadingRules(rules) => {
@@ -2660,6 +2687,7 @@ impl App {
                     if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
                         mouse.set_editor_navigation(self.navigation.clone());
                         mouse.set_editor_hidden_layers(self.hidden.clone());
+                        mouse.set_editor_orders(self.orders.clone());
                     }
                 }
                 self.menus.toast = Some((format!("Loaded slot {slot}"), Instant::now()));
@@ -2723,6 +2751,7 @@ impl App {
         let editor_open = self.menus.editor_open;
         // folders and undo follow the Scripted Menu being edited
         self.menus.editor_screen = self.game.as_ref().and_then(|game| game.system.aim_mouse.as_ref()).and_then(|mouse| mouse.editor_scripted_index());
+        self.menus.editor_order = self.game.as_ref().filter(|_| editor_open).and_then(|game| game.system.aim_mouse.as_ref()).map_or(Vec::new(), |mouse| mouse.editor_layer_order());
         let editor_enabled = self.options.menu_editor;
         let (editor_layers, editor_visibility, navigation_controls, navigation_directions, editor_widen) = self.game.as_ref().filter(|_| editor_open).and_then(|game| game.system.aim_mouse.as_ref())
             .map_or((Vec::new(), Vec::new(), Vec::new(), [true; 4], 1.0), |mouse| (mouse.editor_layers(), mouse.editor_layer_visibility(), mouse.editor_navigation_controls(), mouse.editor_navigation_directions(), mouse.widen()));
@@ -2994,7 +3023,7 @@ mod tests {
         let mut dialog = DialogRules::default();
         dialog.panel.to = [200.0, 20.0, 160.0, 120.0];
         dialog.span.visible = false;
-        let path = save_layout(&Some(dir.clone()), &layers, rules, dialog, cauldron, LoadingRules::default(), navigation.clone(), hidden.clone(), &[]).expect("the layout is written");
+        let path = save_layout(&Some(dir.clone()), &layers, rules, dialog, cauldron, LoadingRules::default(), navigation.clone(), hidden.clone(), Vec::new(), &[]).expect("the layout is written");
         assert_eq!(path, layout_path(&Some(dir.clone())));
         let loaded = load_layout(&Some(dir.clone())).expect("the layout is read");
         let loaded_layers: Vec<_> = loaded.layers.into_iter().map(|layer| (layer.screen, layer.part, layer.to)).collect();
@@ -3016,7 +3045,7 @@ mod tests {
         let mut loading = LoadingRules::default();
         loading.rule_mut(LoadingRole::Orb).visible = false;
         loading.rule_mut(LoadingRole::Progress).to = [10.0, 20.0, 200.0, 150.0];
-        let path = save_layout(&Some(dir.clone()), &[], PauseRules::default(), DialogRules::default(), CauldronRules::default(), loading, Vec::new(), Vec::new(), &[]).expect("the layout is written");
+        let path = save_layout(&Some(dir.clone()), &[], PauseRules::default(), DialogRules::default(), CauldronRules::default(), loading, Vec::new(), Vec::new(), Vec::new(), &[]).expect("the layout is written");
         assert_eq!(load_layout(&Some(dir.clone())).expect("the layout is read").loading, Some(loading));
         let mut file: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         file.remove("loading");
@@ -3033,7 +3062,7 @@ mod tests {
         let dir = temp_data_dir("layout-before-ring");
         let mut cauldron = CauldronRules::default();
         cauldron.rule_mut(CauldronRole::Back).visible = false;
-        let path = save_layout(&Some(dir.clone()), &[], PauseRules::default(), DialogRules::default(), cauldron, LoadingRules::default(), Vec::new(), Vec::new(), &[]).expect("the layout is written");
+        let path = save_layout(&Some(dir.clone()), &[], PauseRules::default(), DialogRules::default(), cauldron, LoadingRules::default(), Vec::new(), Vec::new(), Vec::new(), &[]).expect("the layout is written");
         let mut file: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         file["cauldron"].as_array_mut().expect("the Cauldron's rules are a list").pop();
         std::fs::write(&path, toml::to_string(&file).unwrap()).unwrap();
@@ -3050,7 +3079,7 @@ mod tests {
         let dir = temp_data_dir("layout-before-dialog");
         let mut pause = PauseRules::default();
         pause.center.to[0] = 60.0;
-        let path = save_layout(&Some(dir.clone()), &[], pause, DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), Vec::new(), &[]).expect("the layout is written");
+        let path = save_layout(&Some(dir.clone()), &[], pause, DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), Vec::new(), Vec::new(), &[]).expect("the layout is written");
         let mut file: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         file.remove("dialog").expect("the dialog's rules are written");
         std::fs::write(&path, toml::to_string(&file).unwrap()).unwrap();
@@ -3062,10 +3091,22 @@ mod tests {
 
     /// a Scripted layer hidden without ever being moved is saved on its own.
     #[test]
+    fn layer_orders_are_saved_with_the_layout() {
+        let dir = temp_data_dir("layout-orders");
+        let orders = vec![(24, vec![3, 0, 1, 2]), (12, vec![1, 0])];
+        save_layout(&Some(dir.clone()), &[(24, 1, [1.0, 2.0, 3.0, 4.0])], PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), vec![(24, 2)], orders.clone(), &[])
+            .expect("the layout with orders is written");
+        let loaded = load_layout(&Some(dir.clone())).expect("the layout is read");
+        let loaded: Vec<(usize, Vec<usize>)> = loaded.orders.into_iter().map(|order| (order.screen, order.parts)).collect();
+        assert_eq!(loaded, orders, "the orders did not come back");
+        std::fs::remove_dir_all(&dir).expect("the test's folder goes");
+    }
+
+    #[test]
     fn a_hidden_layer_is_saved_without_a_move() {
         let dir = temp_data_dir("layout-hidden");
         let hidden = vec![(11, 5), (4, 1)];
-        save_layout(&Some(dir.clone()), &[], PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), hidden.clone(), &[])
+        save_layout(&Some(dir.clone()), &[], PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), hidden.clone(), Vec::new(), &[])
             .expect("the layout with only a hidden layer is written");
         let loaded = load_layout(&Some(dir.clone())).expect("the layout is read");
         assert!(loaded.layers.is_empty(), "hiding a layer wrote a move");
@@ -3081,7 +3122,7 @@ mod tests {
             menus::EditorFolder { screen: 26, name: "Top".to_owned(), parts: vec![12, 15], linked: true, collapsed: false },
             menus::EditorFolder { screen: 14, name: "Folder 1".to_owned(), parts: vec![3], linked: false, collapsed: true },
         ];
-        save_layout(&Some(dir.clone()), &[(26, 15, [1.0, 2.0, 3.0, 4.0])], PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), vec![(26, 13)], &folders)
+        save_layout(&Some(dir.clone()), &[(26, 15, [1.0, 2.0, 3.0, 4.0])], PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), vec![(26, 13)], Vec::new(), &folders)
             .expect("the layout with folders is written");
         let loaded = load_layout(&Some(dir.clone())).expect("the layout is read");
         assert_eq!(loaded.folders, folders, "the folders did not come back");
@@ -3155,7 +3196,7 @@ mod tests {
         let dir = temp_data_dir("layout-error");
         let blocked = dir.join("not-a-folder");
         std::fs::write(&blocked, b"").expect("a file stands where the folder would go");
-        assert!(save_layout(&Some(blocked), &[], PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), Vec::new(), &[]).is_err());
+        assert!(save_layout(&Some(blocked), &[], PauseRules::default(), DialogRules::default(), CauldronRules::default(), LoadingRules::default(), Vec::new(), Vec::new(), Vec::new(), &[]).is_err());
         std::fs::remove_dir_all(&dir).expect("the test's folder goes");
     }
 
