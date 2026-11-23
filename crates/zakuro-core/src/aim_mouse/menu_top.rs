@@ -62,13 +62,15 @@ pub(super) struct MenuTop {
     text_parent: Option<Box<Saved>>,
     drawing_text: bool,
     /// Chapter Select's Rows: the chapter number of each part from
-    /// `CHAPTER_FIRST_ROW` on, the first one shown, the wheel's leftover,
-    /// how many are open and fit, and the chapter last outlined.
+    /// `CHAPTER_FIRST_ROW` on, the scroll shown and the one it eases to (in
+    /// Rows, fractional), how many are open and fit, the chapter last
+    /// outlined, and the List's camera this frame.
     chapter_rows: Vec<u32>,
-    chapter_scroll: usize,
-    chapter_wheel: f32,
+    chapter_scroll: f32,
+    chapter_target: f32,
     chapter_span: (usize, usize),
     chapter_outlined: Option<u32>,
+    chapter_lens: Option<ListLens>,
     pub(super) grab: Option<usize>,
     pub(super) blocked: bool,
 }
@@ -228,30 +230,83 @@ const CHAPTER_ROW_BOTTOM: f32 = 214.0;
 const MODEL_SKELETON: u32 = 0x22C;
 const SKELETON_WORLD: u32 = 0x40;
 
-/// Where the visible Rows go: their row index and box, after the first
-/// `scroll`, and how many fit `width`. A short List starts at the left.
-fn chapter_slots(width: f32, count: usize, scroll: usize) -> (Vec<(usize, [f32; 4])>, usize) {
+/// Where the visible Rows go: their row index and box, `scroll` Rows
+/// (fractional while it glides) along, and how many fit `width` whole.
+/// A Row part-way in at either end is still placed, so the next chapter
+/// shows at the right edge before the wheel reaches it. A short List starts
+/// at the left.
+fn chapter_slots(width: f32, count: usize, scroll: f32) -> (Vec<(usize, [f32; 4])>, usize) {
     let size = CHAPTER_ROW_SOURCE.map(|value| value * CHAPTER_ROW_SCALE);
     let pitch = size[0] + CHAPTER_ROW_GAP;
     let fit = (((width - CHAPTER_ROW_GAP) / pitch).floor() as usize).max(1);
-    let scroll = scroll.min(count.saturating_sub(fit));
-    let slots = (scroll..count.min(scroll + fit)).map(|row| {
-        (row, [CHAPTER_ROW_GAP + (row - scroll) as f32 * pitch, CHAPTER_ROW_BOTTOM - size[1], size[0], size[1]])
+    let scroll = scroll.clamp(0.0, count.saturating_sub(fit) as f32);
+    let first = scroll.floor() as usize;
+    // every Row that starts inside the window, the next one peeking in at
+    // the right edge before the wheel reaches it
+    let end = count.min(((width - CHAPTER_ROW_GAP) / pitch + scroll).ceil() as usize);
+    let slots = (first..end).map(|row| {
+        (row, [CHAPTER_ROW_GAP + (row as f32 - scroll) * pitch, CHAPTER_ROW_BOTTOM - size[1], size[0], size[1]])
     }).collect();
     (slots, fit)
 }
 
-/// The bottom-screen pixel a List bone's world position draws at, measured
-/// from the native strip with the bottom lens at its own 4:3: 8 units a
-/// chapter is 77.4 pixels across.
-fn chapter_center(x: f32, y: f32) -> [f32; 2] {
-    [160.7 + 9.68 * x, 123.9 - 10.22 * y]
+/// One frame of the row's glide toward where the wheel or keys sent it:
+/// a share of the way each frame, settling exactly once close.
+fn ease_scroll(shown: f32, target: f32) -> f32 {
+    const SHARE: f32 = 0.3;
+    let next = shown + (target - shown) * SHARE;
+    if (target - next).abs() < 0.005 { target } else { next }
+}
+
+/// The bottom camera as a Row's placed drawing uses it: where a world
+/// position draws on the bottom screen, read from the camera every frame
+/// rather than measured. A Row's source must follow its art exactly, or the
+/// art slides in its slot each time the game scrolls its own List.
+#[derive(Clone, Copy)]
+struct ListLens {
+    /// 3x4 view at camera +0x3C, 4x4 projection at +0x6C.
+    view: [f32; 12],
+    projection: [f32; 16],
+    /// the lens's widening, which `cropped_projection` undoes.
+    widen: f32,
+}
+
+impl ListLens {
+    fn of(system: &mut System, drawing: u32) -> Option<Self> {
+        let scene = read_word(system, drawing + 0x40);
+        let screen = read_word(system, drawing + 0x58);
+        let camera = read_word(system, scene + SCENE_CAMERAS + screen * 4);
+        if camera == 0 || !system.memory.is_readable(camera, 0xAC) { return None; }
+        let mut floats = |at: u32, out: &mut [f32]| for (index, value) in out.iter_mut().enumerate() {
+            *value = f32::from_bits(read_word(system, camera + at + index as u32 * 4));
+        };
+        let (mut view, mut projection) = ([0.0; 12], [0.0; 16]);
+        floats(0x3C, &mut view);
+        floats(0x6C, &mut projection);
+        let widen = super::lens_widen(system, camera, [320.0, 240.0]);
+        Some(Self { view, projection, widen })
+    }
+
+    /// The bottom-screen pixel a world position draws at. The bottom's
+    /// projection is turned: its first row goes up the screen from the
+    /// bottom, its second across from the right edge.
+    fn pixel(&self, at: [f32; 3]) -> [f32; 2] {
+        let point = [at[0], at[1], at[2], 1.0];
+        let view: Vec<f32> = (0..3).map(|row| (0..4).map(|column| self.view[row * 4 + column] * point[column]).sum()).collect();
+        let view = [view[0], view[1], view[2], 1.0];
+        let clip = |row: usize| (0..4).map(|column| self.projection[row * 4 + column] * view[column]).sum::<f32>();
+        let w = clip(3);
+        if w.abs() < 1e-6 { return [f32::NAN; 2]; }
+        let up = clip(0) / w;
+        let across = clip(1) / w * self.widen;
+        [160.0 * (1.0 - across), 120.0 * (1.0 - up)]
+    }
 }
 
 /// Open chapters, by number, with their thumbnails' centers on the bottom
 /// screen as the game has scrolled them this frame. Locked chapters' mesh
 /// nodes are hidden by the game.
-fn chapter_list(system: &mut System, bottom: u32) -> Vec<(u32, [f32; 2])> {
+fn chapter_list(system: &mut System, bottom: u32, lens: ListLens) -> Vec<(u32, [f32; 2])> {
     let scene = read_word(system, bottom + 0x40);
     let layers = read_word(system, scene + SCENE_LAYERS);
     for layer in BOTTOM_LAYERS {
@@ -261,13 +316,13 @@ fn chapter_list(system: &mut System, bottom: u32) -> Vec<(u32, [f32; 2])> {
         if end < start || end - start > 0x1000 { continue; }
         for at in (start..end).step_by(4) {
             let model = read_word(system, at);
-            if model_name(system, model) == "MenStageselectBt0000" { return chapter_bones(system, model); }
+            if model_name(system, model) == "MenStageselectBt0000" { return chapter_bones(system, model, lens); }
         }
     }
     Vec::new()
 }
 
-fn chapter_bones(system: &mut System, model: u32) -> Vec<(u32, [f32; 2])> {
+fn chapter_bones(system: &mut System, model: u32, lens: ListLens) -> Vec<(u32, [f32; 2])> {
     let cmdl = read_word(system, model + 8);
     let dictionary = read_word(system, cmdl + 0xD0);
     let skeleton = read_word(system, model + MODEL_SKELETON);
@@ -298,8 +353,8 @@ fn chapter_bones(system: &mut System, model: u32) -> Vec<(u32, [f32; 2])> {
         let bone = names.iter().position(|name| *name == format!("ML_B{number:04}"))? as u32;
         let matrix = world + bone * 48;
         if !system.memory.is_readable(matrix, 48) { return None; }
-        let [x, y] = [0xC, 0x1C].map(|at| f32::from_bits(read_word(system, matrix + at)));
-        Some((number, chapter_center(x, y)))
+        let at = [0xC, 0x1C, 0x2C].map(|at| f32::from_bits(read_word(system, matrix + at)));
+        Some((number, lens.pixel(at))).filter(|(_, center)| center.iter().all(|value| value.is_finite()))
     }).collect()
 }
 
@@ -1417,11 +1472,8 @@ impl AimMouse {
     /// the view moves: the Outline stays on its chapter.
     pub(super) fn scroll_chapters(&mut self, steps: f32) {
         let menu_top = &mut self.menu_top;
-        menu_top.chapter_wheel += steps;
-        let whole = menu_top.chapter_wheel.trunc();
-        menu_top.chapter_wheel -= whole;
         let (count, fit) = menu_top.chapter_span;
-        menu_top.chapter_scroll = (menu_top.chapter_scroll as f32 + whole).clamp(0.0, count.saturating_sub(fit) as f32) as usize;
+        menu_top.chapter_target = (menu_top.chapter_target + steps).clamp(0.0, count.saturating_sub(fit) as f32);
     }
 
     /// the edited Screen's layers: label and target box, in pixels as shown.
@@ -1744,7 +1796,8 @@ pub(super) fn begin(system: &mut System) -> bool {
     let idol_revealing = index < ScreenTransform::scripted_len()
         && matches!(ScreenTransform::scripted(index).layout, LayoutKind::Idol)
         && idol_revealing(system, object);
-    let chapters = if index == 1 { chapter_list(system, bottom) } else { Vec::new() };
+    let lens = if index == 1 { ListLens::of(system, bottom) } else { None };
+    let chapters = lens.map_or_else(Vec::new, |lens| chapter_list(system, bottom, lens));
     let outlined = (index == 1 && object != 0).then(|| read_word(system, object + CHAPTER) + 1);
     log::debug!("menu begin index {index} idol dialog {idol_dialog}");
     // the native fallback screens past the registry draw themselves and have
@@ -1761,8 +1814,8 @@ pub(super) fn begin(system: &mut System) -> bool {
         mouse.menu_part = None;
         mouse.menu_top.pointer = None;
         mouse.menu_top.candidates.clear();
-        mouse.menu_top.chapter_scroll = 0;
-        mouse.menu_top.chapter_wheel = 0.0;
+        mouse.menu_top.chapter_scroll = 0.0;
+        mouse.menu_top.chapter_target = 0.0;
         mouse.menu_top.chapter_outlined = None;
     }
     let (mut native, mut parts) = layout_with_dialog(index, 400.0 * mouse.widen, idol_dialog);
@@ -1791,22 +1844,30 @@ pub(super) fn begin(system: &mut System) -> bool {
             part.place.from[2] = IDOL_NAME_WIDTH;
         }
     }
+    let hovered = mouse.hovered_chapter_row();
     let menu_top = &mut mouse.menu_top;
     menu_top.chapter_rows.clear();
+    menu_top.chapter_lens = lens;
     if index == 1 {
         let width = 400.0 * mouse.widen;
         let count = chapters.len();
-        let fit = chapter_slots(width, 0, 0).1;
+        let fit = chapter_slots(width, 0, 0.0).1;
+        let last = count.saturating_sub(fit) as f32;
         // Keys pull the row to a newly outlined chapter; the wheel never
-        // moves the Outline, so it may scroll it out of view.
+        // moves the Outline, so it may scroll it out of view. A chapter
+        // outlined by hovering its Row stays where it is under the mouse.
+        let entered = menu_top.chapter_outlined.is_none();
         if outlined != menu_top.chapter_outlined {
             menu_top.chapter_outlined = outlined;
-            if let Some(row) = outlined.and_then(|number| chapters.iter().position(|&(chapter, _)| chapter == number)) {
-                if row < menu_top.chapter_scroll { menu_top.chapter_scroll = row; }
-                if row >= menu_top.chapter_scroll + fit { menu_top.chapter_scroll = row + 1 - fit; }
+            if let Some(row) = outlined.filter(|&number| hovered != Some(number))
+                .and_then(|number| chapters.iter().position(|&(chapter, _)| chapter == number)) {
+                let row = row as f32;
+                if row < menu_top.chapter_target { menu_top.chapter_target = row; }
+                if row + 1.0 > menu_top.chapter_target + fit as f32 { menu_top.chapter_target = row + 1.0 - fit as f32; }
             }
         }
-        menu_top.chapter_scroll = menu_top.chapter_scroll.min(count.saturating_sub(fit));
+        menu_top.chapter_target = menu_top.chapter_target.clamp(0.0, last);
+        menu_top.chapter_scroll = if entered { menu_top.chapter_target } else { ease_scroll(menu_top.chapter_scroll, menu_top.chapter_target) };
         menu_top.chapter_span = (count, fit);
         for (row, to) in chapter_slots(width, count, menu_top.chapter_scroll).0 {
             let (number, [x, y]) = chapters[row];
@@ -1954,11 +2015,12 @@ struct RowDraw {
     chapter: u32,
     center: [f32; 2],
     outlined: bool,
+    /// the List's camera as read before this drawing cropped it.
+    lens: Option<ListLens>,
 }
 
 /// A model's world position (its 3x4 matrix's translation).
-const MODEL_WORLD_X: u32 = 0x98;
-const MODEL_WORLD_Y: u32 = 0xA8;
+const MODEL_WORLD: [u32; 3] = [0x98, 0xA8, 0xB8];
 
 // Chapter scenery and information share a model. Select mesh nodes so
 // the scenery can fill the screen while the complete information shrinks.
@@ -1986,8 +2048,8 @@ fn chapter_models(system: &mut System, drawing: u32, top: bool, details: bool, r
                     "MenStageselectBt0003" => row.outlined,
                     // one laurel per chapter, kept where its chapter is
                     "MenStageselectBt0004" => {
-                        let [x, y] = [MODEL_WORLD_X, MODEL_WORLD_Y].map(|at| f32::from_bits(read_word(system, model + at)));
-                        let [cx, cy] = chapter_center(x, y);
+                        let at = MODEL_WORLD.map(|at| f32::from_bits(read_word(system, model + at)));
+                        let [cx, cy] = row.lens.map_or([f32::NAN; 2], |lens| lens.pixel(at));
                         (cx - row.center[0]).abs() < 30.0 && (cy - row.center[1]).abs() < 30.0
                     }
                     _ => false,
@@ -2557,6 +2619,7 @@ fn draw_part(system: &mut System, top: u32, next: usize) -> bool {
             chapter,
             center: [part.place.from[0] + part.place.from[2] * 0.5, part.place.from[1] + part.place.from[3] * 0.5],
             outlined: menu_top.chapter_outlined == Some(chapter),
+            lens: menu_top.chapter_lens,
         })
     };
     let node_layer = part.top && part.model.is_some_and(|name| top_layers(index).iter().any(|&(layer, ..)| layer == name));
@@ -2872,29 +2935,54 @@ mod tests {
     fn chapter_rows_fill_one_row_above_back_and_the_wheel_stops_at_both_ends() {
         let mut fits = Vec::new();
         for width in [240.0, 400.0, 240.0 * 16.0 / 9.0, 560.0] {
-            let (slots, fit) = chapter_slots(width, 26, 0);
-            assert_eq!(slots.len(), fit);
-            for (_, to) in &slots {
-                assert!(to[0] >= 0.0 && to[0] + to[2] <= width && to[1] + to[3] <= CHAPTER_ROW_BOTTOM);
+            let (slots, fit) = chapter_slots(width, 26, 0.0);
+            // the Rows that fit are whole; any more only start inside the
+            // window, peeking in at its right edge
+            assert!(slots.len() >= fit);
+            for (row, to) in &slots {
+                assert!(to[0] >= 0.0 && to[0] < width && to[1] + to[3] <= CHAPTER_ROW_BOTTOM);
+                if *row < fit { assert!(to[0] + to[2] <= width); }
                 assert_eq!(to[1], slots[0].1[1], "one row");
             }
+            assert!(chapter_slots(width, 26, 0.0).0.iter().all(|(_, to)| to[0] < width));
+            assert_eq!(slots.len(), 26.min(((width - CHAPTER_ROW_GAP) / (slots[0].1[2] + CHAPTER_ROW_GAP)).ceil() as usize));
             fits.push(fit);
             // a short List starts at the left whatever the scroll
-            assert_eq!(chapter_slots(width, 1, 9).0, vec![(0, slots[0].1)]);
+            assert_eq!(chapter_slots(width, 1, 9.0).0, vec![(0, slots[0].1)]);
             // the last chapter ends the row
-            assert_eq!(chapter_slots(width, 26, 99).0.last().unwrap().0, 25);
+            assert_eq!(chapter_slots(width, 26, 99.0).0.last().unwrap().0, 25);
+            // half a Row along, every Row has moved half a pitch and one
+            // more peeks in at the right
+            let (half, _) = chapter_slots(width, 26, 0.5);
+            assert!(half.len() > fit && half.iter().all(|(_, to)| to[0] < width && to[0] + to[2] > 0.0));
+            let pitch = slots.get(1).map_or(0.0, |next| next.1[0] - slots[0].1[0]);
+            assert!((half[0].1[0] - (slots[0].1[0] - pitch * 0.5)).abs() < 0.001);
         }
         assert!(fits.windows(2).all(|pair| pair[0] <= pair[1]) && fits[0] < fits[3], "wider windows show more chapters");
 
         let mut mouse = shown(1);
         mouse.menu_top.chapter_span = (26, 5);
         mouse.scroll_chapters(-3.0);
-        assert_eq!(mouse.menu_top.chapter_scroll, 0);
-        mouse.scroll_chapters(2.5);
-        mouse.scroll_chapters(0.5);
-        assert_eq!(mouse.menu_top.chapter_scroll, 3, "fractions add up");
+        assert_eq!(mouse.menu_top.chapter_target, 0.0);
+        mouse.scroll_chapters(0.25);
+        assert_eq!(mouse.menu_top.chapter_target, 0.25, "a trackpad's fraction moves the row by as much");
+        mouse.scroll_chapters(2.75);
+        assert_eq!(mouse.menu_top.chapter_target, 3.0);
         mouse.scroll_chapters(40.0);
-        assert_eq!(mouse.menu_top.chapter_scroll, 21);
+        assert_eq!(mouse.menu_top.chapter_target, 21.0);
+    }
+
+    #[test]
+    fn chapter_row_glides_to_its_target_and_settles_on_it() {
+        let mut shown = 0.0;
+        let mut frames = Vec::new();
+        while shown != 3.0 && frames.len() < 120 {
+            shown = ease_scroll(shown, 3.0);
+            frames.push(shown);
+        }
+        assert!(frames.len() > 4 && frames.len() < 30, "a few frames, not a jump: {}", frames.len());
+        assert!(frames.windows(2).all(|pair| pair[0] < pair[1]), "never overshoots or stalls");
+        assert!(frames[0] < 1.0, "the first frame moves less than one Row");
     }
 
     #[test]
