@@ -830,6 +830,12 @@ fn board_companions(model: &str) -> &'static [&'static str] {
     }
 }
 
+/// Bottom-screen models whose own meshes overlap and are sorted by depth, so
+/// the foreground override (`foreground_materials`) must leave them alone.
+/// The Offering's dial: without its depth test, the black silhouette behind
+/// the reels covers them and the numbers vanish.
+const DEPTH_LAYERED: &[&str] = &["MenColGifBt0002"];
+
 /// Armory Controls that show the game's text: names, stats, rows and labels.
 const BOARD_TEXT: &[&str] = &[
     "MenEquipBt0001",
@@ -2217,6 +2223,7 @@ fn log_model_nodes(system: &mut System, layer: u32, model: u32, name: &str) {
 
 fn foreground_materials(system: &mut System, model: u32, moved: &mut Vec<(u32, Vec<u8>)>) {
     if read_word(system, model) != 0x00D14AF4 { return; }
+    if DEPTH_LAYERED.contains(&model_name(system, model).as_str()) { return; }
     let (start, end) = (read_word(system, model + 0x164), read_word(system, model + 0x168));
     if start == 0 || end < start || end - start > 128 * 4 || !system.memory.is_readable(start, end - start) { return; }
     for at in (start..end).step_by(4) {
@@ -3814,6 +3821,29 @@ mod tests {
             assert_eq!(read_word(&mut system, material + 0x118), 1);
             assert_eq!(read_word(&mut system, material + 0x11C), 0x41);
         }
+    }
+
+    /// The Offering's dial hides its silhouette behind the reels by depth;
+    /// flattened, the silhouette draws over them and the numbers vanish.
+    #[test]
+    fn the_offering_dial_keeps_its_depth() {
+        let mut system = System::new(crate::Config::default());
+        system.memory.map(0x14000000, 0x20000000, 0x10000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        let (model, list, runtime, original, cmdl) = (0x14000000, 0x14000200, 0x14000300, 0x14001000, 0x14003000);
+        for (at, value) in [(model + 8, cmdl), (cmdl + 4, u32::from_le_bytes(*b"CMDL")), (cmdl + 0xC, 0xF4),
+            (model + 0x164, list), (model + 0x168, list + 4), (list, runtime),
+            (model, 0x00D14AF4), (runtime, 0x00D1510C), (runtime + 8, original)] {
+            system.memory.write_bytes(at, &u32::to_le_bytes(value));
+        }
+        system.memory.write_bytes(cmdl + 0x100, b"MenColGifBt0002\0");
+        for (offset, value) in [(4, u32::from_le_bytes(*b"MTOB")), (0x118, 1), (0x11C, 0x41), (0x120, 0x00010107)] {
+            system.memory.write_bytes(original + offset, &value.to_le_bytes());
+        }
+        let mut moved = Vec::new();
+        foreground_materials(&mut system, model, &mut moved);
+        assert_eq!(read_word(&mut system, original + 0x118), 1);
+        assert_eq!(read_word(&mut system, original + 0x11C), 0x41);
+        assert!(moved.is_empty());
     }
 
     #[test]
