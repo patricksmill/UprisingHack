@@ -7,9 +7,16 @@ use winit::window::Window;
 
 use zakuro_gpu::{Overlay, OverlayMesh, OverlayTexture, OverlayVertex};
 
+/// a key pressed and let go, as egui reads it.
+pub fn tap(key: egui::Key) -> [egui::Event; 2] {
+    [true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE })
+}
+
 pub struct Gui {
     pub ctx: egui::Context,
     state: egui_winit::State,
+    /// keys a controller pressed, for egui's next frame
+    pad_keys: Vec<egui::Event>,
 }
 
 impl Gui {
@@ -24,7 +31,7 @@ impl Gui {
             None,
             Some(8192),
         );
-        Gui { ctx, state }
+        Gui { ctx, state, pad_keys: Vec::new() }
     }
 
     /// hands egui an event, true when it wants it for itself
@@ -41,9 +48,21 @@ impl Gui {
         self.ctx.egui_wants_pointer_input()
     }
 
+    /// a key pressed and let go for a controller, as egui moves its focus
+    /// and presses the focused widget with the keyboard's.
+    pub fn press_key(&mut self, key: egui::Key) {
+        self.pad_keys.extend(tap(key));
+    }
+
+    /// whether a widget has the keyboard's focus, which arrow keys move on from.
+    pub fn has_focus(&self) -> bool {
+        self.ctx.memory(|memory| memory.focused().is_some())
+    }
+
     /// runs the interface for a frame and returns what to draw
     pub fn frame(&mut self, window: &Window, ui: impl FnMut(&mut egui::Ui)) -> Overlay {
-        let input = self.state.take_egui_input(window);
+        let mut input = self.state.take_egui_input(window);
+        input.events.append(&mut self.pad_keys);
         let mut output = self.ctx.run_ui(input, ui);
         self.state.handle_platform_output(window, output.platform_output);
         let pixels_per_point = output.pixels_per_point;

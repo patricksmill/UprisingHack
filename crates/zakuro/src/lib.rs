@@ -10,6 +10,7 @@ mod gui;
 mod gyro;
 mod input;
 mod library;
+mod menu_pad;
 mod menus;
 mod preferences;
 mod microphone;
@@ -228,6 +229,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
     let mut app = App {
         keyboard: Keyboard::new(settings.keys.clone()),
         gamepads: gamepad::Gamepads::new(settings.pad.clone()),
+        menu_pad: menu_pad::MenuPad::default(),
         gyro: gyro::Gyro::new(),
         prompt_faces: None,
         prompts_shown: None,
@@ -618,6 +620,8 @@ struct App {
     window: Option<Window>,
     keyboard: Keyboard,
     gamepads: gamepad::Gamepads,
+    /// a controller moving around the Frontend Menu and its windows.
+    menu_pad: menu_pad::MenuPad,
     /// a controller's gyroscope, for aiming with it.
     gyro: gyro::Gyro,
     /// the controller whose buttons the game's prompts show, none for the
@@ -1398,8 +1402,61 @@ impl App {
         // battle takes the mouse again once they are all closed and any
         // pause menu is gone
         self.battle_seen = false;
-        self.menus.menu_open = !self.menus.menu_open;
+        // a window the menu opened closes with it, the game going on
+        if self.menus.menu_open || self.menus.child_open() {
+            self.menus.close_over_game();
+        } else {
+            self.menus.menu_open = true;
+        }
         self.keyboard.release();
+        self.menu_pad.release();
+    }
+
+    /// whether a controller moves around Zakuro's windows rather than
+    /// playing: the library, or a window over the game other than the
+    /// layout editor, which the mouse alone works.
+    fn pad_navigates(&self) -> bool {
+        self.game.is_none() || (self.menus.any_open() && !self.menus.editor_open)
+    }
+
+    /// the buttons that press and go back in Zakuro's windows: the player's
+    /// Confirm and Back with Action Bindings, the console's A and B without.
+    fn menu_buttons(&self) -> (Vec<gilrs::Button>, Vec<gilrs::Button>) {
+        if !self.keyboard.acting() {
+            return (vec![self.settings.pad.a], vec![self.settings.pad.b]);
+        }
+        let pads = |action| {
+            self.settings.pc.bindings
+                .sources(bindings::Device::Controller, action)
+                .iter()
+                .filter_map(|source| match source {
+                    bindings::Source::Pad(button) => Some(*button),
+                    _ => None,
+                })
+                .collect()
+        };
+        (pads(bindings::Action::Confirm), pads(bindings::Action::Back))
+    }
+
+    /// does what a controller asks of Zakuro's windows, thru egui's own
+    /// keyboard focus: arrows move it, Enter presses the focused widget.
+    fn menu_nav(&mut self, nav: menu_pad::Nav) {
+        let Some(gui) = &mut self.gui else { return };
+        match nav {
+            // nothing focused yet, Tab takes the first widget
+            menu_pad::Nav::Move(_) | menu_pad::Nav::Confirm if !gui.has_focus() => gui.press_key(egui::Key::Tab),
+            menu_pad::Nav::Move(direction) => gui.press_key(direction.key()),
+            menu_pad::Nav::Confirm => gui.press_key(egui::Key::Enter),
+            // an open list or a text being typed in lets go first
+            menu_pad::Nav::Back if egui::Popup::is_any_open(&gui.ctx) || gui.ctx.text_edit_focused() => gui.press_key(egui::Key::Escape),
+            menu_pad::Nav::Back => {
+                if self.menus.back() && !self.menus.over_game() {
+                    // the game goes on, as Resume has it
+                    self.keyboard.release();
+                    self.menu_pad.release();
+                }
+            }
+        }
     }
 
     /// does what the actions a press started do outside the console's
@@ -1461,6 +1518,8 @@ impl App {
                 self.capture_binding(bindings::Source::Stick(stick));
             }
         }
+        let navigating = self.pad_navigates();
+        let (confirm, back) = self.menu_buttons();
         for (button, pressed) in buttons {
             if pressed && button == gilrs::Button::Mode && self.menus.rebinding_action.take().is_some() {
                 continue;
@@ -1471,6 +1530,12 @@ impl App {
             }
             if pressed && self.capture_binding(bindings::Source::Pad(button)) {
                 continue;
+            }
+            if navigating && self.menus.rebinding_pad.is_none() && button != gilrs::Button::Mode {
+                if let Some(nav) = self.menu_pad.button(button, pressed, &confirm, &back) {
+                    self.menu_nav(nav);
+                    continue;
+                }
             }
             if let (true, Some(index)) = (pressed, self.menus.rebinding_pad) {
                 self.menus.rebinding_pad = None;
@@ -1502,7 +1567,15 @@ impl App {
                 }
             }
         }
+        if navigating && self.menus.rebinding_pad.is_none() && self.menus.rebinding_action.is_none() {
+            if let Some(nav) = self.menu_pad.tick(self.gamepads.stick(bindings::Stick::Left), Instant::now()) {
+                self.menu_nav(nav);
+            }
+        } else {
+            self.menu_pad.release();
+        }
         if self.gamepads.disconnected() {
+            self.menu_pad.release();
             self.keyboard.release_where(|source| matches!(source, bindings::Source::Pad(_)));
         }
         if let Some(faces) = self.gamepads.used() {

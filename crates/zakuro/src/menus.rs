@@ -388,6 +388,37 @@ impl Menus {
         self.menu_open || self.settings_open || self.uprising_open || self.game_settings.is_some()
     }
 
+    /// whether a window the Frontend Menu opens is open, which hides the
+    /// menu until it closes, so a controller moves around that window alone.
+    pub fn child_open(&self) -> bool {
+        self.settings_open || self.uprising_open || self.game_settings.is_some() || self.cheats_open || self.multiplayer_open
+    }
+
+    /// Back on a controller: closes what is on top, a binding conflict's
+    /// question, then a window the menu opened, then the menu itself. false
+    /// when nothing was open to close.
+    pub fn back(&mut self) -> bool {
+        // the first open one closes, the rest stay
+        self.binding_conflict.take().is_some()
+            || self.message.take().is_some()
+            || self.game_settings.take().is_some()
+            || std::mem::take(&mut self.uprising_open)
+            || std::mem::take(&mut self.settings_open)
+            || std::mem::take(&mut self.cheats_open)
+            || std::mem::take(&mut self.multiplayer_open)
+            || std::mem::take(&mut self.menu_open)
+    }
+
+    /// closes the Frontend Menu and every window over the game it opened.
+    pub fn close_over_game(&mut self) {
+        self.menu_open = false;
+        self.settings_open = false;
+        self.uprising_open = false;
+        self.game_settings = None;
+        self.cheats_open = false;
+        self.multiplayer_open = false;
+    }
+
     /// whether any Zakuro window is open over the game, the ones the game
     /// keeps running under included: the mouse is theirs, not the aim's.
     pub fn any_open(&self) -> bool {
@@ -634,7 +665,8 @@ impl Menus {
                 });
             });
         }
-        if self.menu_open {
+        // a window it opened stands in for it until it closes
+        if self.menu_open && !self.child_open() {
             egui::Window::new("Paused")
                 .collapsible(false)
                 .resizable(false)
@@ -1568,7 +1600,7 @@ impl Menus {
                         }
                     }
                 });
-                ui.label(RichText::new("The circle pad is the left stick, and Home opens the menu over the game.").weak());
+                ui.label(RichText::new("The circle pad is the left stick, and Home opens the menu over the game. In the menu and its windows the d-pad or left stick moves, Confirm (A) presses and Back (B) closes the window on top.").weak());
                 if ui.button("Default controller").clicked() {
                     settings.pad = PadButtons::default();
                     self.rebinding_pad = None;
@@ -2169,6 +2201,46 @@ mod tests {
         }
         let window = ctx.memory(|memory| memory.area_rect(egui::Id::new("settings"))).unwrap();
         assert!(screen.contains_rect(window), "{window:?} in {screen:?}");
+    }
+
+    /// a controller's Tab, Down and Enter move egui's focus into a window,
+    /// down its buttons, and press the one focused, as they do in the
+    /// Frontend Menu's windows.
+    #[test]
+    fn controller_keys_focus_and_press_a_window_button() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(400.0, 300.0));
+        let mut pressed = Vec::new();
+        // Tab takes the title bar's collapse button first, then Down goes into the window
+        let keys = [egui::Key::Tab, egui::Key::ArrowDown, egui::Key::ArrowDown, egui::Key::Enter];
+        for key in [None].into_iter().chain(keys.map(Some)) {
+            let events = key.map(|key| crate::gui::tap(key).to_vec()).unwrap_or_default();
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            ctx.run_ui(input, |ui| {
+                egui::Window::new("menu").show(ui.ctx(), |ui| {
+                    for name in ["Resume", "Settings", "UprisingHack"] {
+                        if ui.button(name).clicked() {
+                            pressed.push(name);
+                        }
+                    }
+                });
+            })
+            .drop_without_applying_deltas();
+        }
+        assert_eq!(pressed, ["Settings"]);
+    }
+
+    /// Back closes the window the Frontend Menu opened before the menu,
+    /// which shows again under it, and then the menu.
+    #[test]
+    fn back_closes_the_window_on_top_first() {
+        let mut menus = Menus { menu_open: true, uprising_open: true, ..Menus::default() };
+        assert!(menus.child_open());
+        assert!(menus.back());
+        assert!(menus.menu_open && !menus.uprising_open && !menus.child_open());
+        assert!(menus.back());
+        assert!(!menus.over_game());
+        assert!(!menus.back());
     }
 
     /// runs a frame of a panel w/ one row of a game's settings, clicking where the row starts when asked to
