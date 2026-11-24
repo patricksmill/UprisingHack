@@ -128,7 +128,10 @@ each layer named in `group` with its native box (Idols: `IDOLS_BOTTOM`).
   0008); there the box is only the frame and the word anchor area. kiutrace
   `rects` prints each bottom node layer's projected mesh boxes: a guide for
   writing boxes, padded by transparent margins and thrown off by invisible
-  or off-screen meshes.
+  or off-screen meshes. Moving a Screen into `UNCUT_BOARDS`: compare
+  shots against the old build (copy `target/release/kiutrace` first) on
+  every page, scrolled; a list that overflows its window goes in
+  `LIST_WINDOWS`.
 
 ## Draws that are not models
 

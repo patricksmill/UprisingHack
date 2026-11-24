@@ -935,10 +935,16 @@ pub fn layer_textures(system: &mut System, index: usize) -> Result<Vec<LayerText
 /// list's window) apply. Chapter Results is the first Screen drawn so.
 fn uncut_layer(index: usize, part: &Part) -> bool {
     UNCUT_BOARDS.contains(&index) && !part.top && bottom_layer_part(index, part.model)
+        && !part.model.is_some_and(|layer| LIST_WINDOWS.contains(&(index, layer)))
 }
 
 /// Screens whose bottom node layers are drawn whole (`uncut_layer`).
-const UNCUT_BOARDS: &[usize] = &[28];
+const UNCUT_BOARDS: &[usize] = &[17, 28];
+
+/// Lists whose box is their window: the game scrolls their items past it
+/// and hides them with a mask mesh in another layer (Fuse's Frame mask),
+/// so these alone are still cut at their boxes.
+const LIST_WINDOWS: &[(usize, &str)] = &[(17, "Weapon A list"), (17, "Weapon B list")];
 
 /// Whether a bottom Board part is one of the Screen's node layers.
 fn bottom_layer_part(index: usize, model: Option<&str>) -> bool {
@@ -3268,9 +3274,14 @@ mod tests {
         let whole: Vec<_> = parts.iter().filter(|part| uncut_layer(28, part)).filter_map(|part| part.model).collect();
         assert_eq!(whole, ["Background", "Results board", "Message bar", "Message", "Take", "Window", "Heart chip", "Convert to Hearts"]);
         assert!(parts.iter().filter(|part| part.top).all(|part| !uncut_layer(28, part)));
-        // the other Boards keep their cuts until they are moved over
+        // Fuse's lists stay cut at their windows, the rest are whole
         let fuse = layout(17, 400.0).1;
-        assert!(fuse.iter().all(|part| !uncut_layer(17, part)));
+        let cut: Vec<_> = fuse.iter().filter(|part| !part.top && bottom_layer_part(17, part.model) && !uncut_layer(17, part))
+            .filter_map(|part| part.model).collect();
+        assert_eq!(cut, ["Weapon A list", "Weapon B list"]);
+        // the other Boards keep their cuts until they are moved over
+        let idols = layout(26, 400.0).1;
+        assert!(idols.iter().all(|part| !uncut_layer(26, part)));
     }
 
     #[test]
