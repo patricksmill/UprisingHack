@@ -85,12 +85,26 @@ pub enum Action {
     EditorLayer(usize, [f32; 4]),
     /// a Scripted Menu layer hidden or shown again by the editor.
     EditorLayerVisible(usize, bool),
+    /// a Scripted Menu's layers restacked by the editor, front to back by
+    /// index: they draw in that order and the front-most takes the pointer.
+    /// Empty goes back to the game's own order.
+    EditorLayerOrder(Vec<usize>),
     /// an explicit navigation link set for a Control, or removed for the
     /// game's native behavior.
     EditorNavigationLink(usize, NavigationDirection, Option<usize>),
     /// keep the dev editor's Scripted Menu moves, hidden layers and
     /// navigation links.
     SaveLayout,
+}
+
+/// a name the editor gave one Screen's layer, in place of the one the
+/// port lists it by.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EditorName {
+    pub screen: usize,
+    /// the layer's index, as the editor lists it.
+    pub part: usize,
+    pub name: String,
 }
 
 /// a named group of one Screen's editor layers. Linked, picking any member
@@ -114,7 +128,9 @@ pub struct EditorFolder {
 struct EditorSnapshot {
     layers: Vec<[f32; 4]>,
     visibility: Vec<bool>,
+    order: Vec<usize>,
     folders: Vec<EditorFolder>,
+    names: Vec<EditorName>,
 }
 
 /// at most this many edits are kept to undo.
@@ -187,8 +203,15 @@ pub struct Menus {
     /// the Scripted Menu the editor's layers belong to; folders are kept
     /// by it, so the Cauldron and Pause have none.
     pub editor_screen: Option<usize>,
+    /// the edited layers front to back, by their indices, as the game
+    /// stacks them; empty where the Screen cannot be rearranged.
+    pub editor_order: Vec<usize>,
     /// every Screen's layer folders, saved with the layout.
     pub editor_folders: Vec<EditorFolder>,
+    /// every Screen's layer names, saved with the layout.
+    pub editor_names: Vec<EditorName>,
+    /// the layer whose name is being written, and the words so far.
+    editor_naming: Option<(usize, String)>,
     /// the edits to step back through and forward again, the latest last.
     editor_undo: Vec<EditorSnapshot>,
     editor_redo: Vec<EditorSnapshot>,
@@ -725,6 +748,7 @@ impl Menus {
             self.editor_undo.clear();
             self.editor_redo.clear();
             self.editor_renaming = None;
+            self.editor_naming = None;
         }
         // this Screen's folders, kept to layers it has
         let mut folders: Vec<EditorFolder> = self.editor_screen.map_or(Vec::new(), |screen| {
@@ -735,8 +759,13 @@ impl Menus {
         let before = EditorSnapshot {
             layers: layers.iter().map(|&(_, to)| to).collect(),
             visibility: visibility.clone(),
+            order: self.editor_order.clone(),
             folders: folders.clone(),
+            names: self.screen_names(),
         };
+        // the canvas labels each layer by the name it was given
+        let labels: Vec<String> = layers.iter().enumerate().map(|(index, (name, _))| self.layer_name(index).unwrap_or(name).to_owned()).collect();
+        let order = self.editor_order.clone();
         let mut edited = false;
         let (mut undo, mut redo) = (false, false);
         if !ctx.text_edit_focused() {
@@ -783,10 +812,13 @@ impl Menus {
                 );
                 let handle_of = |to: [f32; 4]| egui::Rect::from_min_size(rect_of(to).max - egui::vec2(9.0, 9.0), egui::vec2(10.0, 10.0));
                 let shown = |index: usize| visibility.get(index).copied().unwrap_or(true);
-                let under = |point: egui::Pos2| layers.iter().enumerate().rev()
-                    .find(|(index, (_, to))| shown(*index) && rect_of(*to).contains(point))
+                // the front-most layer: first in the stacking, else the latest
+                let front = |index: usize| order.iter().position(|&layer| layer == index).map_or(usize::MAX - index, |at| at);
+                let under = |point: egui::Pos2| layers.iter().enumerate()
+                    .filter(|(index, (_, to))| shown(*index) && rect_of(*to).contains(point))
+                    .min_by_key(|(index, _)| front(*index))
                     .map(|(index, _)| index);
-                for (index, (name, to)) in layers.iter().enumerate() {
+                for (index, (_, to)) in layers.iter().enumerate() {
                     let rect = rect_of(*to);
                     let active = shown(index);
                     let picked = group.contains(&index);
@@ -800,7 +832,7 @@ impl Menus {
                         egui::Color32::from_rgb(160, 200, 220)
                     };
                     painter.rect_stroke(rect, 0.0, egui::Stroke::new(if active && picked { 2.0 } else { 1.0 }, colour), egui::StrokeKind::Inside);
-                    painter.text(rect.min + egui::vec2(2.0, 2.0), egui::Align2::LEFT_TOP, name, egui::FontId::monospace(10.0), colour);
+                    painter.text(rect.min + egui::vec2(2.0, 2.0), egui::Align2::LEFT_TOP, &labels[index], egui::FontId::monospace(10.0), colour);
                     // a hidden layer has no handle: it cannot be dragged until shown
                     if active {
                         painter.rect_filled(egui::Rect::from_min_size(rect.max - egui::vec2(7.0, 7.0), egui::vec2(7.0, 7.0)), 0.0, colour);
@@ -951,14 +983,10 @@ impl Menus {
         let mut navigation = NavigationEditorResponse::default();
         let room = (ctx.content_rect().height() - 170.0).clamp(120.0, 420.0);
         egui::Window::new("Menu editor — Pause").id(egui::Id::new("menu_editor_pause")).open(&mut window_open).default_width(420.0).show(ctx, |ui| {
-            ui.label(RichText::new("Edits apply live. F2 closes and reopens this window.").weak());
+            ui.label(RichText::new("Drag a part on the canvas to move it; its corner handle resizes it. Parts the page now shown leaves out wait off the canvas. Edits apply live.").weak());
             egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
-                changed |= rule_editor(ui, "span", &mut rules.span);
-                changed |= rule_editor(ui, "center", &mut rules.center);
-                changed |= rule_editor(ui, "left", &mut rules.left);
-                changed |= rule_editor(ui, "right", &mut rules.right);
-                changed |= rule_editor(ui, "corner", &mut rules.corner);
-                list = self.editor_layer_list(ui, &layers, &visibility, &mut folders, actions);
+                // Pause is not a Scripted Menu, so it keeps no folders
+                list = self.editor_layer_list(ui, &layers, &visibility, &mut Vec::new(), actions);
                 navigation = navigation_editor(ui, &layers, &navigation_controls, navigation_directions, self.editor_layer, actions);
                 if !layers.is_empty() && ui.button("Export layers").clicked() {
                     message = Some(match export_layers(&layers, &visibility) {
@@ -1008,14 +1036,17 @@ impl Menus {
     ) -> LayerListResponse {
         let can_undo = !self.editor_undo.is_empty();
         let can_redo = !self.editor_redo.is_empty();
-        layer_list(ui, layers, visibility, &mut self.editor_layer, &mut self.editor_group, folders, self.editor_screen, &mut self.editor_renaming, [can_undo, can_redo], actions)
+        let mut names = self.screen_names();
+        let list = layer_list(ui, layers, visibility, &self.editor_order, &mut self.editor_layer, &mut self.editor_group, folders, &mut names, self.editor_screen, &mut self.editor_renaming, &mut self.editor_naming, [can_undo, can_redo], actions);
+        self.keep_names(names);
+        list
     }
 
     /// keep this frame's folders, then step back or forward through the
     /// edits, or remember how the Screen was before an edit made now.
     /// `before` is the Screen as this frame found it, before its actions.
     fn editor_history(&mut self, before: EditorSnapshot, folders: Vec<EditorFolder>, edited: bool, undo: bool, redo: bool, actions: &mut Vec<Action>) {
-        let edited = edited || folders != before.folders;
+        let edited = edited || folders != before.folders || self.screen_names() != before.names;
         let now = EditorSnapshot { folders, ..before.clone() };
         if undo || redo {
             // this frame's own edits give way to the step
@@ -1030,10 +1061,13 @@ impl Menus {
                 for (index, (&was, &is)) in snapshot.visibility.iter().zip(&before.visibility).enumerate() {
                     if was != is { actions.push(Action::EditorLayerVisible(index, was)); }
                 }
+                if snapshot.order != before.order { actions.push(Action::EditorLayerOrder(snapshot.order.clone())); }
                 self.keep_folders(snapshot.folders);
+                self.keep_names(snapshot.names);
                 return;
             }
             self.keep_folders(before.folders);
+            self.keep_names(before.names);
             return;
         }
         if edited && self.editor_undo.last() != Some(&before) {
@@ -1042,6 +1076,25 @@ impl Menus {
             self.editor_redo.clear();
         }
         self.keep_folders(now.folders);
+    }
+
+    /// the names given to this Screen's layers.
+    fn screen_names(&self) -> Vec<EditorName> {
+        let Some(screen) = self.editor_screen else { return Vec::new() };
+        self.editor_names.iter().filter(|name| name.screen == screen).cloned().collect()
+    }
+
+    /// the name given to a layer of this Screen, if any.
+    fn layer_name(&self, index: usize) -> Option<&str> {
+        let screen = self.editor_screen?;
+        self.editor_names.iter().find(|name| name.screen == screen && name.part == index).map(|name| name.name.as_str())
+    }
+
+    /// this Screen's names in place of the ones kept for it.
+    fn keep_names(&mut self, names: Vec<EditorName>) {
+        let Some(screen) = self.editor_screen else { return };
+        self.editor_names.retain(|name| name.screen != screen);
+        self.editor_names.extend(names);
     }
 
     /// this Screen's folders in place of the ones kept for it.
@@ -2269,6 +2322,9 @@ mod tests {
                             *shown = *visible;
                         }
                     }
+                    Action::EditorLayerOrder(order) => {
+                        self.menus.editor_order = if order.is_empty() { (0..self.layers.len()).rev().collect() } else { order.clone() };
+                    }
                     _ => {}
                 }
             }
@@ -2706,6 +2762,90 @@ mod tests {
         assert!(editor.drawn.options.is_empty(), "a decorative hint was offered link targets");
     }
 
+    #[test]
+    fn a_double_clicked_layer_takes_the_name_written_and_an_empty_one_gives_its_own_back() {
+        let layers = vec![layer("MenColViewBt0003 #0", [10.0, 10.0, 50.0, 20.0]), layer("hint #1", [100.0, 10.0, 50.0, 20.0])];
+        let mut editor = Editor::new(layers, [500.0, 0.0, 400.0, 240.0]);
+        editor.menus.editor_screen = Some(24);
+        editor.frame(Vec::new());
+        let name_at = |editor: &Editor| {
+            let checkbox = editor.drawn.visibility[0].rect;
+            egui::pos2(checkbox.max.x + 30.0, checkbox.center().y)
+        };
+        let rename = |editor: &mut Editor, words: &str| {
+            let at = name_at(editor);
+            editor.click(at);
+            editor.click(at);
+            editor.frame(Vec::new());
+            let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+            editor.frame(vec![key(egui::Key::A), egui::Event::Text(words.to_owned())]);
+            editor.frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+            editor.frame(Vec::new());
+        };
+        rename(&mut editor, "Palutena");
+        assert_eq!(editor.menus.editor_names, vec![EditorName { screen: 24, part: 0, name: "Palutena".to_owned() }]);
+        assert_eq!(editor.menus.layer_name(0), Some("Palutena"), "the canvas does not show the name");
+        // the rename is one edit to undo
+        let undo = egui::Event::Key { key: egui::Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        editor.modifiers = egui::Modifiers::COMMAND;
+        editor.frame(vec![undo]);
+        editor.modifiers = egui::Modifiers::default();
+        assert!(editor.menus.editor_names.is_empty(), "undo kept the name: {:?}", editor.menus.editor_names);
+
+        rename(&mut editor, "Palutena");
+        rename(&mut editor, "  ");
+        assert!(editor.menus.editor_names.is_empty(), "an empty name was kept: {:?}", editor.menus.editor_names);
+    }
+
+    #[test]
+    fn restacking_keeps_the_selection_s_own_order() {
+        let order = [0, 1, 2, 3, 4];
+        assert_eq!(restack(&order, &[3], Restack::Forward), [0, 1, 3, 2, 4]);
+        assert_eq!(restack(&order, &[0], Restack::Forward), order, "the front layer stays at the front");
+        assert_eq!(restack(&order, &[2, 3], Restack::Forward), [0, 2, 3, 1, 4]);
+        assert_eq!(restack(&order, &[1, 2], Restack::Backward), [0, 3, 1, 2, 4]);
+        assert_eq!(restack(&order, &[1, 3], Restack::Front), [1, 3, 0, 2, 4]);
+        assert_eq!(restack(&order, &[1, 3], Restack::Back), [0, 2, 4, 1, 3]);
+        assert_eq!(restack(&order, &[4], Restack::Onto(1, false)), [0, 4, 1, 2, 3], "dropped on a row's upper half: in front of it");
+        assert_eq!(restack(&order, &[0], Restack::Onto(3, true)), [1, 2, 3, 0, 4], "dropped on a row's lower half: behind it");
+        assert_eq!(restack(&order, &[1, 2], Restack::Onto(2, true)), order, "dropped on itself: nothing moves");
+    }
+
+    #[test]
+    fn the_list_runs_front_to_back_and_ctrl_bracket_steps_the_selection() {
+        let layers = vec![layer("a #0", [10.0, 10.0, 50.0, 20.0]), layer("b #1", [100.0, 10.0, 50.0, 20.0]), layer("c #2", [200.0, 10.0, 50.0, 20.0])];
+        let mut editor = Editor::new(layers, [500.0, 0.0, 400.0, 240.0]);
+        editor.menus.editor_order = vec![2, 0, 1];
+        editor.frame(Vec::new());
+        let top = |editor: &Editor, index: usize| editor.drawn.visibility[index].rect.top();
+        assert!(top(&editor, 2) < top(&editor, 0) && top(&editor, 0) < top(&editor, 1), "the list is not front to back");
+
+        editor.menus.editor_layer = Some(1);
+        let key = |key, modifiers| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        editor.modifiers = egui::Modifiers::COMMAND;
+        let actions = editor.frame(vec![key(egui::Key::CloseBracket, egui::Modifiers::COMMAND)]);
+        assert!(actions.contains(&Action::EditorLayerOrder(vec![2, 1, 0])), "Ctrl+] did not bring it forward: {actions:?}");
+        editor.modifiers = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        let actions = editor.frame(vec![key(egui::Key::CloseBracket, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT)]);
+        assert!(actions.contains(&Action::EditorLayerOrder(vec![1, 2, 0])), "Ctrl+Shift+] did not bring it to the front: {actions:?}");
+        editor.modifiers = egui::Modifiers::COMMAND;
+        let actions = editor.frame(vec![key(egui::Key::OpenBracket, egui::Modifiers::COMMAND)]);
+        assert!(actions.contains(&Action::EditorLayerOrder(vec![2, 1, 0])), "Ctrl+[ did not send it back: {actions:?}");
+    }
+
+    #[test]
+    fn the_front_layer_takes_the_canvas_click_where_two_overlap() {
+        let overlapping = || vec![layer("below #0", [10.0, 10.0, 50.0, 20.0]), layer("above #1", [10.0, 10.0, 50.0, 20.0])];
+        let mut editor = Editor::new(overlapping(), [500.0, 0.0, 400.0, 240.0]);
+        editor.click(editor.point(20.0, 20.0));
+        assert_eq!(editor.menus.editor_layer, Some(1), "the later layer is in front by default");
+
+        let mut editor = Editor::new(overlapping(), [500.0, 0.0, 400.0, 240.0]);
+        editor.menus.editor_order = vec![0, 1];
+        editor.click(editor.point(20.0, 20.0));
+        assert_eq!(editor.menus.editor_layer, Some(0), "the layer stacked in front did not take the click");
+    }
+
     /// a layer's Visible checkbox hides it from the canvas while keeping it
     /// listed, and showing it again restores the same box and pointer.
     #[test]
@@ -2817,21 +2957,33 @@ fn layer_list(
     ui: &mut egui::Ui,
     layers: &[(String, [f32; 4])],
     visibility: &[bool],
+    stacking: &[usize],
     selected: &mut Option<usize>,
     group: &mut Vec<usize>,
     folders: &mut Vec<EditorFolder>,
+    names: &mut Vec<EditorName>,
     screen: Option<usize>,
     renaming: &mut Option<usize>,
+    naming: &mut Option<(usize, String)>,
     [can_undo, can_redo]: [bool; 2],
     actions: &mut Vec<Action>,
 ) -> LayerListResponse {
     let mut response = LayerListResponse::default();
     if layers.is_empty() { return response; }
+    // listed front to back, as the game stacks them, when it can be
+    // rearranged; otherwise by index
+    let can_order = stacking.len() == layers.len();
+    let order: Vec<usize> = if can_order { stacking.to_vec() } else { (0..layers.len()).collect() };
+    let place = |index: usize| order.iter().position(|&layer| layer == index).unwrap_or(index);
     ui.separator();
     ui.horizontal(|ui| {
         ui.label(RichText::new("Layers").strong());
         response.undo = ui.add_enabled(can_undo, egui::Button::new("Undo").small()).on_hover_text("Step back one edit (Ctrl+Z).").clicked();
         response.redo = ui.add_enabled(can_redo, egui::Button::new("Redo").small()).on_hover_text("Step forward again (Ctrl+Shift+Z or Ctrl+Y).").clicked();
+        if can_order && ui.small_button("Game order").on_hover_text("Put the layers back in the game's own stacking.").clicked() {
+            actions.push(Action::EditorLayerOrder(Vec::new()));
+            response.edited = true;
+        }
         if let Some(screen) = screen {
             let new = ui.add_enabled(!group.is_empty(), egui::Button::new("New folder").small())
                 .on_hover_text("Put the selected layers in a new folder.");
@@ -2846,21 +2998,54 @@ fn layer_list(
         }
     });
     ui.label(RichText::new("Ctrl or Shift selects several to move or scale together. A linked folder's layers always move together.").small().weak());
+    if screen.is_some() {
+        ui.label(RichText::new("Double-click a layer to rename it; an empty name gives back the one it had.").small().weak());
+    }
+    // a layer's name as listed: the one it was given, else the port's
+    let label = |names: &[EditorName], index: usize| names.iter().find(|name| name.part == index).map_or_else(|| layers[index].0.clone(), |name| name.name.clone());
+    // the words written for a layer, once its name field lets go
+    let mut named = None;
+    if can_order {
+        ui.label(RichText::new("The top of the list is in front. Drag \u{2630} to restack; Ctrl+] and Ctrl+[ step the selection forward and back, with Shift to the front or back.").small().weak());
+        if !group.is_empty() && !ui.ctx().text_edit_focused() {
+            let step = ui.input_mut(|input| {
+                let shortcut = |modifiers, key| egui::KeyboardShortcut::new(modifiers, key);
+                let both = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+                // Shift first: a plain Ctrl shortcut also matches Ctrl+Shift
+                if input.consume_shortcut(&shortcut(both, egui::Key::CloseBracket)) { Some(Restack::Front) }
+                else if input.consume_shortcut(&shortcut(both, egui::Key::OpenBracket)) { Some(Restack::Back) }
+                else if input.consume_shortcut(&shortcut(egui::Modifiers::COMMAND, egui::Key::CloseBracket)) { Some(Restack::Forward) }
+                else if input.consume_shortcut(&shortcut(egui::Modifiers::COMMAND, egui::Key::OpenBracket)) { Some(Restack::Backward) }
+                else { None }
+            });
+            if let Some(step) = step {
+                let restacked = restack(&order, group, step);
+                if restacked != order {
+                    actions.push(Action::EditorLayerOrder(restacked));
+                    response.edited = true;
+                }
+            }
+        }
+    }
     let adding = ui.input(|input| input.modifiers.command || input.modifiers.shift);
     let shown = |index: usize| visibility.get(index).copied().unwrap_or(true);
     let mut boxes: Vec<Option<egui::Response>> = vec![None; layers.len()];
     let mut listed = vec![false; folders.len()];
     // what a folder's buttons asked for, done after the list is drawn
     let (mut take_out, mut ungroup, mut add_to) = (None, None, None);
-    for index in 0..layers.len() {
+    // a layer dropped on a row: which, onto which, and whether below it
+    let mut dropped = None;
+    for &index in &order {
         let Some(at) = folders.iter().position(|folder| folder.parts.contains(&index)) else {
-            layer_row(ui, index, &layers[index].0, shown(index), false, adding, selected, group, actions, &mut boxes, &mut response.edited);
+            let (_, row, done) = layer_row(ui, index, &label(names, index), &layers[index].0, shown(index), false, can_order, adding, screen.is_some(), naming, selected, group, actions, &mut boxes, &mut response.edited);
+            if done { named = naming.take(); }
+            dropped = dropped.or(drop_on(ui, &row, index));
             continue;
         };
         if listed[at] { continue; }
         listed[at] = true;
         let mut members = folders[at].parts.clone();
-        members.sort_unstable();
+        members.sort_by_key(|&member| place(member));
         ui.horizontal(|ui| {
             let folder = &mut folders[at];
             let arrow = if folder.collapsed { "\u{25B6}" } else { "\u{25BC}" };
@@ -2916,10 +3101,28 @@ fn layer_list(
         });
         if !folders[at].collapsed {
             for &member in &members {
-                if layer_row(ui, member, &layers[member].0, shown(member), true, adding, selected, group, actions, &mut boxes, &mut response.edited) {
-                    take_out = Some(member);
-                }
+                let (out, row, done) = layer_row(ui, member, &label(names, member), &layers[member].0, shown(member), true, can_order, adding, screen.is_some(), naming, selected, group, actions, &mut boxes, &mut response.edited);
+                if out { take_out = Some(member); }
+                if done { named = naming.take(); }
+                dropped = dropped.or(drop_on(ui, &row, member));
             }
+        }
+    }
+    if let (Some((index, written)), Some(screen)) = (named, screen) {
+        // an empty name, or the port's own, gives the layer back its own
+        let written = written.trim();
+        names.retain(|name| name.part != index);
+        if !written.is_empty() && written != layers[index].0 {
+            names.push(EditorName { screen, part: index, name: written.to_owned() });
+        }
+    }
+    if let Some((moving, onto, below)) = dropped {
+        // a selected layer takes the whole selection with it
+        let moving = if group.contains(&moving) { group.clone() } else { vec![moving] };
+        let restacked = restack(&order, &moving, Restack::Onto(onto, below));
+        if restacked != order {
+            actions.push(Action::EditorLayerOrder(restacked));
+            response.edited = true;
         }
     }
     if let Some(at) = add_to {
@@ -2953,18 +3156,27 @@ fn layer_row(
     ui: &mut egui::Ui,
     index: usize,
     name: &str,
+    original: &str,
     visible: bool,
     nested: bool,
+    draggable: bool,
     adding: bool,
+    nameable: bool,
+    naming: &mut Option<(usize, String)>,
     selected: &mut Option<usize>,
     group: &mut Vec<usize>,
     actions: &mut Vec<Action>,
     boxes: &mut [Option<egui::Response>],
     edited: &mut bool,
-) -> bool {
+) -> (bool, egui::Response, bool) {
     let mut take_out = false;
-    ui.horizontal(|ui| {
+    let mut done = false;
+    let row = ui.horizontal(|ui| {
         if nested { ui.add_space(18.0); }
+        if draggable {
+            ui.dnd_drag_source(egui::Id::new(("editor layer", index)), index, |ui| ui.label("\u{2630}"))
+                .response.on_hover_text("Drag onto another layer to draw in front of it (upper half) or behind it (lower half).");
+        }
         let mut visible = visible;
         let response = ui.checkbox(&mut visible, "").on_hover_text("Draw and use this layer in the game.");
         if response.changed() {
@@ -2976,7 +3188,20 @@ fn layer_row(
             *edited = true;
         }
         boxes[index] = Some(response);
-        if ui.selectable_label(group.contains(&index), name).clicked() {
+        if let Some((_, written)) = naming.as_mut().filter(|(layer, _)| *layer == index) {
+            let edit = ui.add(egui::TextEdit::singleline(written).desired_width(160.0));
+            if edit.lost_focus() {
+                done = true;
+            } else if !edit.has_focus() {
+                edit.request_focus();
+            }
+            return;
+        }
+        let label = ui.selectable_label(group.contains(&index), name);
+        let label = if name != original { label.on_hover_text(format!("{original}. Double-click to rename.")) } else if nameable { label.on_hover_text("Double-click to rename.") } else { label };
+        if nameable && label.double_clicked() {
+            *naming = Some((index, name.to_owned()));
+        } else if label.clicked() {
             if !adding {
                 *group = vec![index];
                 *selected = Some(index);
@@ -2992,7 +3217,63 @@ fn layer_row(
             take_out = true;
         }
     });
-    take_out
+    (take_out, row.response, done)
+}
+
+/// a layer dragged over a row: a line where it would go, and on release
+/// the dragged layer, the row's, and whether it goes below (behind) it.
+fn drop_on(ui: &egui::Ui, row: &egui::Response, index: usize) -> Option<(usize, usize, bool)> {
+    let pointer = ui.ctx().pointer_interact_pos()?;
+    let below = pointer.y > row.rect.center().y;
+    if row.dnd_hover_payload::<usize>().is_some_and(|moving| *moving != index) {
+        let y = if below { row.rect.bottom() } else { row.rect.top() };
+        ui.painter().hline(row.rect.x_range(), y, egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 220, 255)));
+    }
+    let moving = row.dnd_release_payload::<usize>()?;
+    (*moving != index).then_some((*moving, index, below))
+}
+
+/// how the selection is restacked in a front-to-back layer list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Restack {
+    /// one place forward or back, past the next layer not selected
+    Forward,
+    Backward,
+    /// to the very front or back, keeping the selection's own order
+    Front,
+    Back,
+    /// just in front of a layer, or behind it when the flag is set
+    Onto(usize, bool),
+}
+
+/// `order` (front to back) with `moving` restacked; the selection keeps
+/// its own order.
+fn restack(order: &[usize], moving: &[usize], how: Restack) -> Vec<usize> {
+    let mut order = order.to_vec();
+    let picked = |layer: &usize| moving.contains(layer);
+    match how {
+        Restack::Forward => for at in 1..order.len() {
+            if picked(&order[at]) && !picked(&order[at - 1]) { order.swap(at - 1, at); }
+        },
+        Restack::Backward => for at in (0..order.len().saturating_sub(1)).rev() {
+            if picked(&order[at]) && !picked(&order[at + 1]) { order.swap(at, at + 1); }
+        },
+        Restack::Front | Restack::Back | Restack::Onto(..) => {
+            let (chosen, mut rest): (Vec<usize>, Vec<usize>) = order.iter().partition(|layer| picked(layer));
+            let at = match how {
+                Restack::Front => 0,
+                Restack::Back => rest.len(),
+                Restack::Onto(onto, below) => match rest.iter().position(|&layer| layer == onto) {
+                    Some(at) => at + usize::from(below),
+                    None => return order,
+                },
+                _ => unreachable!(),
+            };
+            rest.splice(at..at, chosen);
+            order = rest;
+        }
+    }
+    order
 }
 
 /// the boxes a drag asks for, by `by` layer units from where each began:

@@ -40,6 +40,7 @@ mod hasher;
 const SHADE_SPIRV: &[u8] = include_bytes!("../../shaders/shade.vert.spv");
 const VERTEX_SPIRV: &[u8] = include_bytes!("../../shaders/raster.vert.spv");
 const FRAGMENT_SPIRV: &[u8] = include_bytes!("../../shaders/raster.frag.spv");
+const SPRITE_SPIRV: &[u8] = include_bytes!("../../shaders/sprite.geom.spv");
 /// raster.frag built w/ WRITES_DEPTH, for the draws whose depth the rasterizer can't work out
 const FRAGMENT_DEPTH_SPIRV: &[u8] = include_bytes!("../../shaders/raster_depth.frag.spv");
 const TRANSFER_SPIRV: &[u8] = include_bytes!("../../shaders/transfer.comp.spv");
@@ -1163,6 +1164,10 @@ pub(crate) struct Dynamic {
     pub(crate) blend: bool,
     /// the logic op on or off, and which
     pub(crate) logic_op: bool,
+    /// the device runs geometry shaders
+    pub(crate) geometry: bool,
+    /// sprite.geom, where the device runs it, b4 raster.frag in every pipeline, null elsewhere
+    pub(crate) sprite: vk::ShaderModule,
 }
 
 /// every generic pipeline a draw can need when the blend state is dynamic, w/ the vertex stages draws have
@@ -1479,12 +1484,15 @@ fn compile_pipeline(
     dynamic: Dynamic,
     depth_format: vk::Format,
 ) -> Result<vk::Pipeline, String> {
-    let entries: Vec<vk::SpecializationMapEntry> = (0..FRAGMENT_CONSTANTS as u32)
+    // and after the key's, SPRITE_BOUNDS, on when sprite.geom runs
+    let sprite = dynamic.sprite != vk::ShaderModule::null();
+    let entries: Vec<vk::SpecializationMapEntry> = (0..=FRAGMENT_CONSTANTS as u32)
         .map(|id| vk::SpecializationMapEntry::default().constant_id(id).offset(id * 4).size(4))
         .collect();
-    let constants: Vec<u8> = key.fragment.iter().flat_map(|value| value.to_le_bytes()).collect();
+    let constants: Vec<u8> =
+        key.fragment.iter().copied().chain([sprite as u32]).flat_map(|value| value.to_le_bytes()).collect();
     let specialization = vk::SpecializationInfo::default().map_entries(&entries).data(&constants);
-    let stages = [
+    let mut stages = vec![
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::VERTEX)
             .module(vertex)
@@ -1495,6 +1503,9 @@ fn compile_pipeline(
             .name(c"main")
             .specialization_info(&specialization),
     ];
+    if sprite {
+        stages.push(vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::GEOMETRY).module(dynamic.sprite).name(c"main"));
+    }
     let bindings = [vk::VertexInputBindingDescription::default()
         .binding(0)
         .stride(VERTEX_SIZE as u32)
@@ -1767,7 +1778,7 @@ impl Hardware {
     pub fn with_device(shared: Arc<SharedDevice>, direct: bool, kept_pipelines: Option<std::path::PathBuf>) -> Result<Hardware, String> {
         let kept_pipelines: Option<Arc<std::path::Path>> = kept_pipelines.map(Into::into);
         let (instance, device, physical, family) = (shared.instance.clone(), shared.device.clone(), shared.physical, shared.family);
-        let (logic_ops, statistics, dynamic) = (shared.logic_ops, shared.statistics, shared.dynamic);
+        let (logic_ops, statistics, mut dynamic) = (shared.logic_ops, shared.statistics, shared.dynamic);
         // safe bc the physical device came from this instance
         let properties = unsafe { instance.get_physical_device_properties(physical) };
         let name = properties.device_name_as_c_str().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1836,6 +1847,9 @@ impl Hardware {
             let fragment_shader = module(FRAGMENT_SPIRV)?;
             let depth_fragment_shader = module(FRAGMENT_DEPTH_SPIRV)?;
             let shade_shader = module(SHADE_SPIRV)?;
+            if dynamic.geometry {
+                dynamic.sprite = module(SPRITE_SPIRV)?;
+            }
 
             let unmade = || Buffer {
                 buffer: vk::Buffer::null(),
@@ -5944,6 +5958,9 @@ impl Drop for Hardware {
             self.device.destroy_shader_module(self.fragment_shader, None);
             self.device.destroy_shader_module(self.depth_fragment_shader, None);
             self.device.destroy_shader_module(self.shade_shader, None);
+            if self.dynamic.sprite != vk::ShaderModule::null() {
+                self.device.destroy_shader_module(self.dynamic.sprite, None);
+            }
             for &module in self.modules.values() {
                 self.device.destroy_shader_module(module, None);
             }
@@ -6107,7 +6124,8 @@ pub(crate) fn render_device(
     // safe bc the physical device came from this instance
     let supported = unsafe { instance.get_physical_device_features(physical) };
     let logic_ops = supported.logic_op == vk::TRUE;
-    let dynamic = dynamic_state(instance, physical, logic_ops);
+    let mut dynamic = dynamic_state(instance, physical, logic_ops);
+    dynamic.geometry = supported.geometry_shader == vk::TRUE;
     if dynamic.blend {
         extensions.push(ash::ext::extended_dynamic_state3::NAME.as_ptr());
     }
@@ -6124,6 +6142,7 @@ pub(crate) fn render_device(
     let statistics = std::env::var_os("ZAKURO_GPU_TIMES").is_some() && supported.pipeline_statistics_query == vk::TRUE;
     let features = vk::PhysicalDeviceFeatures::default()
         .depth_clamp(true)
+        .geometry_shader(dynamic.geometry)
         .logic_op(logic_ops)
         .pipeline_statistics_query(statistics);
     // the cache control, to make a pipeline only when the disk cache has it, every Vulkan 1.3 device does
@@ -6181,7 +6200,7 @@ fn dynamic_state(instance: &ash::Instance, physical: vk::PhysicalDevice, logic_o
         && two
         && supported2.extended_dynamic_state2_logic_op == vk::TRUE
         && supported3.extended_dynamic_state3_logic_op_enable == vk::TRUE;
-    Dynamic { blend, logic_op }
+    Dynamic { blend, logic_op, ..Dynamic::default() }
 }
 
 /// a device of the renderer's own, on the GPU pick chooses

@@ -45,7 +45,8 @@
 //!   layer <index> <x> <y> <w> <h> move/resize a Scripted Menu layer through the editor
 //!   visible <index> <0|1>         hide/show a Scripted Menu editor item, without changing its geometry
 //!   override <screen> <part> <x> <y> <w> <h>  a saved menu-layout.toml layer, as the frontend loads it
-//!   pausevisible <span|center|left|right|corner> <0|1>  hide/show one Pause rule group
+//!   ptouch <x> <y>       touch where a top-screen point lands on Pause (untouch releases)
+//!   pausevisible <span|center|left|right|corner|band|options|loot|row1..row4|back|hint_bar|hint|label> <0|1>  hide/show one Pause part
 //!   navlink <from> <up|down|left|right> <to|native> set an explicit editor navigation link
 //!   cauldron                      draw the Fiend's Cauldron's two screens on the top screen, laid out to fit it
 //!   ctouch <x> <y>                touch the Fiend's Cauldron drawn on the top screen at its pixel, x of its 400
@@ -193,6 +194,14 @@ fn main() {
             "hold" => input.buttons = words[1..].iter().map(|name| button(name)).fold(PadState::empty(), |a, b| a | b),
             "touch" => input.touch = Some((num(1) as u16, num(2) as u16)),
             "untouch" => input.touch = None,
+            "ptouch" => {
+                // a top-screen point through Pause's placements, held as
+                // the bottom screen's touch there
+                let mouse = system.aim_mouse.get_or_insert_with(Default::default);
+                let point = mouse.pause_menu_touch(system.frames, float(1), float(2));
+                println!("  pause top ({}, {}) -> bottom {point:?}", float(1), float(2));
+                input.touch = point.map(|(x, y)| (x as u16, y as u16));
+            }
             "circle" => (input.circle_x, input.circle_y) = (float(1), float(2)),
             "cstick" => (input.c_stick_x, input.c_stick_y) = (float(1), float(2)),
             "mstick" => {
@@ -525,14 +534,9 @@ fn main() {
             "pausevisible" => {
                 let mouse = system.aim_mouse.get_or_insert_with(Default::default);
                 let mut rules = mouse.pause_rules();
-                let rule = match words.get(1).copied() {
-                    Some("span") => &mut rules.span,
-                    Some("center") => &mut rules.center,
-                    Some("left") => &mut rules.left,
-                    Some("right") => &mut rules.right,
-                    Some("corner") => &mut rules.corner,
-                    _ => panic!("pausevisible requires a Pause rule name"),
-                };
+                let role = zakuro_core::aim_mouse::QuadRole::ALL.into_iter().find(|role| Some(role.name()) == words.get(1).copied())
+                    .expect("pausevisible requires a Pause rule name");
+                let rule = rules.rule_mut(role);
                 rule.visible = num(2) != 0;
                 mouse.set_pause_rules(rules);
             }

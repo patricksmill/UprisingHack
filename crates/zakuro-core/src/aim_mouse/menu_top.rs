@@ -42,6 +42,14 @@ pub(super) struct MenuTop {
     overrides: Vec<(usize, usize, [f32; 4])>,
     /// hidden editor items, by stable Screen and part index.
     hidden: Vec<(usize, usize)>,
+    /// the editor's layer orders: each Screen's stable part indices, back
+    /// to front, as the layer list was last arranged.
+    orders: Vec<(usize, Vec<usize>)>,
+    /// this frame's stacking of every part, back to front: the game's
+    /// order with the edited Screen's saved order over it.
+    layer_order: Vec<usize>,
+    /// whether the edited Screen has a saved order.
+    ordered: bool,
     draw_order: Vec<usize>,
     native: Vec<(u32, Vec<u8>)>,
     clip: Option<(Placement, bool)>,
@@ -358,7 +366,44 @@ fn chapter_bones(system: &mut System, model: u32, lens: ListLens) -> Vec<(u32, [
     }).collect()
 }
 
-fn draw_order(system: &mut System, bottom: u32, parts: &[Part], replay_details: bool, layers_below: &'static [super::screen_transform::TopLayer]) -> Vec<usize> {
+/// `full`, the game's stacking back to front, rearranged by `saved`: its
+/// parts in its order, and any part it does not name after the part it
+/// follows in `full` (at the back when none does).
+fn merge_order(full: &[usize], saved: Option<&[usize]>) -> Vec<usize> {
+    let Some(saved) = saved else { return full.to_vec() };
+    let mut order: Vec<usize> = Vec::with_capacity(full.len());
+    for &part in saved {
+        if full.contains(&part) && !order.contains(&part) { order.push(part); }
+    }
+    for (at, &part) in full.iter().enumerate() {
+        if order.contains(&part) { continue; }
+        let after = full[..at].iter().rev().find_map(|earlier| order.iter().position(|placed| placed == earlier));
+        order.insert(after.map_or(0, |position| position + 1), part);
+    }
+    order
+}
+
+/// The parts' drawing order, back to front. `details_front` keeps the
+/// leftover top replay over everything: a Board's Details card is its
+/// words, beside the Controls. A Group's leftover is scenery (the Vault's
+/// item picture), so it stays with the top's layers, behind the Controls.
+#[cfg(test)]
+fn draw_order(system: &mut System, bottom: u32, parts: &[Part], replay_details: bool, details_front: bool, layers_below: &'static [super::screen_transform::TopLayer]) -> Vec<usize> {
+    let mut order = full_order(system, bottom, parts, details_front, layers_below);
+    order.retain(|&index| drawable(&parts[index], replay_details)
+        && system.aim_mouse.as_ref().is_none_or(|mouse| mouse.menu_top.enabled(&parts[index])));
+    order
+}
+
+/// whether a part replays from the draw order: the Details card only when
+/// split layers replay it.
+fn drawable(part: &Part, replay_details: bool) -> bool {
+    !part.backdrop || replay_details
+}
+
+/// Every part's place in the game's stacking, back to front, whether it
+/// draws this frame or not: the order the editor's layer list shows.
+fn full_order(system: &mut System, bottom: u32, parts: &[Part], details_front: bool, layers_below: &'static [super::screen_transform::TopLayer]) -> Vec<usize> {
     let scene = read_word(system, bottom + 0x40);
     let layers = read_word(system, scene + SCENE_LAYERS);
     let mut names = Vec::new();
@@ -374,12 +419,22 @@ fn draw_order(system: &mut System, bottom: u32, parts: &[Part], replay_details: 
             }
         }
     }
-    let mut order: Vec<usize> = (0..parts.len()).filter(|&index| (!parts[index].backdrop || replay_details)
-        && system.aim_mouse.as_ref().is_none_or(|mouse| mouse.menu_top.enabled(&parts[index]))).collect();
-    order.sort_by_key(|&index| {
+    let mut order: Vec<usize> = (0..parts.len()).collect();
+    // each key searches the names: work it out once per part
+    order.sort_by_cached_key(|&index| {
         let part = &parts[index];
-        // The heart counter is over the top's node layers (the Solo Hub's hall).
-        if part.top { return (if part.model.is_some() { 0 } else { usize::MAX }, usize::from(part.model == Some("MenCmnUpHeart0000"))); }
+        // The leftover goes over the top's node layers, the hint band over
+        // it (the Vault's item picture runs under it), and the heart
+        // counter over all of them (the Solo Hub's hall).
+        if part.top {
+            if part.model.is_none() && details_front { return (usize::MAX, 0); }
+            return (0, match part.model {
+                None if part.backdrop => 1,
+                None => 2,
+                Some("MenCmnUpHeart0000") => 3,
+                Some(_) => 0,
+            });
+        }
         // Idol Toss's scenery is behind its bowl and Controls.
         if let Some(group) = part.idol { return (1, usize::from(!group.scenery())); }
         // A node layer draws where its model does, in its table's order.
@@ -1377,6 +1432,12 @@ impl AimMouse {
                 if file && !hit && !inside([native.0, native.1], [0.0, 0.0, 320.0, 240.0]) { return None; }
                 Some((index, native))
             }).collect();
+            // with the layers arranged in the editor, the front-most Control
+            // under the pointer takes it first, as it draws
+            if self.menu_top.ordered {
+                let order = &self.menu_top.layer_order;
+                self.menu_top.candidates.sort_by_key(|&(index, _)| std::cmp::Reverse(order.iter().position(|&part| part == index)));
+            }
             self.menu_top.candidate = 0;
         }
         // A press on the Idol View, off every Control, starts an Orbit.
@@ -1494,10 +1555,12 @@ impl AimMouse {
     }
 
     /// the edited Screen's layers: label and target box, in pixels as shown.
-    /// the Cauldron's parts, the active Scripted Menu's, or none on Pause.
+    /// the Cauldron's parts, the Loading's, Pause's or the active Scripted
+    /// Menu's.
     pub fn editor_layers(&self) -> Vec<(String, [f32; 4])> {
         if self.editing_cauldron() { return self.cauldron_editor_layers(); }
         if self.editing_loading() { return self.loading_editor_layers(); }
+        if self.editing_pause() { return self.pause_editor_layers(); }
         if !self.editing_scripted() { return Vec::new(); }
         self.menu_top.parts.iter().enumerate().map(|(index, part)| {
             let name = if self.menu_top.file_select() {
@@ -1545,6 +1608,7 @@ impl AimMouse {
     pub fn editor_layer_visibility(&self) -> Vec<bool> {
         if self.editing_cauldron() { return self.cauldron_editor_visibility(); }
         if self.editing_loading() { return self.loading_editor_visibility(); }
+        if self.editing_pause() { return self.pause_editor_visibility(); }
         if !self.editing_scripted() { return Vec::new(); }
         self.menu_top.parts.iter().map(|part| part.visible).collect()
     }
@@ -1566,9 +1630,47 @@ impl AimMouse {
         self.clear_menus_top_pointer();
     }
 
+    /// The edited Screen's layers front to back, by the same indices as
+    /// `editor_layers`; empty where it has no order (the Cauldron, the
+    /// Loading, Pause).
+    pub fn editor_layer_order(&self) -> Vec<usize> {
+        if self.editing_cauldron() || self.editing_loading() || !self.editing_scripted() { return Vec::new(); }
+        if self.menu_top.layer_order.len() != self.menu_top.parts.len() { return Vec::new(); }
+        self.menu_top.layer_order.iter().rev().copied().collect()
+    }
+
+    pub fn editor_orders(&self) -> Vec<(usize, Vec<usize>)> {
+        self.menu_top.orders.clone()
+    }
+
+    pub fn set_editor_orders(&mut self, orders: Vec<(usize, Vec<usize>)>) {
+        self.menu_top.orders = orders;
+    }
+
+    /// arrange the edited Screen's layers, front to back by `editor_layers`
+    /// index; an empty order goes back to the game's own.
+    pub fn set_editor_layer_order(&mut self, front_to_back: Vec<usize>) {
+        if self.editing_cauldron() || self.editing_loading() || !self.editing_scripted() { return; }
+        let Some(screen) = self.menu_screen.map(|(screen, ..)| screen)
+            .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) else { return };
+        let edits = if self.menu_top.idol_dialog { IDOL_TOSS_SCREEN } else { screen };
+        self.menu_top.orders.retain(|&(kept, _)| kept != edits);
+        if !front_to_back.is_empty() {
+            let saved: Vec<usize> = front_to_back.iter().rev().filter_map(|&index| self.menu_top.saved_as(screen, index))
+                .filter(|&(kept, _)| kept == edits).map(|(_, part)| part).collect();
+            self.menu_top.orders.push((edits, saved));
+            let parts = self.menu_top.parts.len();
+            let back_to_front: Vec<usize> = front_to_back.iter().rev().copied().filter(|&index| index < parts).collect();
+            self.menu_top.layer_order = merge_order(&self.menu_top.layer_order, Some(&back_to_front));
+        }
+        self.cancel_menu_touch();
+        self.clear_menus_top_pointer();
+    }
+
     pub fn set_editor_layer_visible(&mut self, index: usize, visible: bool) {
         if self.editing_cauldron() { return self.set_cauldron_editor_visible(index, visible); }
         if self.editing_loading() { return self.set_loading_editor_visible(index, visible); }
+        if self.editing_pause() { return self.set_pause_editor_visible(index, visible); }
         if !self.editing_scripted() { return; }
         let Some(screen) = self.menu_screen.map(|(screen, ..)| screen)
             .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) else { return };
@@ -1586,6 +1688,7 @@ impl AimMouse {
     pub fn set_editor_layer(&mut self, index: usize, to: [f32; 4]) {
         if self.editing_cauldron() { return self.set_cauldron_editor_layer(index, to); }
         if self.editing_loading() { return self.set_loading_editor_layer(index, to); }
+        if self.editing_pause() { return self.set_pause_editor_layer(index, to); }
         if !self.editing_scripted() { return; }
         let screen = self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen));
         // A texture layer rides on the layer drawing its texture: moving
@@ -1654,6 +1757,7 @@ impl AimMouse {
         self.top_projection = None;
         self.placed.clear();
         self.top_moved.clear();
+        self.pause_drawn = Default::default();
         self.transform.reset();
         self.battle_drawn = None;
     }
@@ -1905,19 +2009,32 @@ pub(super) fn begin(system: &mut System) -> bool {
     mouse.menu_top.active = Some((index, object, current, native_touch));
     mouse.menu_top.passthrough = native_touch;
     mouse.menu_top.started = system.frames;
-    mouse.menu_top.parts = parts;
-    let order = if mouse.menu_top.file_select() {
+    let saved_order = mouse.menu_top.orders.iter().find(|&&(screen, _)| screen == edits)
+        .map(|(_, order)| order.iter().map(|&part| shown(part)).collect::<Vec<_>>());
+    const FILE_SELECT_ORDER: [usize; 16] = [7, 8, 9, 10, 11, 12, 13, 14, 15, 6, 0, 1, 2, 3, 4, 5];
+    let file_select = mouse.menu_top.file_select();
+    let full: Vec<usize> = if file_select {
         // Background and information first; interactive Controls above them.
-        [7, 8, 9, 10, 11, 12, 13, 14, 15, 6, 0, 1, 2, 3, 4, 5].into_iter().filter(|&index|
-            mouse.menu_top.enabled(&mouse.menu_top.parts[index])).collect()
+        FILE_SELECT_ORDER.into_iter().chain((0..parts.len()).filter(|index| !FILE_SELECT_ORDER.contains(index))).collect()
     } else {
-        let parts = mouse.menu_top.parts.clone();
-        let mut order = draw_order(system, bottom, &parts, !top_layers(index).is_empty(), bottom_layers(index));
-        // A texture layer draws through its owner's mesh, never by itself.
-        order.retain(|&part| texture_layer(index, parts[part].model).is_none());
-        order
+        full_order(system, bottom, &parts, armory_board(index), bottom_layers(index))
     };
-    system.aim_mouse.as_mut().unwrap().menu_top.draw_order = order;
+    // The editor's saved order comes over the game's; a part it does not
+    // name (new since it was saved) keeps its place after its neighbour.
+    let layer_order = merge_order(&full, saved_order.as_deref());
+    let menu_top = &mut system.aim_mouse.as_mut().unwrap().menu_top;
+    let replay_details = !top_layers(index).is_empty();
+    let order = layer_order.iter().copied().filter(|&at| {
+        let part = &parts[at];
+        menu_top.enabled(part) && if file_select { FILE_SELECT_ORDER.contains(&at) } else {
+            // A texture layer draws through its owner's mesh, never by itself.
+            drawable(part, replay_details) && texture_layer(index, part.model).is_none()
+        }
+    }).collect();
+    menu_top.parts = parts;
+    menu_top.ordered = saved_order.is_some();
+    menu_top.layer_order = layer_order;
+    menu_top.draw_order = order;
     let idols_list = !bottom_layers(index).is_empty() && {
         let found = std::cell::Cell::new(false);
         filter_models(system, bottom, false, false, &mut Vec::new(), |name| { found.set(found.get() || name == "MenColViewlistBt0000"); true });
@@ -2784,8 +2901,17 @@ mod tests {
         system.memory.write_bytes(scene + SCENE_LAYERS, &(bottom + 0x200).to_le_bytes());
         for (screen, details) in [(14, 4), (18, 6)] {
             let parts = layout(screen, 400.0).1;
-            assert_eq!(draw_order(&mut system, bottom, &parts, true, &[]).last(), Some(&details));
-            assert!(!draw_order(&mut system, bottom, &parts, false, &[]).contains(&details));
+            assert_eq!(draw_order(&mut system, bottom, &parts, true, true, &[]).last(), Some(&details));
+            assert!(!draw_order(&mut system, bottom, &parts, false, true, &[]).contains(&details));
+
+            // A Group's leftover top (the Vault's item picture) stays behind
+            // its Controls, over its own top layers.
+            let parts = layout(24, 400.0).1;
+            let order = draw_order(&mut system, bottom, &parts, true, armory_board(24), &[]);
+            let at = |index: usize| order.iter().position(|&drawn| drawn == index).unwrap();
+            let leftover = at(parts.iter().position(|part| part.backdrop).unwrap());
+            assert!(parts.iter().enumerate().filter(|(index, part)| !part.top && order.contains(index)).all(|(index, _)| at(index) > leftover));
+            assert!(parts.iter().enumerate().filter(|(_, part)| part.top && part.model.is_some()).all(|(index, _)| at(index) < leftover));
 
             let mut mouse = shown(screen);
             mouse.menu_top.active = Some((screen, 0, 0, false));
@@ -2955,6 +3081,44 @@ mod tests {
                 assert_eq!(mouse.menus_top_touch(11, top.0, top.1, false), Some(point));
             }
         }
+    }
+
+    #[test]
+    fn an_arranged_control_in_front_takes_the_pointer_where_two_overlap() {
+        let (_, mut parts) = layout(24, 400.0);
+        let controls: Vec<usize> = parts.iter().enumerate().filter(|(_, part)| !part.top && part.model.and_then(button_hash).is_some()).map(|(index, _)| index).take(2).collect();
+        let [below, above] = [controls[0], controls[1]];
+        parts[below].place.to = parts[above].place.to;
+        let middle = |to: [f32; 4]| (to[0] + to[2] * 0.5, to[1] + to[3] * 0.5);
+        let (x, y) = middle(parts[above].place.to);
+        // the candidates are tried in order: the first of the two is in front
+        let picked = |order: Option<Vec<usize>>| {
+            let mut mouse = shown(24);
+            mouse.menu_top.parts = parts.clone();
+            if let Some(order) = order {
+                mouse.menu_top.layer_order = order;
+                mouse.menu_top.ordered = true;
+            }
+            mouse.menus_top_touch(11, x, y, false);
+            mouse.menu_top.candidates.iter().map(|&(index, _)| index).find(|index| [below, above].contains(index))
+        };
+        assert_eq!(picked(None), Some(above), "the later part is in front by default");
+        // back to front, with `below` moved to the very front
+        let order: Vec<usize> = (0..parts.len()).filter(|&index| index != below).chain([below]).collect();
+        assert_eq!(picked(Some(order)), Some(below), "the part arranged in front takes the pointer");
+    }
+
+    #[test]
+    fn a_saved_order_rearranges_the_game_s_and_keeps_new_parts_by_their_neighbour() {
+        let full = [0, 1, 2, 3, 4];
+        assert_eq!(merge_order(&full, None), full);
+        assert_eq!(merge_order(&full, Some(&[4, 3, 2, 1, 0])), [4, 3, 2, 1, 0]);
+        // 2 is new since the order was saved: it stays after 1, its neighbour
+        assert_eq!(merge_order(&full, Some(&[3, 1, 0, 4])), [3, 1, 2, 0, 4]);
+        // a part the Screen no longer has, or named twice, is dropped
+        assert_eq!(merge_order(&full, Some(&[9, 4, 4, 0, 1, 2, 3])), [4, 0, 1, 2, 3]);
+        // with nothing before it placed, a new part goes to the back
+        assert_eq!(merge_order(&full, Some(&[4, 3])), [0, 1, 2, 4, 3]);
     }
 
     #[test]

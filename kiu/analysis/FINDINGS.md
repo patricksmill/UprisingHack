@@ -299,6 +299,20 @@ and Remove Display, and Options' pages. The top pass 0x0060D3EC calls
 paused. The battle bottom elements (hearts, item box) are still drawn under
 it. The pause object's state is at +4 (0 closed).
 
+Pause parts by flush caller (from the user's desktop slot 9, the Options
+page, and the first page): first page dimming and band 0x00A0D22C (band
+0..320 x 119..149), Options page dimming 0x00A01FC8 and band 0x00A01B40
+(0..320 x 47..158; a sub-page's sliders and boxes also come from
+0x00A01B40, not across). A row of buttons is frame 0x00A04710, icon
+0x00A04B34, words 0x00A04D14 and end caps 0x00A04F00 (three quads), the
+Outline's states in the same calls: the first page's Options 26..294 x
+119..149, the Options page's four rows from 47 every 27 down. Back arrow
+0x00A05C70 (2..49 x 197..238), loot 0x00A0E290, 0x00A0E338 and 0x00A01A4C
+(3..74 x 157..193). The Options page's Hint is on the top screen, its bar
+0x00A0CA34 (0..400 x 186..240) and words 0x00A0CC04 (shadow then text,
+90..310 x 205..221); the first page's Paused label is flushed straight from
+the top pass, returning to 0x0060D68C (0..172 x 5..39).
+
 Dialogs (Retreat's "Quit and return to the goddess?") are their own 2D
 context (0x14A1340C in state 5). Bottom pass 0x00722A50: 0x00721C64 dimming
 and box, 0x00721484 buttons, then the text through the 3D renderer (pointer
