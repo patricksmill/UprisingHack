@@ -847,8 +847,10 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   of its own name (`DolSnipe04` here). Bottom layer F: `MenColViewerBt0000`
   nodes `bg` background, `sousa`/`sousa_base` controls hint, `title`,
   `L_button`, `R_button` title bar, `bar` zoom bar, `pbase` page pill (the
-  description page's), `base` the white panel and `NN_B0002` its words'
-  node; `MN_B0004` stays hidden. The List adds `MenColViewlistBt0000`
+  description page's), `base` the white panel (it reaches
+  under the title bar's band) and `NN_B0002` the zoom bar's knob (moving
+  the Description layer in your slot 2 took the knob with it; the words
+  are text-pass glyphs, not a node); `MN_B0004` stays hidden. The List adds `MenColViewlistBt0000`
   (frame, its own page pill), eight `MenColViewlistBt0003` Rows,
   `MenColViewlistBt0004` the Cursor and `MenCmnScbar` the scroll bar. Layer
   0x10 holds `MenColViewlistBt0005` (the Rows' mask), layer 0x11

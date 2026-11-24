@@ -581,13 +581,13 @@ const IDOLS_TEXTURE: &[TextureLayer] = &[
 
 /// The Idols chrome, `MenColViewerBt0000`, split by mesh node. Probed from
 /// `trace/idols-viewer.state` and its List (Back from there). `base` is the
-/// description page's white panel and `NN_B0002` its words' node; neither
-/// draws on the List.
+/// description page's white panel and `NN_B0002` the Zoom bar's knob; the
+/// panel reaches under the Title bar's band (`UNDER_LAYERS`).
 const IDOLS_BOTTOM: &[TopLayer] = &[
     ("Background", "MenColViewerBt0000", &["bg"]),
     ("Controls hint", "MenColViewerBt0000", &["sousa", "sousa_base"]),
     ("Title bar", "MenColViewerBt0000", &["title", "L_button", "R_button"]),
-    ("Zoom bar", "MenColViewerBt0000", &["bar"]),
+    ("Zoom bar", "MenColViewerBt0000", &["bar", "NN_B0002"]),
     ("Description", "MenColViewerBt0000", &[]),
     ("Page counter", "MenColViewerBt0000", &["pbase"]),
 ];

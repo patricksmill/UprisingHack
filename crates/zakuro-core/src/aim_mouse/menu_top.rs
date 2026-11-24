@@ -446,6 +446,11 @@ fn chapter_bones(system: &mut System, model: u32, lens: ListLens) -> Vec<(u32, [
     }).collect()
 }
 
+/// Node layers drawn behind an earlier layer of their table, as the game
+/// draws them: (model, layer, the layer it goes under). Idols' white panel
+/// reaches under the Title bar's band, which a cut at its box hid.
+const UNDER_LAYERS: &[(&str, &str, &str)] = &[("MenColViewerBt0000", "Description", "Title bar")];
+
 /// `full`, the game's stacking back to front, rearranged by `saved`: its
 /// parts in its order, and any part it does not name after the part it
 /// follows in `full` (at the back when none does).
@@ -519,8 +524,10 @@ fn full_order(system: &mut System, bottom: u32, parts: &[Part], details_front: b
         if let Some(group) = part.idol { return (1, usize::from(!group.scenery())); }
         // A node layer draws where its model does, in its table's order.
         if let Some(at) = part.model.and_then(|name| layers_below.iter().position(|&(layer, ..)| layer == name)) {
-            let owner = layers_below[at].1;
-            return (1 + names.iter().position(|model| model == owner).unwrap_or(0), at);
+            let (layer, owner, _) = layers_below[at];
+            let under = UNDER_LAYERS.iter().find(|&&(model, name, _)| model == owner && name == layer)
+                .and_then(|&(_, _, over)| layers_below.iter().position(|&(name, ..)| name == over));
+            return (1 + names.iter().position(|model| model == owner).unwrap_or(0), under.map_or(at * 2 + 1, |over| over * 2));
         }
         (1 + part.model.and_then(|name| names.iter().position(|model| model == name)).unwrap_or(0), 0)
     });
@@ -939,7 +946,7 @@ fn uncut_layer(index: usize, part: &Part) -> bool {
 }
 
 /// Screens whose bottom node layers are drawn whole (`uncut_layer`).
-const UNCUT_BOARDS: &[usize] = &[17, 28];
+const UNCUT_BOARDS: &[usize] = &[17, 26, 28];
 
 /// Lists whose box is their window: the game scrolls their items past it
 /// and hides them with a mask mesh in another layer (Fuse's Frame mask),
@@ -3157,6 +3164,20 @@ mod tests {
     }
 
     #[test]
+    fn idols_white_panel_draws_under_the_title_bar() {
+        let mut system = System::new(crate::Config::default());
+        let bottom = 0x14000000;
+        let scene = bottom + 0x100;
+        system.memory.map(bottom, 0x20000000, 0x1000, crate::memory::Permission::RW, crate::memory::MemoryState::Private);
+        system.memory.write_bytes(bottom + 0x40, &scene.to_le_bytes());
+        system.memory.write_bytes(scene + SCENE_LAYERS, &(bottom + 0x200).to_le_bytes());
+        let parts = layout(26, 400.0).1;
+        let order = full_order(&mut system, bottom, &parts, false, bottom_layers(26));
+        let names: Vec<_> = order.iter().filter_map(|&index| parts[index].model).filter(|model| bottom_layer_part(26, Some(model))).collect();
+        assert_eq!(names, ["Background", "Controls hint", "Description", "Title bar", "Zoom bar", "Page counter"]);
+    }
+
+    #[test]
     fn artwork_layers_skip_details_text_before_it_allocates_draw_commands() {
         let mut system = System::new(crate::Config::default());
         for (screen, first) in [(14, 5), (18, 7)] {
@@ -3279,9 +3300,10 @@ mod tests {
         let cut: Vec<_> = fuse.iter().filter(|part| !part.top && bottom_layer_part(17, part.model) && !uncut_layer(17, part))
             .filter_map(|part| part.model).collect();
         assert_eq!(cut, ["Weapon A list", "Weapon B list"]);
-        // the other Boards keep their cuts until they are moved over
+        // Idols' chrome is whole on both pages
         let idols = layout(26, 400.0).1;
-        assert!(idols.iter().all(|part| !uncut_layer(26, part)));
+        let whole: Vec<_> = idols.iter().filter(|part| uncut_layer(26, part)).filter_map(|part| part.model).collect();
+        assert_eq!(whole, ["Background", "Controls hint", "Title bar", "Zoom bar", "Description", "Page counter"]);
     }
 
     #[test]
