@@ -816,11 +816,12 @@ const BLOCK_ENDS: &str = r#"        while (blocks > 0) {
         }
 "#;
 
-/// shade.vert's main from the position on, the PICA placing vertices on a 16th of a pixel,
-/// halves to even as both round them, and clipping z to -w..0, which Vulkan has as 0..w
+/// shade.vert's main from the position on, the PICA placing vertices on a 16th of a pixel (3D in a w buffer
+/// on depth_map.z's finer grid), halves to even as both round them, and clipping z to -w..0, which Vulkan has as 0..w
 const EPILOGUE: &str = r#"    if (position.w > 1e-5) {
         vec2 window = viewport.xy + (position.xy / position.w * 0.5 + 0.5) * viewport.zw;
-        window = roundEven(window * 16.0) / 16.0;
+        float grid = position.w == 1.0 ? 16.0 : depth_map.z;
+        window = roundEven(window * grid) / grid;
         vec2 placed = ((window - viewport.xy) / viewport.zw * 2.0 - 1.0) * position.w;
         position = vec4(placed, position.z, position.w);
     }

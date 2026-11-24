@@ -28,7 +28,7 @@ layout(std430, set = 0, binding = 6) readonly buffer Shading {
     // per semantic component, the output register times four plus the component, or none
     // position xyzw, color rgba, texture coords 0, 1 and 2 uv, quaternion xyzw and view xyz
     uint semantics[24];
-    // x, the depth map's scale, y, its offset
+    // x, the depth map's scale, y, its offset, z, the parts of a pixel vertices are placed on
     vec4 depth_map;
     // left, bottom, width and height
     vec4 viewport;
@@ -409,10 +409,12 @@ void main() {
     run();
 
     vec4 position = vec4(semantic(0u, 0.0), semantic(1u, 0.0), semantic(2u, 0.0), semantic(3u, 0.0));
-    // the PICA places vertices on a 16th of a pixel, halves to even, like translated programs place them too
+    // the PICA places vertices on a 16th of a pixel, halves to even, like translated programs place them too,
+    // 3D in a w buffer on depth_map.z's finer grid, DepthMap::subpixels says why
     if (position.w > 1e-5) {
         vec2 window = viewport.xy + (position.xy / position.w * 0.5 + 0.5) * viewport.zw;
-        window = roundEven(window * 16.0) / 16.0;
+        float grid = position.w == 1.0 ? 16.0 : depth_map.z;
+        window = roundEven(window * grid) / grid;
         position.xy = ((window - viewport.xy) / viewport.zw * 2.0 - 1.0) * position.w;
     }
     // z on an end of the range the PICA draws when it only misses one by rounding, like clip_triangle has it

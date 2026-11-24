@@ -2382,6 +2382,18 @@ impl DepthMap {
             w_buffer: registers[REG_DEPTHMAP_ENABLE] & 1 == 0,
         }
     }
+
+    /// the parts of a pixel the GPU's vertex shaders place 3D vertices on, a 16th like the PICA,
+    /// or for a w buffer a 256th, the host GPU's own grid at 1x
+    /// a w buffer's depth is w, 1 over what's interpolated across the screen, near the horizon that's small,
+    /// so moving a vertex a 16th tilts it enough to put an ocean's surface layers, a few units
+    /// above the water and tessellated differently, behind it in triangles (Chapter 4)
+    /// 2D (w of 1) stays on the PICA's grid, and so does what the CPU places: clipped on the CPU,
+    /// triangles reaching behind the camera interpolate too poorly on the host for the finer grid to help
+    #[cfg(feature = "vulkan")]
+    pub(crate) fn subpixels(self) -> f32 {
+        if self.w_buffer { 256.0 } else { 16.0 }
+    }
 }
 
 /// the color buffer a draw renders into

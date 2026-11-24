@@ -3832,7 +3832,7 @@ impl Hardware {
         }
         words.extend([unit.bool_uniforms as u32, unit.entry_point, 0, 0]);
         words.extend(shading.semantics);
-        words.extend([depth_map.scale.to_bits(), depth_map.offset.to_bits(), 0, 0]);
+        words.extend([depth_map.scale.to_bits(), depth_map.offset.to_bits(), depth_map.subpixels().to_bits(), 0]);
         let (x, y, width, height) = shading.viewport;
         words.extend([x, y, width, height].map(f32::to_bits));
         words.extend_from_slice(attributes.as_flattened());
