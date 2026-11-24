@@ -1060,6 +1060,14 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   words; `MenuTop::part` had dropped it (Powers lost its description too),
   and its native-viewport mapping halved the words' width, so it takes the
   guard-band projection.
+- Chapter Results bottom on a weapon's reward page (Scripted Screen 28,
+  MENUID 34, desktop slot 1): `MenOnlineRsltteBt0008` (`bace2`, `base2`) is
+  the stats card, native x 19..300, y 0..118 (a Power's bar is shorter);
+  `MenOnlineRsltteBt0010` `MN_B1010` its words; `MenOnlineRsltteBt0014`
+  holds the heart chip (`base15`, `heart`; `fukuro` draws nothing) and
+  Convert to Hearts (`base`, `cursor`). The chip's number (+270) is a glyph,
+  so only a layer `board_text_now` lets replay words shows it.
+  `Bt0004`, `Bt0005`, `Bt0011`, `Bt0015`..`Bt0018` drew nothing on this page.
 - Harvested child Control identities from native hits:
   Other: `MenOptionOtherBt0001` name/49C14849, 0002 caption/F28BAA60,
   0004 itunomani/9E610C53, 9999 return/928BEAA4.

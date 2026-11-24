@@ -922,6 +922,8 @@ fn board_text_now(index: usize, model: Option<&str>, idols_list: bool, fuse_phas
         Some("Page counter" | "Title bar" | "Description") => !idols_list,
         // the Power Portrait's one line of words
         Some("Message") => true,
+        // Chapter Results' heart chip shows a weapon's heart value
+        Some("Heart chip") => true,
         // Fuse Weapons' words belong to whichever of its pages shows
         Some("Sort order") => !fuse_dialog(fuse_phase),
         Some("Fusion dialog") => fuse_dialog(fuse_phase),

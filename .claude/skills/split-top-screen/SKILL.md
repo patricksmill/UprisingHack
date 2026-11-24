@@ -118,6 +118,12 @@ each layer named in `group` with its native box (Idols: `IDOLS_BOTTOM`).
   in `/mnt/c/Users/Patrick/AppData/Roaming/zakuro/states/0004000000030100/`
   ("state N" means `N.state`).
 
+- Boxes probed on one page of a multi-page Screen can cut another page's
+  bigger parts (Chapter Results: a Power's bar vs a weapon's stats card).
+  Probe every page the Screen shows. Adding a layer renumbers every later
+  part, so renumber that Screen's `part`, `parts` and `hidden` entries in
+  `kiu/menu-layout.toml` and the user's desktop `menu-layout.toml`.
+
 ## Draws that are not models
 
 Something drawn in every layer's replay that no node or model flag hides

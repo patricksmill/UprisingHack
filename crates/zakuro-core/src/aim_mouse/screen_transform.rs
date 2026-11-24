@@ -259,7 +259,8 @@ const RESULTS_TOP: &[TopLayer] = &[
 
 /// Chapter Results' bottom, back to front; the score board's models are the
 /// rest of `MenOnlineRsltteBt*`. The named parts list their nodes so the
-/// prefix owner, earlier in the table, does not take them.
+/// prefix owner, earlier in the table, does not take them. A weapon's
+/// reward page adds the heart chip and Convert to Hearts (`Bt0014`).
 const RESULTS_BOTTOM: &[TopLayer] = &[
     ("Background", "MenOnlineRsltteBt0000", &["back", "kazari", "moyou"]),
     ("Results board", "MenOnlineRsltteBt*", &[]),
@@ -267,16 +268,22 @@ const RESULTS_BOTTOM: &[TopLayer] = &[
     ("Message", "MenOnlineRsltteBt0010", &["MN_B1010"]),
     ("Take", "MenOnlineRsltteBt0001", &["base", "cursor"]),
     ("Window", "MenCmnWindowBt0000", &[]),
+    ("Heart chip", "MenOnlineRsltteBt0014", &["base15", "heart", "fukuro"]),
+    ("Convert to Hearts", "MenOnlineRsltteBt0014", &["base", "cursor"]),
 ];
 
-/// Chapter Results' bottom Board with native boxes.
+/// Chapter Results' bottom Board with native boxes. Message bar and
+/// Message cover a weapon's whole stats card (native y 0..120), not only a
+/// Power's shorter bar; the heart chip carries its own words (+270).
 const RESULTS: &[(&str, [f32; 4])] = &[
     ("Background", [0.0, 0.0, 320.0, 240.0]),
     ("Results board", [0.0, 0.0, 320.0, 240.0]),
-    ("Message bar", [8.0, 18.0, 304.0, 68.0]),
-    ("Message", [8.0, 18.0, 304.0, 68.0]),
+    ("Message bar", [8.0, 0.0, 304.0, 124.0]),
+    ("Message", [8.0, 0.0, 304.0, 124.0]),
     ("Take", [176.0, 196.0, 116.0, 44.0]),
     ("Window", [0.0, 0.0, 320.0, 240.0]),
+    ("Heart chip", [28.0, 166.0, 116.0, 36.0]),
+    ("Convert to Hearts", [32.0, 202.0, 112.0, 36.0]),
 ];
 /// Idol Toss's top screen (both rows): the backdrop (the sky and rays in a
 /// reveal) and the new Idol (`Dol*`), drawn only while it is revealed.
