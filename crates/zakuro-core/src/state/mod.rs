@@ -139,10 +139,13 @@ impl System {
         out.extend_from_slice(VERSION.as_bytes());
         out.extend_from_slice(&self.kernel.program_id.to_le_bytes());
         section(&mut out, &state);
+        // the camera lenses the port widens hold the game's own aspect in the state
+        let widened = crate::aim_mouse::unwiden_lenses(self);
         let phys = &self.memory.phys;
         for memory in [&phys.fcram, &phys.vram, &phys.dsp_ram, &phys.axi_wram] {
             section(&mut out, memory);
         }
+        crate::aim_mouse::rewiden_lenses(self, &widened);
         Ok(out)
     }
 
@@ -237,7 +240,10 @@ impl System {
         }
         // what was about to be shown, and the pace of the pictures in
         // between, start again
-        if let Some(mouse) = &mut self.aim_mouse { mouse.reset_menu_after_load(); }
+        if let Some(mouse) = &mut self.aim_mouse {
+            mouse.reset_menu_after_load();
+            mouse.forget_lenses_after_load(self.frames);
+        }
         self.showing = [None, None, None];
         self.pacing = Pacing::default();
         self.prefetch_aborts.clear();

@@ -1011,6 +1011,13 @@ const PROJECTION: u32 = 0x003901C4;
 const PERSPECTIVE_LENS: u32 = 0x00D20080;
 const LENS_FOVY: u32 = 0x10;
 const LENS_ASPECT: u32 = 0x14;
+/// the aspect the game gives the top screen's perspective lenses, 400:240.
+/// none of its own is wider, so a wider one in a state saved before
+/// save_state put the game's aspects back was widened already.
+const TOP_ASPECT: f32 = 5.0 / 3.0;
+/// how many frames after a state loads a lens not seen yet that is wider
+/// than TOP_ASPECT is taken as one such a state left widened.
+const LENS_REPAIR_FRAMES: u64 = 30;
 
 /// a 2D context starting a pass, 0x0092E4F8(context, screen): 0 the top
 /// screen, 1 the bottom one. the context is the sprite batch the pass's
@@ -1588,6 +1595,9 @@ pub struct AimMouse {
     /// the lenses widened: where, the aspect the game gave each and the one
     /// written over it.
     lenses: Vec<(u32, f32, f32)>,
+    /// the frame up to which lenses a loaded state left widened are put
+    /// back to the game's aspect, 0 when no state has loaded.
+    repair_lenses_until: u64,
     /// tan of half the view's width at the aspect the game gave, 0.69 in
     /// battle.
     half_width: f32,
@@ -1665,6 +1675,7 @@ impl Default for AimMouse {
             solo_camera_back: None,
             screens: Vec::new(),
             lenses: Vec::new(),
+            repair_lenses_until: 0,
             half_width: (std::f32::consts::FRAC_PI_8).tan() * 5.0 / 3.0,
             navigation_links: Vec::new(),
         }
@@ -2393,6 +2404,41 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
     }
 }
 
+/// puts back the aspect the game gave each lens widen_view widened, so a
+/// state saved now holds the game's own; the widened aspects it returns go
+/// back with rewiden_lenses once the state is written.
+pub(crate) fn unwiden_lenses(system: &mut System) -> Vec<(u32, f32)> {
+    let Some(aim_mouse) = &system.aim_mouse else { return Vec::new() };
+    let lenses = aim_mouse.lenses.clone();
+    let mut widened = Vec::new();
+    for (lens, given, written) in lenses {
+        if read_word(system, lens) == PERSPECTIVE_LENS
+            && read_word(system, lens + LENS_ASPECT) == written.to_bits()
+            && given != written
+        {
+            system.memory.write_bytes(lens + LENS_ASPECT, &given.to_le_bytes());
+            widened.push((lens, written));
+        }
+    }
+    widened
+}
+
+/// widens again the lenses unwiden_lenses put back.
+pub(crate) fn rewiden_lenses(system: &mut System, widened: &[(u32, f32)]) {
+    for &(lens, written) in widened {
+        system.memory.write_bytes(lens + LENS_ASPECT, &written.to_le_bytes());
+    }
+}
+
+impl AimMouse {
+    /// a state loaded: the lenses widened before are not known any more,
+    /// and for a while one it left widened is put back first.
+    pub(crate) fn forget_lenses_after_load(&mut self, frames: u64) {
+        self.lenses.clear();
+        self.repair_lenses_until = frames + LENS_REPAIR_FRAMES;
+    }
+}
+
 fn read_word(system: &mut System, at: u32) -> u32 {
     let mut word = [0u8; 4];
     system.memory.read_bytes(at, &mut word);
@@ -2415,6 +2461,8 @@ fn widen_view(system: &mut System) {
     let kept = aim_mouse.lenses.iter().position(|&(at, ..)| at == lens);
     let given = match kept.map(|index| aim_mouse.lenses[index]) {
         Some((_, given, written)) if written == aspect => given,
+        // a state saved by an older build holds the lens widened
+        None if system.frames <= aim_mouse.repair_lenses_until && aspect > TOP_ASPECT * 1.001 => TOP_ASPECT,
         _ => aspect,
     };
     if !(given.is_finite() && given > 0.0) {
@@ -2429,7 +2477,9 @@ fn widen_view(system: &mut System) {
         Some(index) => aim_mouse.lenses[index] = (lens, given, wanted),
         None => aim_mouse.lenses.push((lens, given, wanted)),
     }
-    if wanted != aspect {
+    // a lens first seen has its projection built again too: one a state
+    // loaded may hold a projection built at another width
+    if wanted != aspect || kept.is_none() {
         system.memory.write_bytes(lens + LENS_ASPECT, &wanted.to_le_bytes());
         let flags = read_word(system, camera + 8) & !4;
         system.memory.write_bytes(camera + 8, &flags.to_le_bytes());
@@ -5174,6 +5224,42 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_or_loaded_lens_is_widened_once() {
+        let mut system = armory_test_system();
+        let (camera, lens) = (0x1400_0000, 0x1400_0100);
+        let aspect = |system: &mut System| f32::from_bits(read_word(system, lens + LENS_ASPECT));
+        for (at, value) in [(camera + 4, lens), (camera + 8, 0x77), (lens, PERSPECTIVE_LENS),
+            (lens + LENS_FOVY, 0.785f32.to_bits()), (lens + LENS_ASPECT, TOP_ASPECT.to_bits())] {
+            system.memory.write_bytes(at, &value.to_le_bytes());
+        }
+        system.aim_mouse = Some(AimMouse { widen: 1.6, ..AimMouse::default() });
+        system.cpu.regs[0] = camera;
+        widen_view(&mut system);
+        assert_eq!(aspect(&mut system), TOP_ASPECT * 1.6);
+        // a state holds the game's own aspect, the running game keeps the wide one
+        let widened = unwiden_lenses(&mut system);
+        assert_eq!(aspect(&mut system), TOP_ASPECT);
+        rewiden_lenses(&mut system, &widened);
+        assert_eq!(aspect(&mut system), TOP_ASPECT * 1.6);
+        // a state an older build saved widened at 1.4, loaded into a fresh session
+        system.memory.write_bytes(lens + LENS_ASPECT, &(TOP_ASPECT * 1.4).to_le_bytes());
+        system.memory.write_bytes(camera + 8, &0x77u32.to_le_bytes());
+        system.aim_mouse = Some(AimMouse { widen: 1.6, ..AimMouse::default() });
+        system.aim_mouse.as_mut().unwrap().forget_lenses_after_load(system.frames);
+        widen_view(&mut system);
+        assert_eq!(aspect(&mut system), TOP_ASPECT * 1.6);
+        assert_eq!(read_word(&mut system, camera + 8) & 4, 0, "the projection is built again");
+        // a state saved by this build at another width, its projection built again
+        system.memory.write_bytes(lens + LENS_ASPECT, &TOP_ASPECT.to_le_bytes());
+        system.memory.write_bytes(camera + 8, &0x77u32.to_le_bytes());
+        system.aim_mouse = Some(AimMouse::default());
+        system.aim_mouse.as_mut().unwrap().forget_lenses_after_load(system.frames);
+        widen_view(&mut system);
+        assert_eq!(aspect(&mut system), TOP_ASPECT);
+        assert_eq!(read_word(&mut system, camera + 8) & 4, 0, "the projection is built again");
+    }
+
+    #[test]
     fn armory_rows_follow_the_viewport_and_reject_empty_space() {
         let mut system = armory_test_system();
         let list = 0x1400_0000;
@@ -5465,3 +5551,4 @@ mod tests {
         }
     }
 }
+#[allow(dead_code)] pub fn zz_bench_probe() -> u32 { 7 }
