@@ -34,6 +34,7 @@
 //!   aim <dx> <dy> <frames>        run with Zakuro's own mouse aiming captured, moving dx, dy a frame
 //!   power                         press the power key as Zakuro does: in a battle, uses the current power
 //!   mirror [0|1]                  mirror battle UI, dialogue images and boss cards on top (default on)
+//!   camdist <scale>               the PC Preference Land Battle camera distance, with Zakuro's hook
 //!   portraits <scale>             draw the portraits on the top screen too at scale, with Zakuro's hook
 //!   narrtop                       draw the narration on the top screen too, with Zakuro's hook
 //!   pausetop                      draw the pause menu on the top screen too, with Zakuro's hook
@@ -335,6 +336,7 @@ fn main() {
                 }
                 println!("  [{frame}] power key: {}", if in_battle { "uses the current power" } else { "ZL, not in a battle" });
             }
+            "camdist" => system.aim_mouse.get_or_insert_with(Default::default).land_camera_distance = float(1),
             "overclock" => system.cpu.overclock = num(1).max(1),
             "mirror" => system.aim_mouse.get_or_insert_with(Default::default).mirror_bottom = words.len() == 1 || num(1) != 0,
             "portraits" => system.aim_mouse.get_or_insert_with(Default::default).portrait_scale = float(1),

@@ -140,6 +140,14 @@ caller's aim object (vtable 0x00CF1B94, +0x81 = 1 on the ground). A poke
 of +0x30 lasts one frame. The port scales s0 at that store
 (`CAMERA_DISTANCE`, the PC Preference "Land Battle camera distance",
 default 1.25): 42.5 held steady through 175 frames of running.
+Against a wall the collision (`0x0060634C`, from 0x00772490) draws the eye
+in and writes +0x30 again; then `0x007724B4` divides that by the distance
+before the zoom (`[r6+0x28]`) and eases the zoom at r6+0x2C to the ratio, which
+multiplies the next frame's distance. Divided by the game's own distance,
+that ratio carried the port's scale, so the scale compounded every frame
+against a wall (state 1 of 23 November at 1.6: 54, 83, 128 ... 6470 in 17
+frames). The port divides by the scaled distance there
+(`CAMERA_ZOOM_RATIO`): the same pan now draws in to 14 and eases back to 54.
 
 Pit's ground movement (`trace/s8.state`, measured 19 November by stepping
 the Circle Pad and reading Pit's position each frame): his position is the

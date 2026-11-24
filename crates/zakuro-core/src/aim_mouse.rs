@@ -30,7 +30,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 146] = [
+pub const PLACES: [u32; 147] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2, APPLY_CONTROLS, INPUT_FRAME, MOVE_CHOICE_PICK,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -40,6 +40,7 @@ pub const PLACES: [u32; 146] = [
     BEFORE_CAMERA_TURN,
     PITCH_LIMITS,
     CAMERA_DISTANCE,
+    CAMERA_ZOOM_RATIO,
     SPRITE_FLUSH,
     PROJECTION,
     PASS_BEGIN,
@@ -982,6 +983,13 @@ const CAPTURED_PITCH_REACH: f32 = 10.0 * std::f32::consts::PI / 180.0;
 /// aim object, +0x81 set on the ground. 34 on the ground as the game has it.
 const CAMERA_DISTANCE: u32 = 0x007EF464;
 
+/// after the ground camera's collision has drawn the eye in (0x0060634C,
+/// called from 0x00772490), the game keeps how far in as a zoom for the
+/// next frame: s1 = the distance it stored at matrix (r4) +0x30, divided by
+/// s2, the distance 0x007EF350 worked out before its zoom ([r6+0x28]).
+/// the zoom multiplies the distance the next frame, before CAMERA_DISTANCE.
+const CAMERA_ZOOM_RATIO: u32 = 0x007724B4;
+
 /// the aim objects' vtables: stub input, and the players' (0x0076E854,
 /// 0x0076EBF0), the last Pit's on the ground.
 const AIM_VTABLES: [u32; 3] = [0x00CEDA50, 0x00CF1B40, 0x00CF1B94];
@@ -1572,6 +1580,9 @@ pub struct AimMouse {
     /// how many times further from Pit the camera stays in a Land Battle,
     /// 1 as the game has it.
     pub land_camera_distance: f32,
+    /// the camera matrix object CAMERA_DISTANCE pulled back this frame and
+    /// by how much, for CAMERA_ZOOM_RATIO.
+    pulled_back: Option<(u32, f32)>,
     /// the 2D contexts seen starting a pass, and the screen each draws.
     screens: Vec<(u32, u32)>,
     /// the lenses widened: where, the aspect the game gave each and the one
@@ -1650,6 +1661,7 @@ impl Default for AimMouse {
             menu_wheel: None,
             widen: 1.0,
             land_camera_distance: 1.0,
+            pulled_back: None,
             solo_camera_back: None,
             screens: Vec::new(),
             lenses: Vec::new(),
@@ -2227,6 +2239,7 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         }
         PITCH_LIMITS => widen_pitch(system),
         CAMERA_DISTANCE => pull_back_land_camera(system),
+        CAMERA_ZOOM_RATIO => keep_zoom_unscaled(system),
         AFTER_AIM_DELTA => add_delta(system),
         BEFORE_CAMERA_TURN => close_box(system),
         PROJECTION => widen_view(system),
@@ -2480,7 +2493,12 @@ fn widen_pitch(system: &mut System) {
 /// so scaling it here never builds up, and the game's own easing of it
 /// (for a dash or a zoom) carries on around the new length.
 fn pull_back_land_camera(system: &mut System) {
-    let Some(scale) = system.aim_mouse.as_ref().map(|mouse| mouse.land_camera_distance) else { return };
+    let Some(scale) = system.aim_mouse.as_mut().map(|mouse| {
+        mouse.pulled_back = None;
+        mouse.land_camera_distance
+    }) else {
+        return;
+    };
     if scale == 1.0 || !scale.is_finite() || scale <= 0.0 {
         return;
     }
@@ -2495,6 +2513,24 @@ fn pull_back_land_camera(system: &mut System) {
     }
     let distance = f32::from_bits(system.cpu.vfp.regs[0]) * scale;
     system.cpu.vfp.regs[0] = distance.to_bits();
+    if let Some(mouse) = &mut system.aim_mouse {
+        mouse.pulled_back = Some((system.cpu.regs[4], scale));
+    }
+}
+
+/// when collision drew in a camera CAMERA_DISTANCE pulled back, divides by
+/// the distance pulled back to, so the zoom the game keeps is the share
+/// the collision left of it. Divided by the game's own distance, the zoom
+/// carries the scale, which CAMERA_DISTANCE multiplies in again: every
+/// frame against a wall, the camera went land_camera_distance times further.
+fn keep_zoom_unscaled(system: &mut System) {
+    let Some(mouse) = &mut system.aim_mouse else { return };
+    let Some((matrix, scale)) = mouse.pulled_back.take() else { return };
+    if matrix != system.cpu.regs[4] {
+        return;
+    }
+    let distance = f32::from_bits(system.cpu.vfp.regs[2]) * scale;
+    system.cpu.vfp.regs[2] = distance.to_bits();
 }
 
 /// adds what the mouse moved to the local player's aim delta, divided by
@@ -4024,7 +4060,8 @@ fn place_battle_panel(system: &mut System, index: usize, widen: f32) -> bool {
         BOSS_CARD | BOSS_EFFECT | BOSS_STATUS => (
             UiBox { min: [0.0; 2], max: [320.0, if combat && index == BOSS_CARD { 64.0 } else { 240.0 }] },
             boss_area(hud, combat), 200.0, false,
-            index == BOSS_STATUS && caller == 0x00A15D3C, combat && index == BOSS_CARD),
+            // The boss artwork and its baked-in title stay off the top screen.
+            index == BOSS_CARD || (index == BOSS_STATUS && caller == 0x00A15D3C), false),
         PICKUP if boss.is_some() && caller != TOP_UI_AFTER_HUD => (
             UiBox { min: [23.0, 118.0], max: [301.0, 191.0] },
             pickup_below_boss(hud, portrait, combat), 200.0, false, caller == 0x009EAC80, false),
