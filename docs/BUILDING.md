@@ -47,6 +47,28 @@ The first build takes several minutes. The executable ends up in
 `target/release/` (`zakuro.exe` on Windows). To launch the game directly,
 pass the dump: `cargo run --release -p zakuro -- kiu/dumps/kiu.cci`.
 
+### Faster rebuilds while iterating
+
+The `iter` profile keeps release optimisation but drops cross-crate LTO and
+debuginfo, so after an edit it relinks in seconds instead of minutes:
+
+```sh
+cargo build --profile iter -p zakuro
+```
+
+The executable ends up in `target/iter/`. It runs a little slower than a
+release build, so ship and benchmark frame rates with `--release`.
+
+Cross-building the Windows exe from Linux or WSL
+(`--target x86_64-pc-windows-gnu`) links faster with lld. Set it in your
+own `~/.cargo/config.toml`, not the repository's, since native Windows
+toolchains may lack it:
+
+```toml
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+```
+
 ## 4. Recompile the game
 
 In the library, press **Choose folder…**, pick `kiu/dumps/`, and press
