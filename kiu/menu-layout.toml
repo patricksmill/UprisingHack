@@ -1236,36 +1236,6 @@ to = [
 ]
 
 [[layers]]
-screen = 23
-part = 2
-to = [
-    142.78285,
-    3.7777777,
-    256.59256,
-    144.33333,
-]
-
-[[layers]]
-screen = 23
-part = 0
-to = [
-    -0.71110535,
-    111.577774,
-    170.45926,
-    127.84445,
-]
-
-[[layers]]
-screen = 23
-part = 1
-to = [
-    13.553256,
-    153.22223,
-    168.0,
-    21.0,
-]
-
-[[layers]]
 screen = 28
 part = 9
 to = [
@@ -2657,6 +2627,19 @@ anchor = 0.5
 anchor_y = 0.0
 scale = "Narrow"
 visible = true
+
+[[folders]]
+screen = 23
+name = "Tile board"
+parts = [
+    0,
+    1,
+    2,
+    3,
+    4,
+]
+linked = true
+collapsed = false
 
 [[folders]]
 screen = 28
