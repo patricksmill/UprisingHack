@@ -13,8 +13,7 @@ Statically recompiled with [3dsrecomp](https://github.com/patricksmill/3dsrecomp
 ![Title](https://img.shields.io/badge/title-0004000000030100%20(USA)-blue)
 ![Status](https://img.shields.io/badge/status-work%20in%20progress-orange)
 
-<!-- HERO SCREENSHOT PLACEHOLDER: docs/images/hero.png (16:9 air battle, 1920x1080) -->
-<img src="docs/images/hero.png" alt="Air battle with mouse aim" width="900">
+<img src="docs/images/hero.webp" alt="Air battle against Medusa, with the HUD and dialogue on one screen" width="900">
 
 </div>
 
@@ -106,7 +105,7 @@ Only a handful of game functions are hooked; everything else runs as the origina
    cargo run --release -p zakuro -- kiu/dumps/kiu.cci
    ```
    Until you recompile, the game runs in the interpreter, which is much slower.
-6. Press **F12** in-game for the emulator menu.
+6. Press **F12** in-game for the emulator menu, or **Home** on a controller. On a controller, the d-pad or left stick moves around the menu and its windows, Confirm (A) presses, and Back (B) closes the window on top.
 
 To update, `git pull`, rebuild, then recompile.
 
