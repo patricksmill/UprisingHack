@@ -2024,6 +2024,7 @@ name = "kiutrace"
 version = "0.1.0"
 dependencies = [
  "env_logger",
+ "png",
  "zakuro-common",
  "zakuro-core",
  "zakuro-cpu",
@@ -4831,6 +4832,7 @@ dependencies = [
  "rayon",
  "recomp-abi",
  "serde",
+ "serde_json",
  "sha1",
  "symphonia-codec-aac",
  "symphonia-core",

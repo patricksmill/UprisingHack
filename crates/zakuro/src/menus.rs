@@ -2004,7 +2004,7 @@ fn resolution(ui: &mut egui::Ui, value: &mut u32) {
 
 fn texture_packs(ui: &mut egui::Ui, value: &mut bool) {
     ui.checkbox(value, "Texture packs")
-        .on_hover_text("Draw a game's texture pack, made for Citra or Azahar, put in the textures folder of the game's mods folder.");
+        .on_hover_text("Draw a game's texture pack, made for Citra or Azahar, put in the textures folder of the game's mods folder, and its Dynamic Input Textures: the button pictures in its textures drawn as your keys and controller buttons.");
 }
 
 fn window_scale(ui: &mut egui::Ui, value: &mut u32) {

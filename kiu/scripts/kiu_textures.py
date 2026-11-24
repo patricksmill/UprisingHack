@@ -5,7 +5,9 @@ usage: kiu_textures.py <rom.cci> <out dir> <name prefix> [romfs dir prefix]
 
 Scans every LZ11 `.zrc` archive (default under `us/menu/`) for CGFX
 textures (TXOB) whose name starts with the prefix, decodes them and
-writes `<name>.png` plus `<name>.txt` (format, size, source archive).
+writes `<name>.png` plus `<name>.txt` (format, size, source archive, and
+the texture pack name the game's texture gets at runtime, which Dynamic
+Input Textures configs and texture packs key on).
 """
 import os, re, struct, subprocess, sys, zlib
 
@@ -168,6 +170,7 @@ def main():
                              capture_output=True, text=True, check=True).stdout
     os.makedirs(out, exist_ok=True)
     seen = set()
+    raws = []
     with open(rom, "rb") as f:
         for path, size, at in re.findall(r"^\s+(\S+\.zrc)\s+(\d+)\s+@0x([0-9A-F]+)$", listing, re.M):
             if not path.startswith(folder): continue
@@ -179,7 +182,20 @@ def main():
                 png(os.path.join(out, name + ".png"), w, h, decode(fmt, w, h, pixels))
                 with open(os.path.join(out, name + ".txt"), "w") as t:
                     t.write(f"archive {path}\nformat {FORMATS[fmt]} ({fmt})\nsize {w}x{h}\npixels at 0x{data_at:X} in the decompressed archive\n")
+                raw = os.path.abspath(os.path.join(out, name + ".raw"))
+                with open(raw, "wb") as r:
+                    r.write(pixels)
+                raws.append((name, raw, fmt, w, h))
                 print(f"{name}: {FORMATS[fmt]} {w}x{h} from {path}")
+    # the runtime hash (CityHash64 as Citra lays the texture out) comes from
+    # zakuro-gpu itself, so it is the one the texture pack lookup computes
+    lines = "".join(f"{raw} {fmt} {w} {h}\n" for _, raw, fmt, w, h in raws)
+    names = subprocess.run(["cargo", "run", "-q", "--release", "-p", "kiutrace", "--bin", "texname"], cwd=os.path.join(here, "../.."),
+                           input=lines, capture_output=True, text=True, check=True).stdout.split()
+    for (name, raw, *_), pack in zip(raws, names):
+        os.remove(raw)
+        with open(os.path.join(out, name + ".txt"), "a") as t:
+            t.write(f"pack {pack}\n")
 
 
 if __name__ == "__main__":

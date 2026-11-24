@@ -1687,6 +1687,8 @@ pub struct TextureCache {
     writes: usize,
     /// the texture pack whose pictures replace textures, and where a texture is laid out to hash it like Citra did
     pack: Option<Arc<crate::pack::Pack>>,
+    /// the Dynamic Input Textures, tried b4 the pack
+    dynamic: Option<Arc<crate::dynamic::DynamicTextures>>,
     rows: Vec<u8>,
 }
 
@@ -1717,6 +1719,19 @@ impl TextureCache {
         self.pack = pack;
         self.entries.clear();
         self.texels = 0;
+    }
+
+    /// replaces textures w/ the Dynamic Input Textures' pictures from now on, or w/ none
+    /// the textures kept stay decoded, only which picture replaces each is looked up again
+    pub fn set_dynamic(&mut self, dynamic: Option<Arc<crate::dynamic::DynamicTextures>>) {
+        if self.dynamic.is_none() && dynamic.is_none() {
+            return;
+        }
+        self.dynamic = dynamic;
+        let (pack, dynamic) = (self.pack.clone(), self.dynamic.clone());
+        for (&key, decoded) in self.entries.iter_mut() {
+            decoded.replacement = picture_for(pack.as_deref(), dynamic.as_deref(), &decoded.bytes, &decoded.texels, key, &mut self.rows);
+        }
     }
 
     /// drops every texture, memory having been put back like a save state had it
@@ -1800,7 +1815,7 @@ impl TextureCache {
                 decoded.bytes.copy_from_slice(data);
                 decoded.texels = copy;
                 decoded.hash = hash;
-                decoded.replacement = picture_for(self.pack.as_deref(), data, &decoded.texels, key, &mut self.rows);
+                decoded.replacement = picture_for(self.pack.as_deref(), self.dynamic.as_deref(), data, &decoded.texels, key, &mut self.rows);
             }
             if decoded.hash == hash {
                 decoded.checked = checked;
@@ -1826,7 +1841,7 @@ impl TextureCache {
                 texels.iter().map(|_| [255, 0, 255, 255]).collect(),
             _ => texels,
         };
-        let replacement = picture_for(self.pack.as_deref(), data, &texels, key, &mut self.rows);
+        let replacement = picture_for(self.pack.as_deref(), self.dynamic.as_deref(), data, &texels, key, &mut self.rows);
         let decoded = Decoded { hash, bytes: data.to_vec(), texels: texels.clone(), checked, replacement: replacement.clone(), watch: None };
         if let Some(old) = self.entries.insert(key, decoded) {
             self.texels -= old.texels.len();
@@ -1839,6 +1854,7 @@ impl TextureCache {
 /// the pack's picture for a texture of these bytes, whenever they change
 fn picture_for(
     pack: Option<&crate::pack::Pack>,
+    dynamic: Option<&crate::dynamic::DynamicTextures>,
     data: &[u8],
     texels: &[[u8; 4]],
     key: TextureKey,
@@ -1849,6 +1865,9 @@ fn picture_for(
     let (data, texels) = (&data[..texture_bytes(format, width, height, 1)], &texels[..(width * height) as usize]);
     if crate::pack::recording() {
         crate::pack::record(data, texels, format, width, height);
+    }
+    if let Some(found) = dynamic.and_then(|dynamic| dynamic.find(data, format, width, height, texels, rows)) {
+        return Some(found);
     }
     pack?.find(data, format, width, height, rows)
 }

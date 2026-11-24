@@ -218,6 +218,16 @@ pub fn load(path: impl AsRef<std::path::Path>, mut config: Config) -> Result<Sys
             system.gpu.set_texture_pack(Some(std::sync::Arc::new(pack)));
         }
     }
+    if system.config.texture_packs {
+        // the title's textures showing the console's buttons, drawn with the player's inputs
+        let dir = system.config.data_dir.as_deref().map(|data_dir| crate::mods::dynamic_input_textures(data_dir, title.program_id()));
+        let config = crate::dynamic_textures::Config::for_title(title.program_id(), dir.as_deref());
+        if !config.is_empty() && !on_gpu {
+            log::warn!("Dynamic Input Textures need the 3D drawn on the GPU, they are left out");
+        } else if !config.is_empty() {
+            system.set_dynamic_input_textures(Some(config));
+        }
+    }
 
     system.title = Some(title);
     Ok(system)

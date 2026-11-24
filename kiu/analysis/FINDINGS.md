@@ -2563,3 +2563,43 @@ VRAM dump; used by the menu editor's Open texture (`layer_textures`).
 - Checked: every texture `textures 3`, `12`, `21` and `0` wrote (15) is one
   the renderer hashed that frame (`ZAKURO_TEXTURE_HASHES`), under the same
   row hash, so the texture pack finds the exported names.
+
+## Input pictures in the game's textures (24 November)
+
+Found from a RomFS dump of `us/info/` and `us/menu/`
+(`scripts/kiu_textures.py`, which now writes each texture's `pack` name
+through `kiutrace`'s `texname`). The offline names match what the renderer
+hashes: `gm_00`, `gm_01`, `gm_02` and `gc_00` came out of
+`ZAKURO_DUMP_TEXTURES` in `cam-zoom`, `pause-options`, `souflee` and
+`fuse-slot4` under the same names. Regions are in texels of the dumped PNG,
+`[left, top, right, bottom)`; the built-in config is
+`kiu/dynamic_input_textures/kiu.json`, the list with names is in
+`docs/dynamic-input-textures.md`.
+
+- `gm_00` (`us/info/common.zrc`, LA4 256x256,
+  `tex1_256x256_B76149565D0DDB15_9`): round A `157,157,181,181`, B
+  `187,157,211,181`, X `217,158,241,182`, Y `194,188,218,212`; D-pad icon
+  `66,212,82,228`; Circle Pad icon `65,229,83,247`; ABXY cluster
+  `221,216,248,243`; small letters A B X Y L R at y `98..111`;
+  `:Change View` `155,131,206,153`.
+- `gm_02` (LA4, `tex1_256x256_964D19A6061EDBC1_9`): the white "R  L" bar
+  `109,37,161,55`, R `116..126`, L `146..154`, both y `40..50`.
+- `gc_01` (ETC1A4, `tex1_256x256_72981D8DE1C120AC_13`): the Control
+  Configuration diagrams, 2x3 panels of about 74x72. Panel 1 (Circle Pad,
+  the "Circle Pad (Default)" card): pad `14,8,36,29`, D-pad `12,34,37,59`,
+  body grey `#B2B2B2`. Panel 2: face buttons, 5 px dots X `123,6`, Y
+  `113,16`, A `133,16`, B `123,26`.
+- `MenOptionButtonUp0000` (LA4 128x64, `tex1_128x64_45112B0A56091434_9`):
+  A `77,1,101,25`, B `103,1,127,25`, X `77,27,101,51`, Y `103,27,127,51`;
+  bar `1,1,75,25` with L at x `24..31`, R `40..50`, y `8..18`.
+- Pills, dark discs with a light letter: `MenPresentSeedUp0010` X
+  `6,13,19,26`; `MenPresentSeedUp0020` Y `20,13,33,26`;
+  `MenOnlineTopBt0020` X `12,10,25,23` (disc `#203928`);
+  `MenAltersoldBt0100` Y `1,16,16,31`.
+- `(START)` is lettered into `MenBetheartBtLang0000` and
+  `MenOnEq01Bt_Lang0022`/`0023` ("Move Out!"), `MenEquip02MrclBt_Lang0001`
+  ("OK"), `MenAltersoldUp_Lang0000` ("Convert!").
+- In `pause-options.state`, Control Configuration's first card draws
+  `gc_01` panel 1; with keyboard prompts (`kiutrace` `prompts keyboard`,
+  `KIUTRACE_SCALE=2`) it shows the WASD and 1234 key caps, and going back
+  to `prompts console` restores the game's picture on the next frame.

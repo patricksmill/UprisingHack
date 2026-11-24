@@ -1518,7 +1518,7 @@ impl App {
             return;
         }
         let bindings = &self.settings.pc.bindings;
-        let prompts = match (self.prompt_faces, self.keyboard.acting()) {
+        let mut prompts = match (self.prompt_faces, self.keyboard.acting()) {
             // Kid Icarus shows the inputs on its actions
             (Some(faces), true) => bindings.prompts(bindings::Device::Controller, |source| match source {
                 bindings::Source::Pad(button) => gamepad::label(button, faces),
@@ -1528,6 +1528,14 @@ impl App {
             (Some(faces), false) => self.gamepads.prompts(faces),
             (None, false) => input::prompts(&self.settings.keys),
         };
+        // the Dynamic Input Textures pick each device's own pictures
+        prompts.set_host(match self.prompt_faces {
+            Some(_) => zakuro_core::services::prompts::Host::Controller,
+            None => zakuro_core::services::prompts::Host::KeyboardMouse,
+        });
+        if self.keyboard.acting() {
+            bindings::action_prompts(&mut prompts, bindings, self.prompt_faces);
+        }
         game.system.set_prompts(prompts);
         self.prompts_shown = Some(self.prompt_faces);
     }

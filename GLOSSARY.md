@@ -88,6 +88,10 @@ _Avoid_: Emulator settings (for player-facing choices), PC save data
 A keyboard, mouse or controller assignment to a named player action, such as Attack or Use Power, rather than to a virtual 3DS button.
 _Avoid_: 3DS mapping (for action-based assignments)
 
+**Dynamic Input Texture**:
+A game texture whose button pictures are drawn again with the player's own Action Binding inputs, after Dolphin's feature of the same name; configs give each button's regions of the texture.
+_Avoid_: Button skin, input texture pack, prompt texture
+
 **Gyro Aim**:
 Optional controller-motion aiming that supplements stick aiming during gameplay.
 _Avoid_: Motion controls (when referring specifically to aiming)

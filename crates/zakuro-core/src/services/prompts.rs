@@ -121,19 +121,58 @@ pub enum Label {
     Home,
 }
 
+/// what the player plays with, which the labels are drawn for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Host {
+    /// the console's own buttons, nothing bound.
+    #[default]
+    Console,
+    KeyboardMouse,
+    Controller,
+}
+
 /// the symbol each input shows as.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Prompts {
     labels: [Label; Input::ALL.len()],
+    host: Host,
+    /// a title's own actions by name, such as Kid Icarus' Next Idol, and
+    /// the symbol of the input each is bound to; for Dynamic Input Textures
+    /// whose pictures stand for an action rather than a console button.
+    actions: Vec<(String, Label)>,
 }
 
 impl Default for Prompts {
     fn default() -> Self {
-        Prompts { labels: Input::ALL.map(Input::console) }
+        Prompts { labels: Input::ALL.map(Input::console), host: Host::Console, actions: Vec::new() }
     }
 }
 
 impl Prompts {
+    pub fn host(&self) -> Host {
+        self.host
+    }
+
+    pub fn set_host(&mut self, host: Host) {
+        self.host = host;
+    }
+
+    /// the symbol of the input the action is bound to, names alike but for
+    /// case, spaces and underscores
+    pub fn action(&self, name: &str) -> Option<&Label> {
+        let wanted = action_name(name);
+        self.actions.iter().find(|(action, _)| *action == wanted).map(|(_, label)| label)
+    }
+
+    /// shows the action as label, or as nothing bound for none
+    pub fn set_action(&mut self, name: &str, label: Option<Label>) {
+        let name = action_name(name);
+        self.actions.retain(|(action, _)| *action != name);
+        if let Some(label) = label {
+            self.actions.push((name, label));
+        }
+    }
+
     pub fn get(&self, input: Input) -> &Label {
         &self.labels[input as usize]
     }
@@ -141,6 +180,11 @@ impl Prompts {
     pub fn set(&mut self, input: Input, label: Label) {
         self.labels[input as usize] = label;
     }
+}
+
+/// an action's name as kept: letters and digits, lowercase.
+fn action_name(name: &str) -> String {
+    name.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
 }
 
 /// what a character of the console's symbols is drawn as.
@@ -211,6 +255,22 @@ pub(super) fn draw(code: u16, prompts: &Prompts, font: Option<&FontRef>) -> Draw
         None => {}
     }
     canvas.finish()
+}
+
+/// a label drawn size pixels square, as alpha from 0 to 255, rows from the
+/// top, with font for its text, or the bitmap font where the host has none.
+pub fn render(label: &Label, size: usize, font: Option<&FontRef>) -> Vec<u8> {
+    let mut canvas = Canvas::sized(size.max(1));
+    draw_label(&mut canvas, &Text { font }, label);
+    canvas.coverage.iter().map(|&coverage| (coverage * 255.0).round() as u8).collect()
+}
+
+/// text alone, as big as fits a cell size pixels square, as alpha from 0 to
+/// 255, rows from the top: a key's name without its cap.
+pub fn render_text(characters: &str, size: usize, font: Option<&FontRef>) -> Vec<u8> {
+    let mut canvas = Canvas::sized(size.max(1));
+    Text { font }.draw(&mut canvas, characters, Area::new(1.5, 1.5, 21.0, 21.0), 24.0, Ink::Lit);
+    canvas.coverage.iter().map(|&coverage| (coverage * 255.0).round() as u8).collect()
 }
 
 fn draw_label(canvas: &mut Canvas, text: &Text, label: &Label) {
@@ -320,26 +380,35 @@ impl Area {
     }
 }
 
-/// coverage of each pixel of a cell, 0 to 1.
+/// coverage of each pixel of a cell, 0 to 1. shapes are given in the
+/// cell's own SIZE units, scale pixels each.
 struct Canvas {
-    coverage: [f32; SIZE * SIZE],
+    coverage: Vec<f32>,
+    size: usize,
+    scale: f32,
 }
 
 impl Default for Canvas {
     fn default() -> Self {
-        Canvas { coverage: [0.0; SIZE * SIZE] }
+        Canvas::sized(SIZE)
     }
 }
 
 impl Canvas {
+    /// a cell size pixels square.
+    fn sized(size: usize) -> Canvas {
+        Canvas { coverage: vec![0.0; size * size], size, scale: size as f32 / SIZE as f32 }
+    }
+
     /// lights or clears each pixel as much of it is inside.
     fn fill(&mut self, inside: impl Fn(f32, f32) -> bool, ink: Ink) {
-        for y in 0..SIZE {
-            for x in 0..SIZE {
+        let scale = self.scale;
+        for y in 0..self.size {
+            for x in 0..self.size {
                 let mut hits = 0;
                 for sy in 0..SAMPLES {
                     for sx in 0..SAMPLES {
-                        let at = |pixel: usize, sample: usize| pixel as f32 + (sample as f32 + 0.5) / SAMPLES as f32;
+                        let at = |pixel: usize, sample: usize| (pixel as f32 + (sample as f32 + 0.5) / SAMPLES as f32) / scale;
                         hits += usize::from(inside(at(x, sx), at(y, sy)));
                     }
                 }
@@ -354,7 +423,7 @@ impl Canvas {
     }
 
     fn put(&mut self, x: usize, y: usize, amount: f32, ink: Ink) {
-        let pixel = &mut self.coverage[y * SIZE + x];
+        let pixel = &mut self.coverage[y * self.size + x];
         *pixel = match ink {
             Ink::Lit => (*pixel + amount).min(1.0),
             Ink::Erased => *pixel * (1.0 - amount),
@@ -391,6 +460,9 @@ impl Text<'_> {
 }
 
 fn draw_outlines(canvas: &mut Canvas, font: &FontRef, characters: &str, area: Area, size: f32, ink: Ink) {
+    let (cell, scale) = (canvas.size, canvas.scale);
+    let area = Area::new(area.x * scale, area.y * scale, area.width * scale, area.height * scale);
+    let size = size * scale;
     let measure = |size: f32| {
         let scaled = font.as_scaled(PxScale::from(size));
         let width: f32 = characters.chars().map(|character| scaled.h_advance(font.glyph_id(character))).sum();
@@ -404,15 +476,15 @@ fn draw_outlines(canvas: &mut Canvas, font: &FontRef, characters: &str, area: Ar
     let cap = scaled.ascent() * 0.72;
     let baseline = area.y + (area.height + cap) / 2.0;
     let mut pen = area.x + (area.width - width) / 2.0;
-    let mut coverage = [0.0f32; SIZE * SIZE];
+    let mut coverage = vec![0.0f32; cell * cell];
     for character in characters.chars() {
         let id = font.glyph_id(character);
         if let Some(outline) = font.outline_glyph(id.with_scale_and_position(size, point(pen, baseline))) {
             let bounds = outline.px_bounds();
             outline.draw(|x, y, amount| {
                 let (x, y) = (bounds.min.x as i32 + x as i32, bounds.min.y as i32 + y as i32);
-                if (0..SIZE as i32).contains(&x) && (0..SIZE as i32).contains(&y) {
-                    let pixel = &mut coverage[y as usize * SIZE + x as usize];
+                if (0..cell as i32).contains(&x) && (0..cell as i32).contains(&y) {
+                    let pixel = &mut coverage[y as usize * cell + x as usize];
                     *pixel = (*pixel + amount).min(1.0);
                 }
             });
@@ -420,7 +492,7 @@ fn draw_outlines(canvas: &mut Canvas, font: &FontRef, characters: &str, area: Ar
         pen += scaled.h_advance(id);
     }
     for (index, &amount) in coverage.iter().enumerate() {
-        canvas.put(index % SIZE, index / SIZE, amount, ink);
+        canvas.put(index % cell, index / cell, amount, ink);
     }
 }
 

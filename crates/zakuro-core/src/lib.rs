@@ -6,6 +6,7 @@ pub mod cheats;
 pub mod enhancements;
 pub mod cro;
 pub mod download_play;
+pub mod dynamic_textures;
 pub mod hints;
 pub mod idle;
 pub mod spin;
@@ -318,6 +319,8 @@ pub struct System {
     pub aim_mouse: Option<aim_mouse::AimMouse>,
     /// how the button symbols in the title's text look, see set_prompts.
     pub(crate) prompts: services::prompts::Prompts,
+    /// the Dynamic Input Textures configs, drawn again for prompts as it changes, see set_dynamic_input_textures.
+    dynamic_input_textures: Option<std::sync::Arc<dynamic_textures::Config>>,
     /// undefined instructions we have seen, so the log stays readable.
     undefined_seen: BTreeMap<u32, u32>,
     /// branches into unmapped memory, keyed by target
@@ -433,6 +436,7 @@ impl System {
             fatal_errors: Vec::new(),
             aim_mouse: None,
             prompts: services::prompts::Prompts::default(),
+            dynamic_input_textures: None,
             undefined_seen: BTreeMap::new(),
             prefetch_aborts: BTreeMap::new(),
             history: [0; HISTORY_LENGTH],
@@ -1442,7 +1446,24 @@ impl System {
         if self.prompts != prompts {
             self.prompts = prompts;
             services::apt::redraw_shared_font(self);
+            self.draw_dynamic_input_textures();
         }
+    }
+
+    /// draws the title's textures that show the console's buttons with the
+    /// inputs prompts shows instead, as the configs say, from now on; says
+    /// whether the GPU draws them, which takes it drawing on the host's GPU.
+    pub fn set_dynamic_input_textures(&mut self, config: Option<dynamic_textures::Config>) -> bool {
+        self.dynamic_input_textures = config.filter(|config| !config.is_empty()).map(std::sync::Arc::new);
+        self.draw_dynamic_input_textures()
+    }
+
+    fn draw_dynamic_input_textures(&mut self) -> bool {
+        // w/o configs the GPU's textures stay as they are, taking a set away decodes them all again
+        let Some(config) = self.dynamic_input_textures.clone() else {
+            return self.gpu.set_dynamic_textures(None);
+        };
+        self.gpu.set_dynamic_textures(config.build(&self.prompts))
     }
 
     /// where a screen's picture is on the host's GPU, for a presenter sharing

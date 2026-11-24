@@ -584,6 +584,34 @@ impl ActionBindings {
     }
 }
 
+/// each action's first input on the device the faces say is in use (a
+/// controller's, or the keyboard and mouse's for none), as the action's
+/// symbol, for Dynamic Input Textures that show an action rather than a
+/// console button. The Idol View's mouse gestures count as bindings:
+/// left-drag turns it (Idol View Orbit) and right-drag moves it (Idol View
+/// Pan).
+pub fn action_prompts(prompts: &mut Prompts, bindings: &ActionBindings, faces: Option<crate::gamepad::Faces>) {
+    let device = if faces.is_some() { Device::Controller } else { Device::KeyboardMouse };
+    let label = |source: Source| match source {
+        Source::Pad(button) => match faces {
+            Some(faces) => crate::gamepad::label(button, faces),
+            None => crate::input::label(source),
+        },
+        Source::Stick(Stick::Left) => Label::Stick("L".into()),
+        Source::Stick(Stick::Right) => Label::Stick("R".into()),
+        other => crate::input::label(other),
+    };
+    for action in Action::ALL {
+        let first = bindings.sources(device, action).first().copied();
+        prompts.set_action(&format!("{action:?}"), first.map(label));
+    }
+    if device == Device::KeyboardMouse {
+        use zakuro_core::services::prompts::MouseButton as Click;
+        prompts.set_action("IdolViewOrbit", Some(Label::Mouse(Click::Left)));
+        prompts.set_action("IdolViewPan", Some(Label::Mouse(Click::Right)));
+    }
+}
+
 /// the movement keys' lean shortened to Walk's, the length and not each
 /// axis so a diagonal walks no faster.
 pub fn walk(circle: [f32; 2], lean: f32) -> [f32; 2] {

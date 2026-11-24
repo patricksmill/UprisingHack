@@ -35,6 +35,8 @@ pub struct Material {
     /// are the rows stored bottom up, so they get flipped on reading
     flipped: bool,
     state: Mutex<State>,
+    /// made in memory, not read from a file, so it is kept once the GPU has it
+    made: bool,
 }
 
 enum State {
@@ -88,6 +90,7 @@ impl Pack {
                             path: path.clone(),
                             flipped: !config.upright,
                             state: Mutex::new(State::OnDisk),
+                            made: false,
                         }));
                     }
                 }
@@ -125,6 +128,11 @@ impl Pack {
 }
 
 impl Material {
+    /// a picture made in memory, such as a Dynamic Input Texture, known to the GPU by hash
+    pub fn made(hash: u64, picture: Picture) -> Arc<Material> {
+        Arc::new(Material { hash, path: PathBuf::new(), flipped: false, state: Mutex::new(State::Read(Arc::new(picture))), made: true })
+    }
+
     /// the hash of the textures it replaces, which tells its pictures apart
     pub fn hash(&self) -> u64 {
         self.hash
@@ -173,6 +181,9 @@ impl Material {
     /// the GPU has the picture, or no longer draws what it replaces,
     /// so the memory it took goes (also once a read under way ends), and it gets read again when needed again
     pub fn release(&self) {
+        if self.made {
+            return;
+        }
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         match &mut *state {
             State::Read(_) => *state = State::OnDisk,
@@ -649,6 +660,23 @@ fn read_png(path: &Path, flipped: bool, kept: u32) -> Result<Picture, String> {
     Ok(Picture { width: top.width, height: top.height, texels, levels })
 }
 
+/// a PNG read as RGBA8 rows from the top, for pictures made in memory
+pub fn read_image(path: &Path) -> Result<crate::dynamic::Image, String> {
+    let picture = read_png(path, false, MAX_SIZE)?;
+    let mut rgba = picture.texels;
+    rgba.truncate((picture.width * picture.height * 4) as usize);
+    Ok(crate::dynamic::Image { width: picture.width, height: picture.height, rgba })
+}
+
+/// the hash in a texture pack picture's name, tex1_<width>x<height>_<hash>_<format>, or a bare hexadecimal hash
+pub fn hash_in_name(name: &str) -> Option<u64> {
+    let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    name_hash(name).or_else(|| {
+        let text = name.strip_prefix("0x").or_else(|| name.strip_prefix("0X")).unwrap_or(name);
+        (!text.is_empty() && text.len() <= 16 && text.chars().all(|c| c.is_ascii_hexdigit())).then(|| u64::from_str_radix(text, 16).ok()).flatten()
+    })
+}
+
 /// Builds minification levels for decoded guest textures too. Their base
 /// level stays unchanged, so magnified sprites and text retain their detail.
 pub(crate) fn mipmapped(width: u32, height: u32, mut texels: Vec<u8>) -> Picture {
@@ -930,7 +958,7 @@ mod tests {
         let format = TextureFormat::Rgba8;
         let bytes = hash(Hashing::Bytes, &data, format, 8, 8, &mut rows).unwrap();
         let laid_out = hash(Hashing::Rows, &data, format, 8, 8, &mut rows).unwrap();
-        let material = |hash| Arc::new(Material { hash, path: PathBuf::new(), flipped: false, state: Mutex::new(State::OnDisk) });
+        let material = |hash| Arc::new(Material { hash, path: PathBuf::new(), flipped: false, state: Mutex::new(State::OnDisk), made: false });
         for hashing in [Hashing::Bytes, Hashing::Rows] {
             for named in [bytes, laid_out] {
                 let pack = Pack { hashing, materials: HashMap::from([(named, material(named))]) };
@@ -976,7 +1004,7 @@ mod tests {
     fn a_picture_let_go_of_while_read_is_not_kept() {
         let path = std::env::temp_dir().join(format!("zakuro-material-{}.png", std::process::id()));
         write_png(&path, 1, 1, &[1, 2, 3, 255]);
-        let material = Material { hash: 1, path: path.clone(), flipped: false, state: Mutex::new(State::Reading { wanted: true }) };
+        let material = Material { hash: 1, path: path.clone(), flipped: false, state: Mutex::new(State::Reading { wanted: true }), made: false };
         material.release();
         material.read(4096);
         assert!(matches!(*material.state.lock().unwrap(), State::OnDisk));

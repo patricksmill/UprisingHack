@@ -8,6 +8,7 @@ mod device;
 mod instance;
 mod pattern;
 pub mod proctex;
+pub mod dynamic;
 pub mod fog;
 pub mod format;
 mod interpolation;
@@ -682,6 +683,18 @@ impl Gpu {
         let pack = pack.filter(|_| false);
         let drawn = pack.is_some();
         self.resources.textures.set_pack(pack);
+        drawn
+    }
+
+    /// draws the Dynamic Input Textures' pictures in place of the textures they replace, or none,
+    /// only on the host's GPU like a texture pack, and says if they're drawn
+    pub fn set_dynamic_textures(&mut self, textures: Option<std::sync::Arc<dynamic::DynamicTextures>>) -> bool {
+        #[cfg(feature = "vulkan")]
+        let textures = textures.filter(|_| self.resources.hardware.is_some());
+        #[cfg(not(feature = "vulkan"))]
+        let textures = textures.filter(|_| false);
+        let drawn = textures.is_some();
+        self.resources.textures.set_dynamic(textures);
         drawn
     }
 

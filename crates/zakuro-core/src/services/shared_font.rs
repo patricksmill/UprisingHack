@@ -342,7 +342,7 @@ fn host_face() -> Option<&'static Face> {
 
 /// the host's font for Japanese, for the text on button symbols, none
 /// where its glyphs are not good enough for the rest of the font either.
-fn host_font() -> Option<ab_glyph::FontRef<'static>> {
+pub(crate) fn host_font() -> Option<ab_glyph::FontRef<'static>> {
     host_face()?;
     ab_glyph::FontRef::try_from_slice_and_index(&host_font_file()?.1, 0).ok()
 }

@@ -1,0 +1,91 @@
+{
+  "specification": 1,
+  "output_textures": {
+    "tex1_128x128_7094C30E0DFF73BC_13_mip0.png": {
+      "emulated_controls": {
+        "3DS": {
+          "PreviousIdol": [[29, 47, 41, 60]],
+          "NextIdol": [[41, 47, 53, 60]]
+        }
+      }
+    },
+    "tex1_256x32_AB0EE5FCDF1DAEC8_13_mip0.png": {
+      "emulated_controls": {
+        "3DS": {
+          "IdolViewOrbit": [[1, 1, 18, 18]],
+          "IdolViewPan": [[82, 1, 99, 18]],
+          "ZoomIn": [[146, 0, 162, 16]],
+          "ZoomOut": [[198, 0, 214, 16]]
+        }
+      }
+    },
+    "tex1_256x256_72981D8DE1C120AC_13_mip0.png": {
+      "fill": "#B2B2B2FF",
+      "emulated_controls": {
+        "3DS": {
+          "CirclePad": [{"rect": [14, 8, 36, 29], "fill_shape": "ellipse", "tint": "#E00000FF", "outline": "#000000FF"}],
+          "DPad": [{"rect": [12, 34, 37, 59], "tint": "#101010FF", "outline": null}]
+        }
+      }
+    },
+    "tex1_256x256_B76149565D0DDB15_9_mip0.png": {
+      "emulated_controls": {
+        "3DS": {
+          "A": [[157, 157, 181, 181]],
+          "B": [[187, 157, 211, 181]],
+          "X": [[217, 158, 241, 182]],
+          "Y": [[194, 188, 218, 212]],
+          "DPad": [[66, 212, 82, 228]],
+          "CirclePad": [[65, 229, 83, 247]]
+        }
+      }
+    },
+    "tex1_256x256_964D19A6061EDBC1_9_mip0.png": {
+      "fill": "#FFFFFFFF",
+      "tint": "#000000FF",
+      "outline": null,
+      "emulated_controls": {
+        "3DS": {
+          "R": [[113, 40, 129, 51]],
+          "L": [[142, 40, 158, 51]]
+        }
+      }
+    },
+    "tex1_128x64_45112B0A56091434_9_mip0.png": {
+      "emulated_controls": {
+        "3DS": {
+          "A": [[77, 1, 101, 25]],
+          "B": [[103, 1, 127, 25]],
+          "X": [[77, 27, 101, 51]],
+          "Y": [[103, 27, 127, 51]],
+          "L": [{"rect": [21, 7, 35, 18], "fill": "#FFFFFFFF", "tint": "#404040FF", "outline": null}],
+          "R": [{"rect": [37, 7, 53, 18], "fill": "#FFFFFFFF", "tint": "#404040FF", "outline": null}]
+        }
+      }
+    },
+    "tex1_64x32_592391B19BBEB521_13_mip0.png": {
+      "fill": "#000400FF",
+      "fill_shape": "ellipse",
+      "outline": null,
+      "emulated_controls": { "3DS": { "X": [[6, 13, 19, 26]] } }
+    },
+    "tex1_64x32_9C6652BC1AFF1581_13_mip0.png": {
+      "fill": "#000000FF",
+      "fill_shape": "ellipse",
+      "outline": null,
+      "emulated_controls": { "3DS": { "Y": [[20, 13, 33, 26]] } }
+    },
+    "tex1_64x32_16632EE62136A3EE_13_mip0.png": {
+      "fill": "#203928FF",
+      "fill_shape": "ellipse",
+      "outline": null,
+      "emulated_controls": { "3DS": { "X": [[12, 10, 25, 23]] } }
+    },
+    "tex1_128x64_46C24D45ABB8D701_4_mip0.png": {
+      "fill": "#000000FF",
+      "fill_shape": "ellipse",
+      "outline": null,
+      "emulated_controls": { "3DS": { "Y": [[1, 16, 16, 31]] } }
+    }
+  }
+}

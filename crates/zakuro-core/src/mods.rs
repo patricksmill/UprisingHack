@@ -19,6 +19,11 @@ pub fn textures(data_dir: &Path, program_id: u64) -> PathBuf {
     dir(data_dir, program_id).join("textures")
 }
 
+/// a title's Dynamic Input Textures folder inside its mods folder, its configs and pictures, like Dolphin's Load/DynamicInputTextures/<game id>
+pub fn dynamic_input_textures(data_dir: &Path, program_id: u64) -> PathBuf {
+    dir(data_dir, program_id).join("dynamic_input_textures")
+}
+
 /// files changing a title's code, each in the mod's folder or its exefs folder
 const CODE: [&str; 3] = ["code.bin", "code.ips", "code.bps"];
 

@@ -20,6 +20,8 @@
 //!   shotbetween <name>            the picture in between High Refresh Mode shows, as shotscaled;
 //!                                 needs KIUTRACE_DIRECT=1, KIUTRACE_SCALE and interpolation 1
 //!   stereo <0..1>                 set the console's 3D slider (0 is off)
+//!   prompts keyboard|controller|console   show sample bindings in the button symbols and
+//!                                 Dynamic Input Textures (needs KIUTRACE_SCALE for the textures)
 //!   save <file> / load <file>     a Zakuro saved state
 //!   scan                          list objects whose first word is an aim vtable
 //!   peek <addr> <count>           print count words at addr as hex and float
@@ -98,6 +100,8 @@ use zakuro_common::Screen;
 use zakuro_core::loader;
 use zakuro_core::services::hid::{InputState, PadState};
 use zakuro_core::{Config, FrameOutcome, StepOutcome, System};
+
+mod sample_prompts;
 
 /// the vtables of the three aim controller classes in the USA build.
 const AIM_VTABLES: [(u32, &str); 3] = [(0x00CEDA50, "aim (stub input)"), (0x00CF1B40, "aim (0x76E854)"), (0x00CF1B94, "aim (0x76EBF0)")];
@@ -268,6 +272,11 @@ fn main() {
                 }
             }
             "save" => std::fs::write(words[1], system.save_state().expect("save the state")).expect("write the state"),
+            "prompts" => system.set_prompts(match words.get(1).copied() {
+                Some("keyboard") => sample_prompts::sample(false),
+                Some("controller") => sample_prompts::sample(true),
+                _ => zakuro_core::services::prompts::Prompts::default(),
+            }),
             "load" => system.load_state(&std::fs::read(words[1]).expect("read the state")).expect("load the state"),
             "scan" => scan(&mut system),
             "peek" => {
