@@ -311,6 +311,86 @@ impl ListLens {
     }
 }
 
+/// The native bottom-screen rectangle a model's shown meshes cover, for the
+/// meshes whose node `owned` takes: each mesh's shape box (CGFX `SOBJ`
+/// shape `+0x1C`, an oriented box) carried by its bone's world matrix and
+/// the bottom camera. None when no owned mesh shows.
+fn mesh_rect(system: &mut System, model: u32, lens: &ListLens, owned: impl Fn(&str) -> bool) -> Option<[f32; 4]> {
+    let cmdl = read_word(system, model + 8);
+    let dictionary = read_word(system, cmdl + 0xD0);
+    let skeleton = read_word(system, model + MODEL_SKELETON);
+    if cmdl == 0 || dictionary == 0 || !system.memory.is_readable(skeleton, SKELETON_WORLD + 4) { return None; }
+    let dictionary = cmdl + 0xD0 + dictionary;
+    let flags = read_word(system, model + MODEL_NODES);
+    let node_count = read_word(system, dictionary + 8).min(read_word(system, model + MODEL_NODES + 4).wrapping_sub(flags) / 8);
+    let (shape_count, shapes) = (read_word(system, cmdl + 0xC4), read_word(system, cmdl + 0xC8));
+    let shapes = cmdl + 0xC8 + shapes;
+    let world = read_word(system, skeleton + SKELETON_WORLD);
+    let float = |system: &mut System, at: u32| f32::from_bits(read_word(system, at));
+    let mut rect: Option<[f32; 4]> = None;
+    for mesh in super::model_meshes(system, model) {
+        if read_word(system, mesh + 0x24) & 0xFF == 0 { continue; }
+        let node = read_word(system, mesh + 0x24) >> 16;
+        if node >= node_count || read_word(system, flags + node * 8 + 4) & 0xFF == 0 { continue; }
+        let at = dictionary + 0x24 + node * 0x10;
+        let name_at = at.wrapping_add(read_word(system, at));
+        if !owned(&c_string(system, name_at)) { continue; }
+        let shape = read_word(system, mesh + 0x18);
+        if shape >= shape_count { continue; }
+        let shape = (shapes + shape * 4).wrapping_add(read_word(system, shapes + shape * 4));
+        let obb = (shape + 0x1C).wrapping_add(read_word(system, shape + 0x1C));
+        let subs = (shape + 0x30).wrapping_add(read_word(system, shape + 0x30));
+        let sub = subs.wrapping_add(read_word(system, subs));
+        let bones = (sub + 4).wrapping_add(read_word(system, sub + 4));
+        if !system.memory.is_readable(obb, 0x40) || read_word(system, sub) == 0 { continue; }
+        let bone = read_word(system, bones);
+        let matrix = world + bone * 48;
+        if bone > 255 || !system.memory.is_readable(matrix, 48) { continue; }
+        let m: Vec<f32> = (0..12).map(|index| float(system, matrix + index * 4)).collect();
+        let center: Vec<f32> = (0..3).map(|index| float(system, obb + 4 + index * 4)).collect();
+        let axes: Vec<f32> = (0..9).map(|index| float(system, obb + 0x10 + index * 4)).collect();
+        let size: Vec<f32> = (0..3).map(|index| float(system, obb + 0x34 + index * 4)).collect();
+        for corner in 0..4 {
+            let sign = [if corner & 1 == 0 { -0.5 } else { 0.5 }, if corner & 2 == 0 { -0.5 } else { 0.5 }];
+            let local: Vec<f32> = (0..3).map(|row| center[row]
+                + axes[row * 3] * size[0] * sign[0] + axes[row * 3 + 1] * size[1] * sign[1]).collect();
+            let at: [f32; 3] = std::array::from_fn(|row| (0..3).map(|column| m[row * 4 + column] * local[column]).sum::<f32>() + m[row * 4 + 3]);
+            let [x, y] = lens.pixel(at);
+            if !(x.is_finite() && y.is_finite()) { continue; }
+            rect = Some(match rect {
+                None => [x, y, x, y],
+                Some([a, b, c, d]) => [a.min(x), b.min(y), c.max(x), d.max(y)],
+            });
+        }
+    }
+    rect.map(|[left, top, right, bottom]| [left, top, right - left, bottom - top])
+}
+
+/// HARNESS: the native rectangle each bottom node layer of the shown
+/// Screen covers, by `mesh_rect`.
+pub fn layer_rects(system: &mut System) -> Vec<(String, Option<[f32; 4]>)> {
+    let Some(mouse) = system.aim_mouse.as_ref() else { return Vec::new() };
+    let Some(bottom) = mouse.bottom_scene else { return Vec::new() };
+    let Some(index) = mouse.menu_top.drawn.map(|(_, index, ..)| index) else { return Vec::new() };
+    let Some(lens) = ListLens::of(system, bottom) else { return Vec::new() };
+    let mut out = Vec::new();
+    for &(layer, owner, _) in bottom_layers(index) {
+        let mut rect: Option<[f32; 4]> = None;
+        for (_, model, name, _) in super::scene_models(system) {
+            let owns = owner.strip_suffix('*').map_or(owner == name, |prefix| name.starts_with(prefix));
+            if !owns { continue; }
+            if let Some(r) = mesh_rect(system, model, &lens, |node| top_layer(bottom_layers(index), &name, node) == Some(layer)) {
+                rect = Some(match rect {
+                    None => r,
+                    Some(o) => { let (l, t) = (o[0].min(r[0]), o[1].min(r[1])); [l, t, (o[0] + o[2]).max(r[0] + r[2]) - l, (o[1] + o[3]).max(r[1] + r[3]) - t] }
+                });
+            }
+        }
+        out.push((layer.to_owned(), rect));
+    }
+    out
+}
+
 /// Open chapters, by number, with their thumbnails' centers on the bottom
 /// screen as the game has scrolled them this frame. Locked chapters' mesh
 /// nodes are hidden by the game.
@@ -846,6 +926,19 @@ pub fn layer_textures(system: &mut System, index: usize) -> Result<Vec<LayerText
     if found.is_empty() { return Err(format!("found no texture drawn for {label}")); }
     Ok(found)
 }
+
+/// Whether a bottom node layer is drawn whole. Its mesh nodes already keep
+/// it from showing the others, and its words are the strings anchored in
+/// its box (`font`), so its box is only where it is placed and taken hold
+/// of, never a cut: art reaching past it (a button's frame, a weapon's
+/// taller stats card) still shows. Only the game's own cuts (a scrolling
+/// list's window) apply. Chapter Results is the first Screen drawn so.
+fn uncut_layer(index: usize, part: &Part) -> bool {
+    UNCUT_BOARDS.contains(&index) && !part.top && bottom_layer_part(index, part.model)
+}
+
+/// Screens whose bottom node layers are drawn whole (`uncut_layer`).
+const UNCUT_BOARDS: &[usize] = &[28];
 
 /// Whether a bottom Board part is one of the Screen's node layers.
 fn bottom_layer_part(index: usize, model: Option<&str>) -> bool {
@@ -2410,7 +2503,8 @@ pub(super) fn scissor(system: &mut System) {
         Some(Drawing::MenuTop(step)) => (!mouse.menu_top.file_select()
             || mouse.menu_top.part(step / 8).is_some_and(|part| part.file_book().is_some()))
             && mouse.menu_top.part(step / 8).is_some_and(|part| part.idol.is_some_and(IdolGroup::uncut)
-                || part.model.is_some() && !mouse.menu_top.active.is_some_and(|(index, ..)| part_cut(index, part.model))),
+                || part.model.is_some() && !mouse.menu_top.active.is_some_and(|(index, ..)| part_cut(index, part.model))
+                || mouse.menu_top.active.is_some_and(|(index, ..)| uncut_layer(index, part))),
         _ => false,
     } };
     let mut rect = if isolated { [0.0, 0.0, 400.0 * widen, 240.0] } else { place.to };
@@ -3166,6 +3260,17 @@ mod tests {
                 assert!(placed.iter().zip(back).all(|(a, b)| (a - b).abs() < 0.01), "{to:?} at {width}");
             }
         }
+    }
+
+    #[test]
+    fn chapter_results_bottom_layers_are_drawn_whole() {
+        let parts = layout(28, 400.0).1;
+        let whole: Vec<_> = parts.iter().filter(|part| uncut_layer(28, part)).filter_map(|part| part.model).collect();
+        assert_eq!(whole, ["Background", "Results board", "Message bar", "Message", "Take", "Window", "Heart chip", "Convert to Hearts"]);
+        assert!(parts.iter().filter(|part| part.top).all(|part| !uncut_layer(28, part)));
+        // the other Boards keep their cuts until they are moved over
+        let fuse = layout(17, 400.0).1;
+        assert!(fuse.iter().all(|part| !uncut_layer(17, part)));
     }
 
     #[test]

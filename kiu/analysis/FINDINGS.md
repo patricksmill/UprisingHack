@@ -1068,6 +1068,16 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   Convert to Hearts (`base`, `cursor`). The chip's number (+270) is a glyph,
   so only a layer `board_text_now` lets replay words shows it.
   `Bt0004`, `Bt0005`, `Bt0011`, `Bt0015`..`Bt0018` drew nothing on this page.
+- A menu mesh's bounds: mesh (`SOBJ`) `+0x18` shape index into the CMDL's
+  shape list (`+0xC4` count, `+0xC8` table); shape `+0x1C` is a relative
+  pointer to an oriented box: `+4` center, `+0x10` 3x3 axes, `+0x34` size
+  (whole, not half). Shape `+0x30` points to the submesh list; a submesh's
+  `+4` points to its bone indices, the first being the mesh's bone, whose
+  matrix at skeleton `+0x40` (48 bytes each) carries the box. The skeleton
+  also keeps 64-byte locals at `+0x30` and identity matrices at `+0x50`;
+  the model's own world matrix is at `+0x8C`. Chapter Results' Take quad
+  projects to native 173..303 x 198..243, wider than its art; the chip's
+  `heart` and `fukuro` meshes are shown but invisible (y 104 and 187).
 - Harvested child Control identities from native hits:
   Other: `MenOptionOtherBt0001` name/49C14849, 0002 caption/F28BAA60,
   0004 itunomani/9E610C53, 9999 return/928BEAA4.

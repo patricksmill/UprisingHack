@@ -124,6 +124,12 @@ each layer named in `group` with its native box (Idols: `IDOLS_BOTTOM`).
   part, so renumber that Screen's `part`, `parts` and `hidden` entries in
   `kiu/menu-layout.toml` and the user's desktop `menu-layout.toml`.
 
+- Bottom node layers of a Screen in `UNCUT_BOARDS` are drawn whole (ADR
+  0008); there the box is only the frame and the word anchor area. kiutrace
+  `rects` prints each bottom node layer's projected mesh boxes: a guide for
+  writing boxes, padded by transparent margins and thrown off by invisible
+  or off-screen meshes.
+
 ## Draws that are not models
 
 Something drawn in every layer's replay that no node or model flag hides
