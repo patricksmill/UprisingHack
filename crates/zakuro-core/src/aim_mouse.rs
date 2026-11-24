@@ -5551,4 +5551,3 @@ mod tests {
         }
     }
 }
-#[allow(dead_code)] pub fn zz_bench_probe() -> u32 { 7 }
