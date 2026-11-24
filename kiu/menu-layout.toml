@@ -24,8 +24,28 @@ hidden = [
     11,
 ],
     [
-    23,
-    1,
+    28,
+    0,
+],
+    [
+    28,
+    2,
+],
+    [
+    15,
+    0,
+],
+    [
+    15,
+    4,
+],
+    [
+    4,
+    5,
+],
+    [
+    2,
+    11,
 ],
 ]
 
@@ -184,7 +204,7 @@ screen = 13
 part = 4
 to = [
     35.22222,
-    16.222229,
+    20.222229,
     108.40501,
     59.13,
 ]
@@ -213,30 +233,30 @@ to = [
 screen = 3
 part = 2
 to = [
-    11.883321,
-    166.63,
-    120.450005,
-    50.370003,
+    13.922468,
+    149.21922,
+    95.166565,
+    39.79693,
 ]
 
 [[layers]]
 screen = 3
 part = 1
 to = [
-    -3.3333335,
-    122.42094,
-    145.63501,
-    55.845,
+    2.0320456,
+    114.290016,
+    115.065025,
+    44.12268,
 ]
 
 [[layers]]
 screen = 3
 part = 0
 to = [
-    7.888331,
-    77.333336,
-    143.445,
-    56.940002,
+    10.737353,
+    78.66667,
+    113.334724,
+    44.98783,
 ]
 
 [[layers]]
@@ -253,10 +273,10 @@ to = [
 screen = 5
 part = 5
 to = [
-    109.666664,
-    19.0,
-    192.0,
-    34.8,
+    7.1144166,
+    89.44444,
+    137.39777,
+    24.903345,
 ]
 
 [[layers]]
@@ -273,10 +293,10 @@ to = [
 screen = 5
 part = 7
 to = [
-    107.0,
-    53.13333,
-    192.0,
-    28.8,
+    7.108889,
+    113.79121,
+    137.39777,
+    20.609665,
 ]
 
 [[layers]]
@@ -293,10 +313,10 @@ to = [
 screen = 5
 part = 4
 to = [
-    101.666664,
-    159.06667,
-    192.0,
-    27.6,
+    7.0977936,
+    155.24905,
+    137.39777,
+    19.750929,
 ]
 
 [[layers]]
@@ -323,8 +343,8 @@ to = [
 screen = 8
 part = 3
 to = [
-    275.66666,
-    212.59999,
+    282.36508,
+    213.26666,
     120.0,
     26.4,
 ]
@@ -373,30 +393,30 @@ to = [
 screen = 4
 part = 0
 to = [
-    0.0,
-    70.33333,
-    192.0,
-    36.0,
+    7.9859257,
+    83.33333,
+    115.600006,
+    21.675001,
 ]
 
 [[layers]]
 screen = 4
 part = 1
 to = [
-    -0.33333588,
-    105.333336,
-    192.0,
-    36.0,
+    7.8024364,
+    104.40625,
+    115.600006,
+    21.675001,
 ]
 
 [[layers]]
 screen = 4
 part = 2
 to = [
-    -0.6666641,
-    141.0,
-    192.0,
-    36.0,
+    7.618949,
+    125.88054,
+    115.600006,
+    21.675001,
 ]
 
 [[layers]]
@@ -643,10 +663,10 @@ to = [
 screen = 1
 part = 3
 to = [
-    5.0570445,
-    211.64444,
-    30.72,
-    24.0,
+    5.070673,
+    217.82878,
+    23.108503,
+    18.053518,
 ]
 
 [[layers]]
@@ -743,10 +763,10 @@ to = [
 screen = 5
 part = 11
 to = [
-    4.193692,
-    151.53714,
-    137.87286,
-    26.712866,
+    289.12323,
+    -2.2406363,
+    1165.8152,
+    240.93509,
 ]
 
 [[layers]]
@@ -1229,6 +1249,283 @@ to = [
     21.0,
 ]
 
+[[layers]]
+screen = 28
+part = 7
+to = [
+    0.004943111,
+    0.33102417,
+    399.99,
+    240.23785,
+]
+
+[[layers]]
+screen = 28
+part = 4
+to = [
+    305.6898,
+    213.81552,
+    65.35002,
+    24.78794,
+]
+
+[[layers]]
+screen = 28
+part = 2
+to = [
+    80.80284,
+    192.53703,
+    171.26213,
+    38.308636,
+]
+
+[[layers]]
+screen = 28
+part = 3
+to = [
+    116.86522,
+    202.53703,
+    171.26213,
+    38.308636,
+]
+
+[[layers]]
+screen = 28
+part = 6
+to = [
+    75.593414,
+    24.331024,
+    254.27155,
+    152.56293,
+]
+
+[[layers]]
+screen = 28
+part = 9
+to = [
+    75.593414,
+    24.331024,
+    254.27155,
+    152.56293,
+]
+
+[[layers]]
+screen = 28
+part = 10
+to = [
+    75.593414,
+    24.331024,
+    254.27155,
+    152.56293,
+]
+
+[[layers]]
+screen = 28
+part = 11
+to = [
+    75.593414,
+    24.331024,
+    254.27155,
+    152.56293,
+]
+
+[[layers]]
+screen = 23
+part = 8
+to = [
+    -4.0,
+    188.99998,
+    426.79086,
+    53.348858,
+]
+
+[[layers]]
+screen = 15
+part = 0
+to = [
+    92.46539,
+    32.39653,
+    180.27592,
+    135.20694,
+]
+
+[[layers]]
+screen = 15
+part = 7
+to = [
+    3.7552743,
+    215.43536,
+    24.287365,
+    20.239471,
+]
+
+[[layers]]
+screen = 15
+part = 9
+to = [
+    0.0,
+    75.331024,
+    152.22993,
+    91.33796,
+]
+
+[[layers]]
+screen = 15
+part = 12
+to = [
+    0.0,
+    74.331024,
+    152.22993,
+    91.33796,
+]
+
+[[layers]]
+screen = 15
+part = 13
+to = [
+    0.0,
+    74.331024,
+    152.22993,
+    91.33796,
+]
+
+[[layers]]
+screen = 15
+part = 5
+to = [
+    171.95638,
+    52.39653,
+    180.27592,
+    12.39397,
+]
+
+[[layers]]
+screen = 5
+part = 8
+to = [
+    267.69684,
+    206.8,
+    132.0,
+    25.2,
+]
+
+[[layers]]
+screen = 5
+part = 6
+to = [
+    6.8590384,
+    134.16235,
+    137.39777,
+    20.609665,
+]
+
+[[layers]]
+screen = 4
+part = 9
+to = [
+    0.0,
+    0.0,
+    400.0,
+    240.0,
+]
+
+[[layers]]
+screen = 3
+part = 3
+to = [
+    3.736354,
+    216.56056,
+    22.083994,
+    18.550554,
+]
+
+[[orders]]
+screen = 24
+parts = [
+    10,
+    11,
+    12,
+    9,
+    13,
+    8,
+    7,
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    3,
+]
+
+[[orders]]
+screen = 4
+parts = [
+    6,
+    7,
+    9,
+    8,
+    10,
+    5,
+    4,
+    3,
+    2,
+    1,
+    0,
+]
+
+[[orders]]
+screen = 5
+parts = [
+    11,
+    12,
+    14,
+    13,
+    15,
+    10,
+    9,
+    0,
+    1,
+    2,
+    8,
+    3,
+    4,
+    6,
+    7,
+    5,
+]
+
+[[orders]]
+screen = 3
+parts = [
+    6,
+    7,
+    9,
+    8,
+    10,
+    5,
+    4,
+    1,
+    2,
+    3,
+    0,
+]
+
+[[orders]]
+screen = 11
+parts = [
+    5,
+    6,
+    8,
+    7,
+    9,
+    4,
+    3,
+    0,
+    1,
+    2,
+]
+
 [pause.span]
 from = [
     0.0,
@@ -1268,15 +1565,15 @@ visible = true
 [pause.left]
 from = [
     0.0,
-    0.0,
-    320.0,
-    240.0,
+    55.0,
+    148.0,
+    56.0,
 ]
 to = [
     0.0,
-    0.0,
-    320.0,
-    240.0,
+    55.0,
+    119.222206,
+    45.11111,
 ]
 anchor = 0.0
 anchor_y = 0.0
@@ -1285,16 +1582,16 @@ visible = true
 
 [pause.right]
 from = [
-    0.0,
-    0.0,
-    320.0,
-    240.0,
+    172.0,
+    55.0,
+    148.0,
+    56.0,
 ]
 to = [
-    80.0,
-    0.0,
-    320.0,
-    240.0,
+    276.83832,
+    55.0,
+    123.92064,
+    46.88889,
 ]
 anchor = 1.0
 anchor_y = 0.0
@@ -1303,18 +1600,216 @@ visible = true
 
 [pause.corner]
 from = [
+    193.0,
+    204.0,
+    127.0,
+    36.0,
+]
+to = [
+    310.336,
+    213.77777,
+    89.624626,
+    25.405405,
+]
+anchor = 1.0
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.band]
+from = [
     0.0,
     0.0,
     320.0,
     240.0,
 ]
 to = [
-    80.0,
     0.0,
-    320.0,
+    0.0,
+    400.0,
     240.0,
 ]
-anchor = 1.0
+anchor = 0.0
+anchor_y = 0.0
+scale = "Stretch"
+visible = true
+
+[pause.options]
+from = [
+    26.0,
+    119.0,
+    268.0,
+    30.0,
+]
+to = [
+    66.0,
+    119.0,
+    268.0,
+    30.0,
+]
+anchor = 0.5
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.loot]
+from = [
+    3.0,
+    157.0,
+    71.0,
+    36.0,
+]
+to = [
+    -5.125014,
+    199.22223,
+    71.00001,
+    36.0,
+]
+anchor = 2.2112677
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.row1]
+from = [
+    26.0,
+    47.0,
+    268.0,
+    30.0,
+]
+to = [
+    66.0,
+    47.0,
+    268.0,
+    30.0,
+]
+anchor = 0.5
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.row2]
+from = [
+    26.0,
+    74.0,
+    268.0,
+    30.0,
+]
+to = [
+    66.0,
+    74.0,
+    268.0,
+    30.0,
+]
+anchor = 0.5
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.row3]
+from = [
+    26.0,
+    101.0,
+    268.0,
+    30.0,
+]
+to = [
+    66.0,
+    101.0,
+    268.0,
+    30.0,
+]
+anchor = 0.5
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.row4]
+from = [
+    26.0,
+    128.0,
+    268.0,
+    30.0,
+]
+to = [
+    66.0,
+    128.0,
+    268.0,
+    30.0,
+]
+anchor = 0.5
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.back]
+from = [
+    2.0,
+    197.0,
+    47.0,
+    41.0,
+]
+to = [
+    42.0,
+    197.0,
+    47.0,
+    41.0,
+]
+anchor = 3.3617022
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.hint_bar]
+from = [
+    0.0,
+    186.0,
+    400.0,
+    54.0,
+]
+to = [
+    0.0,
+    186.0,
+    400.0,
+    54.0,
+]
+anchor = 0.0
+anchor_y = 0.0
+scale = "Fixed"
+visible = true
+
+[pause.hint]
+from = [
+    90.0,
+    205.0,
+    220.0,
+    16.0,
+]
+to = [
+    90.0,
+    205.0,
+    220.0,
+    16.0,
+]
+anchor = 0.5
+anchor_y = 0.0
+scale = "Narrow"
+visible = true
+
+[pause.label]
+from = [
+    0.0,
+    5.0,
+    172.0,
+    34.0,
+]
+to = [
+    0.0,
+    5.0,
+    172.0,
+    34.0,
+]
+anchor = 0.0
 anchor_y = 0.0
 scale = "Narrow"
 visible = true
@@ -1889,6 +2384,12 @@ from = 1
 direction = "Down"
 to = 2
 
+[[navigation]]
+screen = 3
+from = 3
+direction = "Up"
+to = 2
+
 [[cauldron]]
 from = [
     36.0,
@@ -2142,6 +2643,18 @@ scale = "Narrow"
 visible = true
 
 [[folders]]
+screen = 28
+name = "Folder 1"
+parts = [
+    6,
+    9,
+    10,
+    11,
+]
+linked = false
+collapsed = false
+
+[[folders]]
 screen = 8
 name = "Volume Sliders"
 parts = [
@@ -2151,3 +2664,80 @@ parts = [
 ]
 linked = true
 collapsed = true
+
+[[folders]]
+screen = 5
+name = "Toggles"
+parts = [
+    4,
+    5,
+    6,
+    7,
+]
+linked = true
+collapsed = false
+
+[[names]]
+screen = 4
+part = 0
+name = "Profile"
+
+[[names]]
+screen = 4
+part = 1
+name = "Subtitles"
+
+[[names]]
+screen = 4
+part = 2
+name = "SpotPass"
+
+[[names]]
+screen = 4
+part = 3
+name = "Back"
+
+[[names]]
+screen = 4
+part = 4
+name = "Hint"
+
+[[names]]
+screen = 5
+part = 4
+name = "Autofire"
+
+[[names]]
+screen = 5
+part = 7
+name = "ShotHoming"
+
+[[names]]
+screen = 5
+part = 6
+name = "AimAssist"
+
+[[names]]
+screen = 5
+part = 3
+name = "Back"
+
+[[names]]
+screen = 5
+part = 8
+name = "TryIt"
+
+[[names]]
+screen = 5
+part = 5
+name = "GuideArrow"
+
+[[names]]
+screen = 13
+part = 4
+name = "Redeem Hearts"
+
+[[names]]
+screen = 13
+part = 3
+name = "Back"
