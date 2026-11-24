@@ -284,6 +284,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         spent: Spent::default(),
         paused: false,
         fast_forward_key: false,
+        texture_watch: TextureWatch::default(),
         fast_forwarding: false,
         next_shown: Instant::now(),
         display_step: Duration::from_nanos(1_000_000_000_000 / 60_000),
@@ -336,8 +337,9 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
     }
 }
 
-/// opens a folder in the system's file manager
-fn show_folder(folder: &Path) {
+/// opens a folder in the system's file manager, or a file in the program
+/// the system opens its kind with
+fn show_folder(path: &Path) {
     let program = if cfg!(windows) {
         "explorer"
     } else if cfg!(target_os = "macos") {
@@ -345,11 +347,48 @@ fn show_folder(folder: &Path) {
     } else {
         "xdg-open"
     };
-    match std::process::Command::new(program).arg(folder).spawn() {
+    match std::process::Command::new(program).arg(path).spawn() {
         // waited for so it leaves nothing behind when it closes (no zombies here)
         Ok(mut child) => drop(std::thread::spawn(move || child.wait())),
-        Err(error) => log::warn!("showing {}: {error}", folder.display()),
+        Err(error) => log::warn!("opening {}: {error}", path.display()),
     }
+}
+
+/// how many of a layer's textures the menu editor opens one by one; more
+/// and it shows their folder instead
+const OPENED_TEXTURES: usize = 4;
+
+/// the texture pack's folder the menu editor writes textures into, one
+/// folder per model inside it
+const EDITED_TEXTURES: &str = "menu-editor";
+
+/// the pictures the menu editor opened from the texture pack, and when each
+/// last changed: once they change and then stay put for a check, the pack
+/// is read again so the game shows them.
+#[derive(Default)]
+struct TextureWatch {
+    /// the running game's texture pack folder
+    pack: PathBuf,
+    files: Vec<(PathBuf, Option<std::time::SystemTime>)>,
+    checked: Option<Instant>,
+    /// a file changed at the last check
+    changed: bool,
+}
+
+/// a picture named name anywhere in dir, as a texture pack finds them
+fn find_named(dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut folders = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            folders.push(path);
+        } else if path.file_name().is_some_and(|file| file.eq_ignore_ascii_case(name)) {
+            return Some(path);
+        }
+    }
+    if depth == 0 { return None; }
+    folders.into_iter().find_map(|folder| find_named(&folder, name, depth - 1))
 }
 
 /// the system's place for a program's data
@@ -561,6 +600,8 @@ struct App {
     /// the editor's Scripted Menu layer orders, by screen, kept like the
     /// hidden parts.
     orders: Vec<(usize, Vec<usize>)>,
+    /// textures the menu editor opened, reloaded into the game as they change.
+    texture_watch: TextureWatch,
     game: Option<Running>,
     library: Library,
     menus: Menus,
@@ -2030,6 +2071,108 @@ impl App {
         self.next_recompile();
     }
 
+    /// writes a Scripted Menu layer's textures into the running game's
+    /// texture pack folder at 4x and opens them, to be painted over at a
+    /// higher resolution; one the pack has already (maybe painted over) is
+    /// opened as it is. They are watched, and reloaded once changed.
+    fn open_layer_textures(&mut self, index: usize) {
+        let Some(game) = self.game.as_mut() else { return };
+        let (Some(data_dir), Some(program_id)) = (self.data_dir.as_ref(), game.system.title.as_ref().map(|title| title.program_id())) else {
+            self.menus.message = Some("Opening a texture needs a data folder and a running game.".to_owned());
+            return;
+        };
+        let textures = match zakuro_core::aim_mouse::layer_textures(&mut game.system, index) {
+            Ok(textures) => textures,
+            Err(error) => {
+                self.menus.message = Some(format!("No texture to open: {error}."));
+                return;
+            }
+        };
+        let pack = zakuro_core::mods::textures(data_dir, program_id);
+        let upright = zakuro_gpu::pack::upright(&pack);
+        if self.texture_watch.pack != pack {
+            self.texture_watch = TextureWatch { pack: pack.clone(), ..TextureWatch::default() };
+        }
+        let (mut files, mut errors, mut written) = (Vec::new(), Vec::new(), 0);
+        for texture in &textures {
+            let Some(name) = zakuro_gpu::pack::export_name(&texture.data, texture.format, texture.width, texture.height) else { continue };
+            let path = match find_named(&pack, &name, 8) {
+                Some(path) => path,
+                None => match zakuro_gpu::pack::export(&pack.join(EDITED_TEXTURES).join(&texture.model), &texture.data, texture.format, texture.width, texture.height, 4, upright) {
+                    Ok(path) => {
+                        written += 1;
+                        path
+                    }
+                    Err(error) => {
+                        errors.push(format!("{name}: {error}"));
+                        continue;
+                    }
+                },
+            };
+            if !files.contains(&path) { files.push(path); }
+        }
+        for path in &files {
+            if !self.texture_watch.files.iter().any(|(watched, _)| watched == path) {
+                let modified = std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
+                self.texture_watch.files.push((path.clone(), modified));
+            }
+        }
+        if files.len() > OPENED_TEXTURES {
+            let folders: Vec<&Path> = files.iter().filter_map(|path| path.parent()).fold(Vec::new(), |mut folders, folder| {
+                if !folders.contains(&folder) { folders.push(folder); }
+                folders
+            });
+            folders.into_iter().take(OPENED_TEXTURES).for_each(show_folder);
+        } else {
+            files.iter().for_each(|path| show_folder(path));
+        }
+        let shown = game.system.config.texture_packs && game.system.gpu.draws_on_gpu();
+        let mut lines = vec![match (files.len(), written) {
+            (0, _) => "No texture was written.".to_owned(),
+            (1, 1) => format!("Wrote and opened {}.", files[0].display()),
+            (1, _) => format!("Opened {}, already in the texture pack.", files[0].display()),
+            (count, _) if count > OPENED_TEXTURES => format!("This layer draws {count} textures ({written} new); their folder is open."),
+            (count, _) => format!("Opened {count} textures ({written} new)."),
+        }];
+        if !files.is_empty() {
+            lines.push(if shown {
+                "Export over a file at any size and the game shows it in a second.".to_owned()
+            } else {
+                "The game shows texture pack pictures only with texture packs on and the 3D drawn on the GPU.".to_owned()
+            });
+        }
+        lines.extend(errors);
+        self.menus.message = Some(lines.join("\n"));
+    }
+
+    /// reads the texture pack again once a picture the menu editor opened
+    /// changed and then stayed put for a check, so a half-written export is
+    /// not read.
+    fn watch_textures(&mut self) {
+        let watch = &mut self.texture_watch;
+        if watch.files.is_empty() || watch.checked.is_some_and(|checked| checked.elapsed() < Duration::from_millis(500)) { return; }
+        watch.checked = Some(Instant::now());
+        let mut changed = false;
+        for (path, seen) in &mut watch.files {
+            let modified = std::fs::metadata(&*path).and_then(|metadata| metadata.modified()).ok();
+            if modified != *seen {
+                *seen = modified;
+                changed = true;
+            }
+        }
+        if changed {
+            watch.changed = true;
+            return;
+        }
+        if !std::mem::take(&mut watch.changed) { return; }
+        let Some(game) = self.game.as_mut() else { return };
+        if !game.system.config.texture_packs { return; }
+        let pack = zakuro_gpu::pack::Pack::open(&watch.pack).map(std::sync::Arc::new);
+        if game.system.gpu.set_texture_pack(pack) {
+            self.menus.toast = Some(("Texture pack reloaded".to_owned(), Instant::now()));
+        }
+    }
+
     fn act(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         match action {
             Action::SaveLayout => {
@@ -2054,6 +2197,7 @@ impl App {
                     Err(error) => format!("Could not save {}: {error}", path.display()),
                 });
             }
+            Action::EditorOpenTexture(index) => self.open_layer_textures(index),
             Action::EditorNavigationLink(from, direction, to) => {
                 if let Some(mouse) = self.game.as_mut().and_then(|game| game.system.aim_mouse.as_mut()) {
                     mouse.set_editor_navigation_link(from, direction, to);
@@ -2272,6 +2416,7 @@ impl App {
         }
         self.library.poll();
         self.poll_jobs();
+        self.watch_textures();
         self.poll_gamepads();
         self.update_prompts();
         // a room that went away takes the game's local wireless with it

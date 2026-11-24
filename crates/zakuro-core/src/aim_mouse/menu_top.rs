@@ -652,6 +652,14 @@ const MTOB_BORDER: u32 = 0x2F0;
 const MTOB_SAMPLER_HEADER: u32 = 0x2F4;
 const MTOB_SAMPLER: u32 = 0x2FC;
 const SAMPLER_HEADER: u32 = 0x804F_0081;
+/// That header writes registers 0x81..0x85, so after the sampler come the
+/// LOD word and the texture's physical address over 8; the format (register
+/// 0x8E) is the command before the border, its header just after it.
+const MTOB_SIZE: u32 = 0x2F8;
+const MTOB_ADDRESS: u32 = 0x304;
+const MTOB_FORMAT: u32 = 0x2E8;
+const MTOB_FORMAT_HEADER: u32 = 0x2EC;
+const FORMAT_HEADER: u32 = 0x000F_008E;
 const WRAP_BORDER: u32 = 0x1100;
 const WRAP_MASK: u32 = 0x7700;
 
@@ -714,6 +722,129 @@ fn place_textures(system: &mut System, index: usize, top: u32) {
             }
         }
     }
+}
+
+/// One texture a Scripted Menu layer draws with, as its material binds it
+/// to texture unit 0: the model and material it belongs to, where its
+/// largest size sits and that size's bytes, as the texture pack hashes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerTexture {
+    pub model: String,
+    pub material: String,
+    pub address: u32,
+    pub format: zakuro_gpu::texture::TextureFormat,
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+}
+
+/// Whether a Scripted Menu layer (its `Part::model` label) draws this
+/// model's mesh node: a node layer owns the nodes `top_layer` gives it, a
+/// texture layer its whole owner, any other the model it is named for or,
+/// on File Select, the node.
+fn layer_owns(screen: usize, label: &str, model: &str, node: &str) -> bool {
+    for layers in [top_layers(screen), bottom_layers(screen)] {
+        if layers.iter().any(|&(layer, ..)| layer == label) {
+            return top_layer(layers, model, node) == Some(label);
+        }
+    }
+    if let Some((_, owner, _)) = texture_layer(screen, Some(label)) { return owner == model; }
+    model == label || node == label
+}
+
+/// A scene model's mesh node names, by node index.
+fn node_names(system: &mut System, model: u32) -> Vec<String> {
+    let cmdl = read_word(system, model + 8);
+    let dictionary = read_word(system, cmdl + 0xD0);
+    if cmdl == 0 || dictionary == 0 { return Vec::new(); }
+    let dictionary = cmdl + 0xD0 + dictionary;
+    let count = read_word(system, dictionary + 8).min(512);
+    (0..count).map(|node| {
+        let name = dictionary + 0x24 + node * 0x10;
+        let name = name.wrapping_add(read_word(system, name));
+        c_string(system, name)
+    }).collect()
+}
+
+/// The texture a material binds to unit 0: its runtime copy's commands
+/// (the copy is what draws, and code rebinds some, such as the Armory's
+/// icons), else the file `MTOB`'s.
+fn material_texture(system: &mut System, material: u32) -> Option<(String, u32, u32, u32, u32)> {
+    if !system.memory.is_readable(material, 0x18) || read_word(system, material) != 0x00D1510C { return None; }
+    let mut mtob = None;
+    for offset in [0x14, 8] {
+        let at = read_word(system, material + offset);
+        if at != 0 && system.memory.is_readable(at, MTOB_ADDRESS + 4) && read_word(system, at + 4) == u32::from_le_bytes(*b"MTOB") {
+            mtob = Some(at);
+            break;
+        }
+    }
+    let mtob = mtob?;
+    if read_word(system, mtob + MTOB_SAMPLER_HEADER) != SAMPLER_HEADER || read_word(system, mtob + MTOB_FORMAT_HEADER) != FORMAT_HEADER { return None; }
+    // the runtime copy's name offset does not reach the file's strings
+    let file = read_word(system, material + 8);
+    let name = if file != 0 && system.memory.is_readable(file, 0x10) { read_word(system, file + 0xC) } else { 0 };
+    let name = if name == 0 { String::new() } else { c_string(system, (file + 0xC).wrapping_add(name)) };
+    let size = read_word(system, mtob + MTOB_SIZE);
+    let physical = read_word(system, mtob + MTOB_ADDRESS).wrapping_mul(8);
+    Some((name, physical, read_word(system, mtob + MTOB_FORMAT), (size >> 16) & 0x7FF, size & 0x7FF))
+}
+
+/// The textures Scripted Menu layer `index` (of `editor_layers`) draws
+/// with, read from its models' materials in the menu scene, for the layout
+/// editor to write into the texture pack. A layer with no model of its own
+/// (the backdrop, the hint, Chapter Select's cuts) has none.
+pub fn layer_textures(system: &mut System, index: usize) -> Result<Vec<LayerTexture>, String> {
+    use zakuro_gpu::texture::TextureFormat;
+    let mouse = system.aim_mouse.as_ref().ok_or("no menu is drawn")?;
+    let screen = mouse.editor_scripted_index().ok_or("textures open from a Scripted Menu's layers only")?;
+    let part = mouse.menu_top.parts.get(index).ok_or("that layer is gone")?;
+    let label = part.model.ok_or("this layer draws no model of its own, so it has no texture to open")?;
+    let bottom = mouse.bottom_scene.ok_or("no menu scene is drawn")?;
+    let scene = read_word(system, bottom + 0x40);
+    if scene == 0 { return Err("no menu scene is drawn".to_owned()); }
+    let layers = read_word(system, scene + SCENE_LAYERS);
+    let mut models = Vec::new();
+    for layer in 0..0x14 {
+        let list = read_word(system, layers + layer * LAYER_SIZE + 4);
+        if list == 0 { continue; }
+        let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
+        if end < start || end - start > 0x1000 { continue; }
+        for at in (start..end).step_by(4) {
+            let model = read_word(system, at);
+            if !models.contains(&model) { models.push(model); }
+        }
+    }
+    let mut found: Vec<LayerTexture> = Vec::new();
+    for model in models {
+        let name = model_name(system, model);
+        if name.is_empty() { continue; }
+        let nodes = node_names(system, model);
+        let mut materials = Vec::new();
+        for mesh in super::meshes_up_to(system, model, 512) {
+            let node = read_word(system, mesh + 0x26) as i16;
+            let node = usize::try_from(node).ok().and_then(|node| nodes.get(node)).map_or("", String::as_str);
+            let material = read_word(system, mesh + 0x1C);
+            if layer_owns(screen, label, &name, node) && !materials.contains(&material) { materials.push(material); }
+        }
+        let (start, end) = (read_word(system, model + 0x164), read_word(system, model + 0x168));
+        if start == 0 || end < start || end - start > 512 * 4 { continue; }
+        for material in materials.into_iter().filter(|&material| material < (end - start) / 4) {
+            let material = read_word(system, start + material * 4);
+            let Some((material, physical, format, width, height)) = material_texture(system, material) else { continue };
+            let format = TextureFormat::from_raw(format);
+            if matches!(format, TextureFormat::Unknown(_)) || !(1..=1024).contains(&width) || !(1..=1024).contains(&height) { continue; }
+            let address = system.virtual_address(physical);
+            if found.iter().any(|texture| (texture.address, texture.format, texture.width, texture.height) == (address, format, width, height)) { continue; }
+            let length = (width * height * format.bits_per_pixel()).div_ceil(8);
+            if !system.memory.is_readable(address, length) { continue; }
+            let mut data = vec![0; length as usize];
+            system.memory.read_bytes(address, &mut data);
+            found.push(LayerTexture { model: name.clone(), material, address, format, width, height, data });
+        }
+    }
+    if found.is_empty() { return Err(format!("found no texture drawn for {label}")); }
+    Ok(found)
 }
 
 /// Whether a bottom Board part is one of the Screen's node layers.

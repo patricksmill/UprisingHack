@@ -72,19 +72,7 @@ impl Pack {
         if !dir.is_dir() {
             return None;
         }
-        let mut files = Vec::new();
-        let mut scanned = HashSet::from_iter(dir.canonicalize().ok());
-        scan(dir, 0, &mut scanned, &mut files);
-        // the pack.json at the top, or for a pack put in w/ the folders around it (like its title id's) the one nearest the top
-        let top = dir.join("pack.json");
-        let nested = files.iter().filter(|path| path.file_name().is_some_and(|name| name == "pack.json")).min_by_key(|path| path.components().count());
-        let config = match nested {
-            Some(nested) if !top.is_file() => {
-                log::info!("the texture pack's pack.json is {}", nested.display());
-                Config::read(nested)
-            }
-            _ => Config::read(&top),
-        };
+        let (files, config) = files_and_config(dir);
         let mut materials: HashMap<u64, Arc<Material>> = HashMap::new();
         let (mut duplicates, mut other_formats) = (0, 0);
         for path in files {
@@ -209,6 +197,74 @@ fn readers() -> &'static rayon::ThreadPool {
             .thread_name(|index| format!("texture pack {index}"))
             .build()
             .expect("threads to read texture packs on")
+    })
+}
+
+/// every file in a pack's folder, and its pack.json read:
+/// the one at the top, or for a pack put in w/ the folders around it (like its title id's) the one nearest the top
+fn files_and_config(dir: &Path) -> (Vec<PathBuf>, Config) {
+    let mut files = Vec::new();
+    let mut scanned = HashSet::from_iter(dir.canonicalize().ok());
+    scan(dir, 0, &mut scanned, &mut files);
+    let top = dir.join("pack.json");
+    let nested = files.iter().filter(|path| path.file_name().is_some_and(|name| name == "pack.json")).min_by_key(|path| path.components().count());
+    let config = match nested {
+        Some(nested) if !top.is_file() => {
+            log::info!("the texture pack's pack.json is {}", nested.display());
+            Config::read(nested)
+        }
+        _ => Config::read(&top),
+    };
+    (files, config)
+}
+
+/// are the pack's PNGs in dir stored top row first, as `export` writes them for it
+pub fn upright(dir: &Path) -> bool {
+    files_and_config(dir).1.upright
+}
+
+/// the name a pack gives the picture replacing a texture of these bytes, Citra's for a dumped one,
+/// none for a format no pack has
+pub fn export_name(data: &[u8], format: TextureFormat, width: u32, height: u32) -> Option<String> {
+    let laid_out = hash(Hashing::Rows, data, format, width, height, &mut Vec::new())?;
+    let number = match format {
+        TextureFormat::Unknown(number) => number,
+        _ => (0..14).find(|&number| TextureFormat::from_raw(number) == format).unwrap_or(0),
+    };
+    Some(format!("tex1_{width}x{height}_{laid_out:016X}_{number}_mip0.png"))
+}
+
+/// writes a texture of these bytes (its largest size) into dir as the pack picture replacing it,
+/// at scale times its size, each texel a square, top row first unless the pack stores them flipped
+/// gives the file written
+pub fn export(dir: &Path, data: &[u8], format: TextureFormat, width: u32, height: u32, scale: u32, upright: bool) -> Result<PathBuf, String> {
+    let name = export_name(data, format, width, height).ok_or_else(|| format!("a {format:?} texture has no pack name"))?;
+    let texels: Vec<[u8; 4]> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .map(|(x, y)| crate::texture::sample_texel(data, format, width, x, y))
+        .collect();
+    let path = dir.join(name);
+    write_scaled(&path, &texels, width, height, scale, upright)?;
+    Ok(path)
+}
+
+/// writes texels (rows from the top) as an RGBA PNG scale times their size, flipped when not upright
+fn write_scaled(path: &Path, texels: &[[u8; 4]], width: u32, height: u32, scale: u32, upright: bool) -> Result<(), String> {
+    let scale = scale.clamp(1, 8);
+    let (wide, high) = (width * scale, height * scale);
+    let mut scaled = Vec::with_capacity((wide * high * 4) as usize);
+    for row in 0..high {
+        let y = (if upright { row } else { high - 1 - row }) / scale;
+        for x in 0..wide {
+            scaled.extend_from_slice(&texels[(y * width + x / scale) as usize]);
+        }
+    }
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).and_then(|()| std::fs::File::create(path)).map_err(|error| error.to_string()).and_then(|file| {
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), wide, high);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header().and_then(|mut writer| writer.write_image_data(&scaled)).map_err(|error| error.to_string())
     })
 }
 
@@ -673,20 +729,7 @@ pub(crate) fn record(data: &[u8], texels: &[[u8; 4]], format: TextureFormat, wid
     }
     if let Some(dump) = dump.as_ref().filter(|_| width.is_power_of_two() && height.is_power_of_two()) {
         let path = dump.join(format!("tex1_{width}x{height}_{laid_out:016X}_{number}_mip0.png"));
-        let (wide, high) = (width * *scale, height * *scale);
-        let mut scaled = Vec::with_capacity((wide * high * 4) as usize);
-        for y in 0..high {
-            for x in 0..wide {
-                scaled.extend_from_slice(&texels[((y / *scale) * width + x / *scale) as usize]);
-            }
-        }
-        let written = std::fs::create_dir_all(dump).and_then(|()| std::fs::File::create(&path)).map_err(|error| error.to_string()).and_then(|file| {
-            let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), wide, high);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            encoder.write_header().and_then(|mut writer| writer.write_image_data(&scaled)).map_err(|error| error.to_string())
-        });
-        if let Err(error) = written {
+        if let Err(error) = write_scaled(&path, texels, width, height, *scale, true) {
             log::warn!("could not save {}, {error}", path.display());
         }
     }
@@ -893,6 +936,38 @@ mod tests {
                 let pack = Pack { hashing, materials: HashMap::from([(named, material(named))]) };
                 assert_eq!(pack.find(&data, format, 8, 8, &mut rows).map(|found| found.hash), Some(named));
             }
+        }
+    }
+
+    /// a texture exported into a pack's folder is the picture the pack then
+    /// finds for it, at the size it was exported, the right way up whichever
+    /// way the pack stores its pictures
+    #[test]
+    fn an_exported_texture_is_found_by_its_pack() {
+        let data: Vec<u8> = (0..256).map(|i| (i * 7 % 251) as u8).collect();
+        let format = TextureFormat::Rgba8;
+        for flip in [true, false] {
+            let dir = std::env::temp_dir().join(format!("zakuro-export-{}-{flip}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            if !flip {
+                std::fs::write(dir.join("pack.json"), "{\"options\": {\"flip_png_files\": false}}").unwrap();
+            }
+            assert_eq!(upright(&dir), flip);
+            let path = export(&dir.join("menu-editor"), &data, format, 8, 8, 4, upright(&dir)).unwrap();
+            assert_eq!(path.file_name().unwrap().to_str(), export_name(&data, format, 8, 8).as_deref());
+            let pack = Pack::open(&dir).unwrap();
+            let material = pack.find(&data, format, 8, 8, &mut Vec::new()).expect("the exported picture");
+            *material.state.lock().unwrap() = State::Reading { wanted: true };
+            material.read(4096);
+            let State::Read(picture) = &*material.state.lock().unwrap() else { panic!("the picture reads") };
+            assert_eq!((picture.width, picture.height), (32, 32));
+            for (x, y) in [(0, 0), (7, 0), (0, 7), (5, 3)] {
+                let texel = crate::texture::sample_texel(&data, format, 8, x, y);
+                let at = ((y * 4 * 32 + x * 4) * 4) as usize;
+                assert_eq!(picture.texels[at..at + 4], texel, "texel {x}, {y} of the {flip} pack");
+            }
+            std::fs::remove_dir_all(&dir).unwrap();
         }
     }
 

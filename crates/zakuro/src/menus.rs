@@ -92,6 +92,9 @@ pub enum Action {
     /// an explicit navigation link set for a Control, or removed for the
     /// game's native behavior.
     EditorNavigationLink(usize, NavigationDirection, Option<usize>),
+    /// write a Scripted Menu layer's textures into the texture pack folder
+    /// and open them, to be painted over at a higher resolution.
+    EditorOpenTexture(usize),
     /// keep the dev editor's Scripted Menu moves, hidden layers and
     /// navigation links.
     SaveLayout,
@@ -942,6 +945,8 @@ impl Menus {
             let mut save = false;
             let mut export = false;
             let mut navigation = NavigationEditorResponse::default();
+            #[cfg(test)]
+            let mut open_texture = None;
             let room = (ctx.content_rect().height() - 150.0).clamp(120.0, 420.0);
             egui::Window::new("Menu editor").id(egui::Id::new("menu_editor")).open(&mut window_open).default_width(380.0).show(ctx, |ui| {
                 ui.label(if layers.is_empty() { "Open a Scripted Menu or the Pause menu to edit its layout." } else { "Select a layer on the canvas to move or resize it." });
@@ -958,6 +963,14 @@ impl Menus {
                         if ui.button("Export layers").clicked() {
                             export = true;
                         }
+                        let texture = ui.add_enabled(self.editor_layer.is_some(), egui::Button::new("Open texture"))
+                            .on_hover_text("Write the selected layer's textures into the texture pack folder at 4x and open them. Exporting over one shows it in the game straight away.")
+                            .on_disabled_hover_text("Select a layer to open its textures.");
+                        if texture.clicked() {
+                            if let Some(index) = self.editor_layer { actions.push(Action::EditorOpenTexture(index)); }
+                        }
+                        #[cfg(test)]
+                        { open_texture = Some(texture); }
                     });
                 }
             });
@@ -965,6 +978,7 @@ impl Menus {
             #[cfg(test)]
             {
                 navigation.visibility = std::mem::take(&mut list.boxes);
+                navigation.open_texture = open_texture;
             }
             if export {
                 self.message = Some(match export_layers(&layers, &visibility) {
@@ -981,6 +995,8 @@ impl Menus {
         let mut save = false;
         let mut message = None;
         let mut navigation = NavigationEditorResponse::default();
+        #[cfg(test)]
+        let mut open_texture = None;
         let room = (ctx.content_rect().height() - 170.0).clamp(120.0, 420.0);
         egui::Window::new("Menu editor — Pause").id(egui::Id::new("menu_editor_pause")).open(&mut window_open).default_width(420.0).show(ctx, |ui| {
             ui.label(RichText::new("Drag a part on the canvas to move it; its corner handle resizes it. Parts the page now shown leaves out wait off the canvas. Edits apply live.").weak());
@@ -1004,6 +1020,15 @@ impl Menus {
                     rules = PauseRules::default();
                     changed = true;
                 }
+                // Scripted Menu layers show in this window too; Pause's own parts have no texture to open
+                let texture = ui.add_enabled(self.editor_layer.is_some() && self.editor_screen.is_some(), egui::Button::new("Open texture"))
+                    .on_hover_text("Write the selected layer's textures into the texture pack folder at 4x and open them. Exporting over one shows it in the game straight away.")
+                    .on_disabled_hover_text("Select a Scripted Menu layer to open its textures.");
+                if texture.clicked() {
+                    if let Some(index) = self.editor_layer { actions.push(Action::EditorOpenTexture(index)); }
+                }
+                #[cfg(test)]
+                { open_texture = Some(texture); }
                 if ui.button("Export Rust + change request").clicked() {
                     let text = format!("// Pause layout rules\n{}\n// Change request\n{}\n", rules.rust_fragment(), rules.change_request());
                     message = Some(match std::fs::write("menu-layout-export.txt", text) {
@@ -1017,6 +1042,7 @@ impl Menus {
         #[cfg(test)]
         {
             navigation.visibility = std::mem::take(&mut list.boxes);
+            navigation.open_texture = open_texture;
         }
         self.editor_history(before, folders, edited || list.edited, undo || list.undo, redo || list.redo, actions);
         if changed { actions.push(Action::PauseRules(rules)); }
@@ -2763,6 +2789,39 @@ mod tests {
     }
 
     #[test]
+    fn open_texture_asks_for_the_selected_layer_only() {
+        let mut editor = Editor::new(vec![layer("Frame", [10.0, 10.0, 80.0, 60.0]), layer("Back", [200.0, 150.0, 40.0, 30.0])], [100.0, 100.0, 400.0, 240.0]);
+        let button = editor.drawn.open_texture.clone().expect("the Open texture button");
+        assert!(!button.enabled(), "Open texture works without a selected layer");
+        let actions = editor.click(button.rect.center());
+        assert!(!actions.iter().any(|action| matches!(action, Action::EditorOpenTexture(_))), "{actions:?}");
+        editor.menus.editor_layer = Some(1);
+        editor.frame(Vec::new());
+        let button = editor.drawn.open_texture.clone().expect("the Open texture button");
+        assert!(button.enabled());
+        let actions = editor.click(button.rect.center());
+        assert!(actions.contains(&Action::EditorOpenTexture(1)), "{actions:?}");
+    }
+
+    /// a running game's Scripted Menu shows in the window with Pause's rules,
+    /// where Open texture waits for a Scripted Menu layer
+    #[test]
+    fn open_texture_shows_in_the_window_a_running_game_uses() {
+        let mut editor = Editor::new(vec![layer("MenTopBt0001", [10.0, 10.0, 80.0, 60.0]), layer("MenTopBt0003", [200.0, 150.0, 40.0, 30.0])], [100.0, 100.0, 400.0, 240.0]);
+        editor.rules = Some(EditorRules::Pause(PauseRules::default()));
+        editor.menus.editor_layer = Some(1);
+        editor.frame(Vec::new());
+        let button = editor.drawn.open_texture.clone().expect("the Open texture button");
+        assert!(!button.enabled(), "Pause's own parts have no texture to open");
+        editor.menus.editor_screen = Some(0);
+        editor.frame(Vec::new());
+        let button = editor.drawn.open_texture.clone().expect("the Open texture button");
+        assert!(button.enabled());
+        let actions = editor.click(button.rect.center());
+        assert!(actions.contains(&Action::EditorOpenTexture(1)), "{actions:?}");
+    }
+
+    #[test]
     fn a_double_clicked_layer_takes_the_name_written_and_an_empty_one_gives_its_own_back() {
         let layers = vec![layer("MenColViewBt0003 #0", [10.0, 10.0, 50.0, 20.0]), layer("hint #1", [100.0, 10.0, 50.0, 20.0])];
         let mut editor = Editor::new(layers, [500.0, 0.0, 400.0, 240.0]);
@@ -3323,6 +3382,9 @@ struct NavigationEditorResponse {
     /// each layer's Visible checkbox, in the layer list's order.
     #[cfg(test)]
     visibility: Vec<egui::Response>,
+    /// the Open texture button.
+    #[cfg(test)]
+    open_texture: Option<egui::Response>,
 }
 
 /// the selected Control's explicit Up, Down, Left and Right links, each

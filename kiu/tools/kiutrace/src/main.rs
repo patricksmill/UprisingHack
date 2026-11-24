@@ -43,6 +43,7 @@
 //!   mfrom <x> <y> [button hash]   hover there using an original bottom-screen point
 //!   mdrag <x0> <y0> <x1> <y1> <frames> drag those native points through the top-screen mapping
 //!   models                        list the menu scene's models by layer, with their mesh nodes and which are off
+//!   textures <index>              list a Scripted Menu layer's textures and write them to out as 4x pack PNGs
 //!   layer <index> <x> <y> <w> <h> move/resize a Scripted Menu layer through the editor
 //!   visible <index> <0|1>         hide/show a Scripted Menu editor item, without changing its geometry
 //!   override <screen> <part> <x> <y> <w> <h>  a saved menu-layout.toml layer, as the frontend loads it
@@ -513,6 +514,19 @@ fn main() {
                     println!("  {name}: {to:?}");
                 }
             }
+            "textures" => match zakuro_core::aim_mouse::layer_textures(&mut system, num(1) as usize) {
+                Ok(textures) => {
+                    for texture in textures {
+                        let path = zakuro_gpu::pack::export(&out, &texture.data, texture.format, texture.width, texture.height, 4, true);
+                        println!(
+                            "  {} {} at {:08X}, {}x{} {:?}: {}",
+                            texture.model, texture.material, texture.address, texture.width, texture.height, texture.format,
+                            path.map_or_else(|error| error, |path| path.display().to_string())
+                        );
+                    }
+                }
+                Err(error) => println!("  {error}"),
+            },
             "layer" => {
                 let mouse = system.aim_mouse.as_mut().expect("menutop before layer");
                 let index = num(1) as usize;

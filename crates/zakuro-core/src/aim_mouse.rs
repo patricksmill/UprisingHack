@@ -11,7 +11,7 @@ mod idol_view;
 mod menu_top;
 mod screen_transform;
 use menu_top::MenuTop;
-pub use menu_top::{current_menu, IdolPointer};
+pub use menu_top::{current_menu, layer_textures, IdolPointer, LayerTexture};
 pub use screen_transform::{CauldronRole, CauldronRules, DialogRules, LoadingRole, LoadingRules, PauseRules, QuadRole, PAUSE_PARTS, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
 use screen_transform::{Activate, ScreenLayout, ScreenTransform, CAULDRON_CONTROLS};
 
@@ -3676,14 +3676,19 @@ fn show_nodes(system: &mut System, moved: &mut Vec<(u32, Vec<u8>)>, model: u32, 
 /// table of self-relative offsets. 0x008F5FB4 draws a mesh only while its
 /// +0x24 byte is set, besides its node (+0x26) being shown.
 fn model_meshes(system: &mut System, model: u32) -> Vec<u32> {
+    meshes_up_to(system, model, 64)
+}
+
+/// model_meshes, for a model of up to limit meshes (none past that).
+fn meshes_up_to(system: &mut System, model: u32, limit: u32) -> Vec<u32> {
     let (start, end) = (read_word(system, model + 0x170), read_word(system, model + 0x174));
     if start != end {
-        if end < start || end - start > 64 * 4 { return Vec::new(); }
+        if end < start || end - start > limit * 4 { return Vec::new(); }
         return (start..end).step_by(4).map(|at| at.wrapping_add(read_word(system, at))).collect();
     }
     let cmdl = read_word(system, model + 8);
     let (count, table) = (read_word(system, cmdl + 0xB4), read_word(system, cmdl + 0xB8));
-    if cmdl == 0 || table == 0 || count > 64 { return Vec::new(); }
+    if cmdl == 0 || table == 0 || count > limit { return Vec::new(); }
     let table = cmdl + 0xB8 + table;
     (0..count).map(|mesh| table + mesh * 4).map(|at| at.wrapping_add(read_word(system, at))).collect()
 }

@@ -386,6 +386,18 @@ pub enum StepOutcome {
 }
 
 impl System {
+    /// the virtual address the game reaches a physical one at (a GPU
+    /// register's), in the linear heap or VRAM; others are left as they are
+    pub fn virtual_address(&self, physical: u32) -> u32 {
+        if physical >= FCRAM_PADDR {
+            self.kernel.linear_base + (physical - FCRAM_PADDR)
+        } else if (VRAM_PADDR..VRAM_PADDR + VRAM_SIZE).contains(&physical) {
+            VRAM_VADDR + (physical - VRAM_PADDR)
+        } else {
+            physical
+        }
+    }
+
     pub fn new(config: Config) -> System {
         let boot_clock = config.clock.unwrap_or_else(memory::config::host_clock);
         let idle = idle::IdleLoops::new(config.skip_idle_loops);

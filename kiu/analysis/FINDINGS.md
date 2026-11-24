@@ -2518,3 +2518,28 @@ keeps the parts apart; moving the orb and Midstage Progress and hiding the
 bar moves and hides each alone; entering and leaving frame by frame show no
 part in another place; a Retreat Dialog later in that battle still draws in
 its own panel.
+
+## A Scripted Menu layer's textures (23 November)
+
+Probed in `trace/fuse-slot4.state` (Fuse Weapons) from a 64 MiB heap and
+VRAM dump; used by the menu editor's Open texture (`layer_textures`).
+
+- A material's texture-unit-0 commands (file `MTOB` and runtime copy
+  alike): `+0x2E8` format (register 0x8E, header `0x000F008E` at
+  `+0x2EC`), `+0x2F0` border, header `0x804F0081` at `+0x2F4` writing
+  0x81..0x85: `+0x2F8` size (width bits 16..26, height 0..10), `+0x2FC`
+  sampler, `+0x300` LOD, `+0x304` physical address / 8. No unit 1 or 2
+  commands in the first 0x500 bytes of the menus' materials.
+- The runtime copy (material `+0x14`) is what draws, and it differs from
+  the file `MTOB` (`+8`) where code rebinds: Fuse's `Dynamic_26` copy binds
+  a 64×32 ETC1A4 at `0x03086010`, its file `MTOB` an 8×8. The copy's name
+  offset at `+0xC` does not reach the file's strings; read the name from
+  `+8`.
+- A mesh (`SOBJ`) holds its material index at `+0x1C` and its node at
+  `+0x26`, the index into the CMDL's node dictionary that `show_nodes`
+  walks.
+- `MenAltermixBt0001` (Fusion grid) has 65 materials and meshes, past
+  `model_meshes`' cap of 64.
+- Checked: every texture `textures 3`, `12`, `21` and `0` wrote (15) is one
+  the renderer hashed that frame (`ZAKURO_TEXTURE_HASHES`), under the same
+  row hash, so the texture pack finds the exported names.
