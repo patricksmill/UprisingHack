@@ -13,7 +13,7 @@ Statically recompiled with [3dsrecomp](https://github.com/patricksmill/3dsrecomp
 ![Title](https://img.shields.io/badge/title-0004000000030100%20(USA)-blue)
 ![Status](https://img.shields.io/badge/status-work%20in%20progress-orange)
 
-<img src="docs/images/hero.webp" alt="Air battle against Medusa, with the HUD and dialogue on one screen" width="900">
+<img src="docs/images/hero.webp" alt="Air battle with mouse aim, with the HUD and dialogue on one screen" width="900">
 
 </div>
 
