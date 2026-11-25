@@ -28,6 +28,10 @@ After code changes, rebuild the Windows release executable and replace `kiu/dist
 
 GitHub Issues on `patricksmill/UprisingHack`. See `docs/agents/issue-tracker.md`. This repository is a fork: pass `-R patricksmill/UprisingHack` (or `gh repo set-default`) so PRs and issues never go to `fearkov/zakuro`.
 
+### Pull requests
+
+Pick the body from `.github/PULL_REQUEST_TEMPLATE/`: `screen.md` (one Screen's look or input), `feature.md`, `bugfix.md` or `chore.md` (build, CI, docs, refactors, upstream merges). Pass it with `gh pr create --template <name>.md`, or fill its sections into `--body`.
+
 ### Triage labels
 
 Canonical 5-role triage vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
