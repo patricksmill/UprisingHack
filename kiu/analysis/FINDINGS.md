@@ -1211,6 +1211,22 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   `CmnBack0000`; top `MenColGifUp0000` the sky, `BosPalu00` Palutena,
   `MenColGifUp0002` the heart bar. The Offering's Back reports hash
   0x928BEAA4 (the Options pages' Back), not CmnBack0000's 0x9A07E025.
+- Records as Scripted Screen 31 (MENUID 36, `trace/records.state`: from
+  the Vault tap Records, A). Object 0x14040770 (vtable 0x00CF93B0), entered
+  at 0x001B4CB4 and 0x001B4CA8 from the dispatcher; its input update is
+  0x00212628. The List is the generic list class at +0x34 (pick +0x118,
+  first Row +0x120, Cursor's row in view +0x110). The keys scroll it through
+  0x0031AA88(list, down, 1, 1), whose fourth word moves the Cursor's row in
+  view; 0x00255190(list) then reports the change and 0x00297A58(object)
+  redraws the Rows. Without that redraw the List's words match the keys'
+  exactly but the Rows stay where they were. A click on a Row picks it and
+  shows its description on the top screen. Models: bottom
+  `MenColRecordBt0001` the page, `Bt0000` the List's frame (`MN_B0001`..`3`,
+  the section bars, run from x -600 to 1200), `Bt0002` the section header,
+  `Bt0003` one per Row, `Bt0004` the Cursor, `Bt0005` the fades (`mask_U`,
+  `mask_B`), `Bt0006` the section marks by the Scroll bar, `CmnBack0000`;
+  top `MenCollectionTopUp0000` the backdrop, `Up0003` the quill and paper,
+  `Up0005` the emblem; `Up0004` draws nothing on this page.
 - `kiutrace` resolves save data against `KIUTRACE_DATA_DIR` (its `user/`),
   else `./user`: run from `kiu/` with `KIUTRACE_DATA_DIR=.`, or leaving a
   Vault page faults (FS error 0xC8804471 at 0x0010D128).

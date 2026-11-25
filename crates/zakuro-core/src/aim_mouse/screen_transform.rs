@@ -47,6 +47,7 @@ pub enum Screen {
     ChapterResults,
     MusicGallery,
     Offering,
+    Records,
     FiendsCauldron,
     Pause,
     RetreatDialog,
@@ -299,6 +300,40 @@ const OFFERING: &[(&str, [f32; 4])] = &[
     ("MenColGifBt0003", [0.0, 0.0, 320.0, 240.0]),
     ("MenColGifBt0004", [0.0, 0.0, 320.0, 240.0]),
     ("CmnBack0000", [0.0, 190.0, 60.0, 50.0]),
+];
+
+/// The Vault's Records (MENUID 36; `trace/records.state`), top back to
+/// front: the Vault's shared backdrop, the quill and paper, the emblem
+/// under the title. `MenCollectionTopUp0004` draws nothing on this page.
+const RECORDS_TOP: &[TopLayer] = &[
+    ("Backdrop", "MenCollectionTopUp0000", &[]),
+    ("Picture", "MenCollectionTopUp0003", &[]),
+    ("Up0004", "MenCollectionTopUp0004", &[]),
+    ("Emblem", "MenCollectionTopUp0005", &[]),
+];
+
+/// The Records page, the List's frame (its section bars run hundreds of
+/// pixels past both sides) and the fades reach past the bottom screen, so
+/// they are node layers, cut at their boxes.
+const RECORDS_BOTTOM: &[TopLayer] = &[
+    ("Background", "MenColRecordBt0001", &[]),
+    ("Frame", "MenColRecordBt0000", &[]),
+    ("Fades", "MenColRecordBt0005", &[]),
+];
+
+/// The Records bottom Board with native boxes, back to front: the page,
+/// the frame, the section header, one model per Row (they carry the
+/// words), the Cursor, the List's fades, the Scroll bar's section marks,
+/// then Back.
+const RECORDS: &[(&str, [f32; 4])] = &[
+    ("Background", [0.0, 0.0, 320.0, 240.0]),
+    ("Frame", [0.0, 0.0, 320.0, 240.0]),
+    ("MenColRecordBt0002", [0.0, 0.0, 296.0, 240.0]),
+    ("MenColRecordBt0003", [0.0, 0.0, 296.0, 240.0]),
+    ("MenColRecordBt0004", [0.0, 0.0, 296.0, 240.0]),
+    ("Fades", [0.0, 0.0, 320.0, 240.0]),
+    ("MenColRecordBt0006", [296.0, 0.0, 24.0, 240.0]),
+    ("CmnBack0000", [0.0, 200.0, 60.0, 40.0]),
 ];
 
 /// Chapter Results (MENUID 34, `MenOnlineRsltte*`): the results after a
@@ -854,11 +889,11 @@ impl ScreenSpec {
 
 /// the update function of each Scripted Menu, in registry order. Kept
 /// separately so `PLACES` can read it in a const context.
-pub(super) const SCRIPTED_UPDATES: [u32; 31] = [
+pub(super) const SCRIPTED_UPDATES: [u32; 32] = [
     0x002A3EC4, 0x002A3FCC, 0x002A3F9C, 0x00224BA0, 0x001ECB4C, 0x00224C18, 0x001B4C74, 0x001ECBBC, 0x00224BD4,
     0x001ECBF4, 0x0016756C, 0x002A4070, 0x002ECCF4, 0x002A1FD8, 0x002B6DB8, 0x00238CBC, 0x001C9734, 0x00230B5C,
     0x002BB14C, 0x0019CDC8, 0x0019BDC4, 0x0023A9FC, 0x001B4D58, 0x0018AF44, 0x00224B80, 0x001B4D4C, 0x001B4D70,
-    0x0018AEB8, 0x00260868, 0x001B4D28, 0x001B4DC4,
+    0x0018AEB8, 0x00260868, 0x001B4D28, 0x001B4DC4, 0x001B4CB4,
 ];
 
 pub(super) const SCRIPTED_COUNT: usize = SCRIPTED_UPDATES.len();
@@ -923,6 +958,7 @@ pub(super) static SCREENS: &[ScreenSpec] = &[
     scripted!(28, ChapterResults, 0x00CF7414, outline_none, Activate::Touch, LayoutKind::Board { group: RESULTS, hint: None, top_layers: RESULTS_TOP, bottom_layers: RESULTS_BOTTOM, texture_layers: &[] }),
     scripted!(29, MusicGallery, 0x00CFB010, outline_none, Activate::Touch, LayoutKind::Board { group: MUSIC_GALLERY, hint: None, top_layers: MUSIC_GALLERY_TOP, bottom_layers: MUSIC_GALLERY_BOTTOM, texture_layers: &[] }),
     scripted!(30, Offering, 0x00CF8AC0, outline_none, Activate::Touch, LayoutKind::Board { group: OFFERING, hint: None, top_layers: OFFERING_TOP, bottom_layers: OFFERING_BOTTOM, texture_layers: &[] }),
+    scripted!(31, Records, 0x00CF93B0, outline_none, Activate::Touch, LayoutKind::Board { group: RECORDS, hint: None, top_layers: RECORDS_TOP, bottom_layers: RECORDS_BOTTOM, texture_layers: &[] }),
     ScreenSpec {
         id: Screen::FiendsCauldron,
         family: Family::Cauldron,
@@ -2217,7 +2253,7 @@ mod tests {
 
     #[test]
     fn scripted_rows_keep_their_order() {
-        assert_eq!(SCRIPTED_COUNT, 31);
+        assert_eq!(SCRIPTED_COUNT, 32);
         for (index, update) in SCRIPTED_UPDATES.iter().enumerate() {
             assert_eq!(SCREENS[index].update(), Some(*update));
         }
