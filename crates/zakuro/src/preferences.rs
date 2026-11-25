@@ -146,11 +146,14 @@ pub struct Presentation {
     /// how many times further from Pit the camera stays in a Land Battle,
     /// 1 as the game has it.
     pub land_camera_distance: f32,
+    /// how many times wider the top screen's 3D view is, 1 as the game
+    /// has it.
+    pub field_of_view: f32,
 }
 
 impl Default for Presentation {
     fn default() -> Self {
-        Presentation { hud_scale: 0.7, portrait_scale: 0.5, land_camera_distance: 1.25 }
+        Presentation { hud_scale: 0.7, portrait_scale: 0.5, land_camera_distance: 1.25, field_of_view: 1.0 }
     }
 }
 
@@ -160,6 +163,14 @@ impl Presentation {
     pub const PORTRAIT: (f32, f32) = (0.0, 1.0);
     /// the game's own distance, up to 1.6 times it.
     pub const LAND_CAMERA: (f32, f32) = (1.0, 1.6);
+    /// a little narrower than the game's view, up to half again as wide.
+    pub const FIELD_OF_VIEW: (f32, f32) = (0.8, 1.5);
+
+    /// the top screen's field of view, within FIELD_OF_VIEW whatever the
+    /// file says.
+    pub fn field_of_view(&self) -> f32 {
+        self.field_of_view.clamp(Self::FIELD_OF_VIEW.0, Self::FIELD_OF_VIEW.1)
+    }
 
     /// the Land Battle camera's distance, within LAND_CAMERA whatever the
     /// file says.

@@ -1731,6 +1731,12 @@ impl Menus {
                 .custom_formatter(|scale, _| format!("{:.0}%", scale * 100.0)),
         )
         .on_hover_text("How far behind Pit the camera stays on the ground. 100% is the game's own.");
+        ui.add(
+            egui::Slider::new(&mut shown.field_of_view, Presentation::FIELD_OF_VIEW.0..=Presentation::FIELD_OF_VIEW.1)
+                .text("Field of view")
+                .custom_formatter(|scale, _| format!("{:.0}%", scale * 100.0)),
+        )
+        .on_hover_text("How much of the scene the top screen's 3D view takes in during battles; menus keep the game's. 100% is the game's own; the game's zooms still apply on top.");
         self.reset_button(ui, settings, Category::Presentation, "Default presentation");
         }
     }

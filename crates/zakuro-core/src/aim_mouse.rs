@@ -1589,14 +1589,17 @@ pub struct AimMouse {
     /// how many times further from Pit the camera stays in a Land Battle,
     /// 1 as the game has it.
     pub land_camera_distance: f32,
+    /// how many times wider the top screen's 3D view is than the game's
+    /// (on the tangent of half its field of view), 1 as the game has it.
+    pub field_of_view: f32,
     /// the camera matrix object CAMERA_DISTANCE pulled back this frame and
     /// by how much, for CAMERA_ZOOM_RATIO.
     pulled_back: Option<(u32, f32)>,
     /// the 2D contexts seen starting a pass, and the screen each draws.
     screens: Vec<(u32, u32)>,
     /// the lenses widened: where, the aspect the game gave each and the one
-    /// written over it.
-    lenses: Vec<(u32, f32, f32)>,
+    /// written over it, then the same for the vertical field of view.
+    lenses: Vec<(u32, f32, f32, f32, f32)>,
     /// the frame up to which lenses a loaded state left widened are put
     /// back to the game's aspect, 0 when no state has loaded.
     repair_lenses_until: u64,
@@ -1673,6 +1676,7 @@ impl Default for AimMouse {
             menu_wheel: None,
             widen: 1.0,
             land_camera_distance: 1.0,
+            field_of_view: 1.0,
             pulled_back: None,
             solo_camera_back: None,
             screens: Vec::new(),
@@ -2410,26 +2414,28 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
 /// puts back the aspect the game gave each lens widen_view widened, so a
 /// state saved now holds the game's own; the widened aspects it returns go
 /// back with rewiden_lenses once the state is written.
-pub(crate) fn unwiden_lenses(system: &mut System) -> Vec<(u32, f32)> {
+pub(crate) fn unwiden_lenses(system: &mut System) -> Vec<(u32, u32, f32)> {
     let Some(aim_mouse) = &system.aim_mouse else { return Vec::new() };
     let lenses = aim_mouse.lenses.clone();
     let mut widened = Vec::new();
-    for (lens, given, written) in lenses {
-        if read_word(system, lens) == PERSPECTIVE_LENS
-            && read_word(system, lens + LENS_ASPECT) == written.to_bits()
-            && given != written
-        {
-            system.memory.write_bytes(lens + LENS_ASPECT, &given.to_le_bytes());
-            widened.push((lens, written));
+    for (lens, given, written, given_fovy, written_fovy) in lenses {
+        if read_word(system, lens) != PERSPECTIVE_LENS {
+            continue;
+        }
+        for (at, given, written) in [(LENS_ASPECT, given, written), (LENS_FOVY, given_fovy, written_fovy)] {
+            if read_word(system, lens + at) == written.to_bits() && given != written {
+                system.memory.write_bytes(lens + at, &given.to_le_bytes());
+                widened.push((lens, at, written));
+            }
         }
     }
     widened
 }
 
 /// widens again the lenses unwiden_lenses put back.
-pub(crate) fn rewiden_lenses(system: &mut System, widened: &[(u32, f32)]) {
-    for &(lens, written) in widened {
-        system.memory.write_bytes(lens + LENS_ASPECT, &written.to_le_bytes());
+pub(crate) fn rewiden_lenses(system: &mut System, widened: &[(u32, u32, f32)]) {
+    for &(lens, at, written) in widened {
+        system.memory.write_bytes(lens + at, &written.to_le_bytes());
     }
 }
 
@@ -2462,8 +2468,12 @@ fn widen_view(system: &mut System) {
     let Some(aim_mouse) = &mut system.aim_mouse else { return };
     // an aspect other than the one written last is the game's own
     let kept = aim_mouse.lenses.iter().position(|&(at, ..)| at == lens);
+    let given_fovy = match kept.map(|index| aim_mouse.lenses[index]) {
+        Some((.., given, written)) if written == fovy => given,
+        _ => fovy,
+    };
     let given = match kept.map(|index| aim_mouse.lenses[index]) {
-        Some((_, given, written)) if written == aspect => given,
+        Some((_, given, written, ..)) if written == aspect => given,
         // a state saved by an older build holds the lens widened
         None if system.frames <= aim_mouse.repair_lenses_until && aspect > TOP_ASPECT * 1.001 => TOP_ASPECT,
         _ => aspect,
@@ -2472,18 +2482,29 @@ fn widen_view(system: &mut System) {
         return;
     }
     let wanted = given * aim_mouse.widen;
-    let half_width = (fovy * 0.5).tan() * given;
+    // the field of view applies to the top screen's lenses in a battle
+    // alone (paused too, so the view stays put behind the pause menu): the
+    // bottom screen's (4:3) and the menus' keep the game's
+    let battle = aim_mouse.battle_drawn.is_some_and(|drawn| system.frames <= drawn + 3);
+    let scale = if battle { aim_mouse.field_of_view } else { 1.0 };
+    let wanted_fovy = match (given - TOP_ASPECT).abs() < 0.001 && scale != 1.0 && scale.is_finite() && scale > 0.0 {
+        true => 2.0 * ((given_fovy * 0.5).tan() * scale).atan(),
+        false => given_fovy,
+    };
+    let wanted_fovy = if wanted_fovy.is_finite() && wanted_fovy > 0.0 { wanted_fovy } else { given_fovy };
+    let half_width = (given_fovy * 0.5).tan() * given;
     if half_width.is_finite() && half_width > 0.0 {
         aim_mouse.half_width = half_width;
     }
     match kept {
-        Some(index) => aim_mouse.lenses[index] = (lens, given, wanted),
-        None => aim_mouse.lenses.push((lens, given, wanted)),
+        Some(index) => aim_mouse.lenses[index] = (lens, given, wanted, given_fovy, wanted_fovy),
+        None => aim_mouse.lenses.push((lens, given, wanted, given_fovy, wanted_fovy)),
     }
     // a lens first seen has its projection built again too: one a state
     // loaded may hold a projection built at another width
-    if wanted != aspect || kept.is_none() {
+    if wanted != aspect || wanted_fovy != fovy || kept.is_none() {
         system.memory.write_bytes(lens + LENS_ASPECT, &wanted.to_le_bytes());
+        system.memory.write_bytes(lens + LENS_FOVY, &wanted_fovy.to_le_bytes());
         let flags = read_word(system, camera + 8) & !4;
         system.memory.write_bytes(camera + 8, &flags.to_le_bytes());
     }
@@ -5224,6 +5245,42 @@ mod tests {
         let wider = projection(&mut system);
         put_back(&mut system, &moved);
         assert_eq!(projection(&mut system), wider, "the camera keeps the projection built for the new width");
+    }
+
+    #[test]
+    fn the_field_of_view_scales_top_lenses_and_saves_the_games() {
+        let mut system = armory_test_system();
+        let (camera, lens) = (0x1400_0000, 0x1400_0100);
+        let fovy = |system: &mut System| f32::from_bits(read_word(system, lens + LENS_FOVY));
+        for (at, value) in [(camera + 4, lens), (camera + 8, 0x77), (lens, PERSPECTIVE_LENS),
+            (lens + LENS_FOVY, 0.785f32.to_bits()), (lens + LENS_ASPECT, TOP_ASPECT.to_bits())] {
+            system.memory.write_bytes(at, &value.to_le_bytes());
+        }
+        // out of a battle, the menus keep the game's
+        system.aim_mouse = Some(AimMouse { field_of_view: 1.2, ..AimMouse::default() });
+        system.cpu.regs[0] = camera;
+        widen_view(&mut system);
+        assert_eq!(fovy(&mut system), 0.785);
+        system.aim_mouse = Some(AimMouse { field_of_view: 1.2, battle_drawn: Some(system.frames), ..AimMouse::default() });
+        widen_view(&mut system);
+        let wide = 2.0 * ((0.785f32 * 0.5).tan() * 1.2).atan();
+        assert_eq!(fovy(&mut system), wide);
+        widen_view(&mut system);
+        assert_eq!(fovy(&mut system), wide, "scaled once");
+        let widened = unwiden_lenses(&mut system);
+        assert_eq!(fovy(&mut system), 0.785);
+        rewiden_lenses(&mut system, &widened);
+        assert_eq!(fovy(&mut system), wide);
+        // the game zooms: its new field of view is scaled in turn
+        system.memory.write_bytes(lens + LENS_FOVY, &0.5f32.to_le_bytes());
+        widen_view(&mut system);
+        assert_eq!(fovy(&mut system), 2.0 * ((0.5f32 * 0.5).tan() * 1.2).atan());
+        // the bottom screen's lens keeps the game's
+        system.memory.write_bytes(lens + LENS_ASPECT, &(4.0f32 / 3.0).to_le_bytes());
+        system.memory.write_bytes(lens + LENS_FOVY, &0.785f32.to_le_bytes());
+        system.aim_mouse = Some(AimMouse { field_of_view: 1.2, battle_drawn: Some(system.frames), ..AimMouse::default() });
+        widen_view(&mut system);
+        assert_eq!(fovy(&mut system), 0.785);
     }
 
     #[test]
