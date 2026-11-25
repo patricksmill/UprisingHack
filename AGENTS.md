@@ -46,3 +46,7 @@ Single-context repo layout (`GLOSSARY.md` + `docs/adr/`). See `docs/agents/domai
 - Every change request follows `docs/agents/change-requests.md`: Operation, Target, Screen, before/after, Acceptance.
 - Every game-owned Screen follows `docs/agents/screen-transform.md`: one pipeline, one `ScreenSpec`, one `Placement` list shared by draw and hit-test.
 - Code anchors stay in `kiu/analysis/FINDINGS.md`; the glossary holds concepts only.
+
+### Screen status
+
+`docs/screen-status.md` tracks each Screen as Layerized, Controller, Mouse and Rearranged. Pick work from it, and update the Screen's row in the same commit as the work.
