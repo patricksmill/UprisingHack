@@ -26,9 +26,10 @@ pub(super) const FONT_DRAWN: u32 = 0x005CB2A8;
 #[derive(Default)]
 pub(super) struct MenuTop {
     drawn: Option<(u64, usize, u32, f32)>,
-    idol_dialog: bool,
-    /// where the play-coin Dialog sits among Idol Toss's own layers.
-    dialog_at: Option<usize>,
+    /// the Dialog over the drawn Screen, while one is up.
+    dialog: Option<Dialog>,
+    /// the Screen's own layers drawing the Dialog's model, off meanwhile.
+    dialog_owners: Vec<usize>,
     idol_revealing: bool,
     /// the Idols List page is shown, not one idol's description.
     idols_list: bool,
@@ -84,7 +85,7 @@ pub(super) struct MenuTop {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum IdolGroup { Counters, Back, Launcher, Dialog, Fountain, Eggs }
+enum IdolGroup { Counters, Back, Launcher, Fountain, Eggs }
 
 impl IdolGroup {
     /// whether the group draws this mesh node of this model. The counters'
@@ -98,7 +99,6 @@ impl IdolGroup {
         match (self, name) {
             (Self::Counters, "MenColVisionBt0005") => matches!(node, "BL_B0000" | "coin" | "NN_B00010" | "NN_B0006"),
             (Self::Counters, "MenColVisionBt0007") => true,
-            (Self::Dialog, "MenCmnWindowBt0000") => true,
             (Self::Back, "MenColVisionBt9999") => true,
             (Self::Launcher, "MenColVisionBt0000" | "MenColVisionBt0001" | "MenColVisionBt0002" | "MenColVisionBt0003") => true,
             (Self::Fountain, "MenColVisionBt0006") => node != "MN_B0001",
@@ -124,13 +124,13 @@ impl IdolGroup {
     }
 
     fn uncut(self) -> bool {
-        !matches!(self, Self::Counters | Self::Dialog)
+        !matches!(self, Self::Counters)
     }
 
     fn name(self) -> &'static str {
         match self {
             Self::Counters => "Counters", Self::Back => "Back", Self::Launcher => "Launcher",
-            Self::Dialog => "Dialog", Self::Fountain => "Fountain", Self::Eggs => "Egg queue",
+            Self::Fountain => "Fountain", Self::Eggs => "Egg queue",
         }
     }
 }
@@ -146,6 +146,8 @@ struct Part {
     model: Option<&'static str>,
     idol: Option<IdolGroup>,
     chapter: bool,
+    /// the game's choice box, over whatever Screen is drawn (`Dialog`).
+    dialog: bool,
 }
 
 impl Part {
@@ -159,27 +161,15 @@ impl Part {
     }
 
     fn hit(&self, point: [f32; 2]) -> bool {
-        if !inside(point, self.place.to) { return false; }
-        if self.idol == Some(IdolGroup::Dialog) {
-            let [x, y] = self.place.unmap_point(point);
-            return inside([x, y], [15.0, 20.0, 290.0, 200.0]);
-        }
-        true
+        inside(point, self.place.to)
     }
 }
 
 impl MenuTop {
-    /// the screen and layer an edit to shown layer `index` is saved under:
-    /// Idol Toss's own while its Dialog shows, the Dialog itself unsaved.
+    /// the screen and layer an edit to shown layer `index` is saved under;
+    /// the Dialog, appended after the Screen's own layers, is not saved.
     fn saved_as(&self, screen: usize, index: usize) -> Option<(usize, usize)> {
-        match self.dialog_at {
-            Some(at) if self.idol_dialog => match index.cmp(&at) {
-                std::cmp::Ordering::Less => Some((IDOL_TOSS_SCREEN, index)),
-                std::cmp::Ordering::Equal => None,
-                std::cmp::Ordering::Greater => Some((IDOL_TOSS_SCREEN, index - 1)),
-            },
-            _ => Some((screen, index)),
-        }
+        if self.dialog.is_some_and(|dialog| dialog.part == index) { None } else { Some((screen, index)) }
     }
 
     fn file_select(&self) -> bool {
@@ -389,6 +379,18 @@ pub fn layer_rects(system: &mut System) -> Vec<(String, Option<[f32; 4]>)> {
         out.push((layer.to_owned(), rect));
     }
     out
+}
+
+/// HARNESS: the native rectangle each node of a bottom model covers, by
+/// `mesh_rect`.
+pub fn node_rects(system: &mut System, name: &str) -> Vec<(String, Option<[f32; 4]>)> {
+    let Some(bottom) = system.aim_mouse.as_ref().and_then(|mouse| mouse.bottom_scene) else { return Vec::new() };
+    let Some(lens) = ListLens::of(system, bottom) else { return Vec::new() };
+    let Some((_, model, _, nodes)) = super::scene_models(system).into_iter().find(|(_, _, model, _)| model == name) else { return Vec::new() };
+    nodes.into_iter().map(|(node, _)| {
+        let rect = mesh_rect(system, model, &lens, |owned| owned == node);
+        (node, rect)
+    }).collect()
 }
 
 /// Open chapters, by number, with their thumbnails' centers on the bottom
@@ -1148,7 +1150,7 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
         let cut = |origin: [f32; 2], from: [f32; 4]| Placement {
             from, to: [origin[0] + from[0] * scale, origin[1] + from[1] * scale, from[2] * scale, from[3] * scale],
         };
-        let part = |top: bool, place: Placement| Part { visible: true, backdrop: false, chapter: true, idol: None, top, model: None, place };
+        let part = |top: bool, place: Placement| Part { visible: true, backdrop: false, chapter: true, dialog: false, idol: None, top, model: None, place };
         return (native, CHAPTER_LAYERS.iter().map(|&(_, top, from)| part(top, cut(if top { details } else { controls }, from))).collect());
     }
     let hint = match extra {
@@ -1191,17 +1193,17 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
             .chain([(Some("MenDemoBt0000"), [50.0, 195.0, 135.0, 45.0])]) {
             let [x, y] = board.map_point([from[0], from[1]]);
             let to = [x, y, from[2] * board.to[2] / 320.0, from[3] * board.to[3] / 240.0];
-            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model, place: Placement { from, to } });
+            parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: false, model, place: Placement { from, to } });
         }
-        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: None, place: native });
-        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: None, place: board });
+        parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: true, model: None, place: native });
+        parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: false, model: None, place: board });
         for model in ["NN_U0000", "NN_U0004", "NN_U0005", "NN_U0003", "NN_U0006", "NN_U0007_1", "NN_U0007", "NN_U0009"] {
-            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some(model), place: native });
+            parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: true, model: Some(model), place: native });
         }
         return (native, parts);
     }
     if kind.is_some_and(LayoutKind::heart) {
-        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some("MenCmnUpHeart0000"), place: fitted([300.0, 138.0, 100.0, 78.0], [0.0, 0.0, 70.0 * CONTROL_SCALE, 55.0 * CONTROL_SCALE]) });
+        parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: true, model: Some("MenCmnUpHeart0000"), place: fitted([300.0, 138.0, 100.0, 78.0], [0.0, 0.0, 70.0 * CONTROL_SCALE, 55.0 * CONTROL_SCALE]) });
     }
     if !groups.is_empty() && !armory_board(index) { controls = [0.0, 0.0, width, 240.0]; }
     if matches!(kind, Some(LayoutKind::Idol)) {
@@ -1211,10 +1213,10 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
             (IdolGroup::Back, [0.0, 190.0, 60.0, 50.0], [8.0, 202.0, 36.0, 30.0]),
             (IdolGroup::Launcher, IDOL_LAUNCHER, idol_toss(width).to_box(IDOL_LAUNCHER)),
         ] {
-            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: Some(group), top: false, model: None, place: Placement { from, to } });
+            parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: Some(group), top: false, model: None, place: Placement { from, to } });
         }
     } else if groups.is_empty() {
-        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: None, place: {
+        parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: false, model: None, place: {
             let mut place = fitted([0.0, 0.0, 320.0, 240.0], controls);
             for axis in 0..2 {
                 place.to[axis] += place.to[axis + 2] * (1.0 - CONTROL_SCALE) * 0.5;
@@ -1233,7 +1235,7 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
         for &(name, from) in groups {
             let [x, y] = board.map_point([from[0], from[1]]);
             let to = [x, y, from[2] * board.to[2] / 320.0, from[3] * board.to[3] / 240.0];
-            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
+            parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
         }
         if index == 11 { parts[0].model = None; }
     } else if kind.is_some_and(LayoutKind::heart) {
@@ -1256,7 +1258,7 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
                 "MenSgHomeBt9999" => [0.0, 240.0 - size[1], size[0], size[1]],
                 _ => [0.0, 0.0, size[0], size[1]],
             };
-            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
+            parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
         }
     } else {
         let original_height = 240.0 - hint.map_or(0.0, |hint| hint[3] * 0.7);
@@ -1271,7 +1273,7 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
             let bottom = if name == "MenSgHomeBt0006" { hint.map_or(0.0, |hint| hint[3] * HINT_SCALE + 4.0) } else { 0.0 };
             let to = [controls[0] + (controls[2] - size[0]) * anchor[0],
                 controls[1] + (controls[3] - bottom - size[1]) * anchor[1], size[0], size[1]];
-            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
+            parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: false, model: Some(name), place: Placement { from, to } });
         }
     }
     let mut hint_place = None;
@@ -1285,28 +1287,28 @@ fn layout(index: usize, width: f32) -> (Placement, Vec<Part>) {
         let height = from[3] * scale;
         let place = Placement { from, to: [(width - from[2] * scale) * 0.5, if from[1] == 0.0 { 0.0 } else { 240.0 - height }, from[2] * scale, height] };
         hint_place = Some(place);
-        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: None, place });
+        parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: true, model: None, place });
     }
     // Last, so adding it kept every other layer's saved index.
-    parts.push(Part { visible: true, backdrop: true, chapter: false, idol: None, top: true, model: None, place: native });
+    parts.push(Part { visible: true, backdrop: true, chapter: false, dialog: false, idol: None, top: true, model: None, place: native });
     if matches!(kind, Some(LayoutKind::Idol)) {
         // After the backdrop, so the earlier layers' saved indices are kept.
         for (group, place) in [
             (IdolGroup::Fountain, Placement { from: IDOL_FOUNTAIN, to: idol_toss(width).to_box(IDOL_FOUNTAIN) }),
             (IdolGroup::Eggs, idol_eggs(width)),
         ] {
-            parts.push(Part { visible: true, backdrop: false, chapter: false, idol: Some(group), top: false, model: None, place });
+            parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: Some(group), top: false, model: None, place });
         }
     }
     // After the backdrop, so Gear's earlier saved indices are kept; back to front.
     // A hint's backing sits under the hint's words, where the game draws it.
     for &(layer, ..) in kind.map_or(&[][..], LayoutKind::top_layers) {
         let place = hint_place.filter(|_| super::screen_transform::HINT_BACKING.contains(&layer)).unwrap_or(native);
-        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some(layer), place });
+        parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: true, model: Some(layer), place });
     }
     // After the node layers, so their saved indices are kept.
     for &(layer, _, from) in kind.map_or(&[][..], LayoutKind::texture_layers) {
-        parts.push(Part { visible: true, backdrop: false, chapter: false, idol: None, top: true, model: Some(layer), place: Placement { from, to: native.to_box(from) } });
+        parts.push(Part { visible: true, backdrop: false, chapter: false, dialog: false, idol: None, top: true, model: Some(layer), place: Placement { from, to: native.to_box(from) } });
     }
     (native, parts)
 }
@@ -1357,8 +1359,11 @@ fn idol_toss(width: f32) -> Placement {
 /// are one Screen. Its class runs both rows' update thunks for either,
 /// every frame in the same order (the second row's last, only the first's
 /// while leaving), so a Screen can't be told from a thunk; its layout,
-/// saved edits and play-coin Dialog are the second row's.
+/// and saved edits are the second row's.
 const IDOL_TOSS_SCREEN: usize = 25;
+/// the game's choice box (No/Yes): SpotPass's over Other, and the one that
+/// opens over Convert to Hearts and Idol Toss.
+const CHOICE_BOX: usize = 11;
 const IDOL_TOSS_FIRST_ROW: usize = 22;
 
 /// the Screen a scripted update thunk's row draws and saves as.
@@ -1366,35 +1371,141 @@ pub(super) fn screen_of_row(index: usize) -> usize {
     if index == IDOL_TOSS_FIRST_ROW { IDOL_TOSS_SCREEN } else { index }
 }
 
-/// where the Dialog goes among a layout's parts: before the hint, which
-/// precedes the backdrop.
-fn dialog_slot(parts: &[Part]) -> usize {
-    parts.iter().position(|part| part.top && part.model.is_none() && !part.backdrop).unwrap()
+/// A Dialog over a Screen: the game's choice box (No/Yes,
+/// `MenCmnWindowBt0000`) over the Screen under it (SpotPass's over Other,
+/// the play-coin Dialog over Idol Toss, "Return without converting?" over
+/// Convert to Hearts), or a Screen's own popup model (`SCREEN_DIALOGS`).
+/// The Screen keeps its own layout, edits and order; the Dialog is one more
+/// layer after them, drawn in front, centred on the top screen by its
+/// window's live bounds, and while it is up it alone takes the pointer and
+/// owns the words where it sits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Dialog {
+    /// the model it draws; while it is up no other layer draws it.
+    model: &'static str,
+    /// the Dialog's layer, last in `parts`.
+    part: usize,
+    /// its window on the bottom screen, in native pixels.
+    window: [f32; 4],
+    /// the window as shown on the top screen.
+    shown: [f32; 4],
 }
 
-fn layout_with_dialog(index: usize, width: f32, idol_dialog: bool) -> (Placement, Vec<Part>) {
-    let (native, mut parts) = layout(if idol_dialog { IDOL_TOSS_SCREEN } else { index }, width);
-    if idol_dialog {
-        let place = fitted([0.0, 0.0, 320.0, 240.0], [8.0, 48.0, width - 16.0, 180.0]);
-        let hint = dialog_slot(&parts);
-        parts.insert(hint, Part { visible: true, backdrop: false, chapter: false, idol: Some(IdolGroup::Dialog), top: false, model: None, place });
-    }
-    (native, parts)
+/// the choice box's model and its window: the background node, the box
+/// itself (native 0..320 x 9..231 over Convert to Hearts). `BG_1` spans
+/// past the whole screen, and two nodes sit off it, below.
+const CHOICE_BOX_DIALOG: DialogModel = ("MenCmnWindowBt0000", &["BG"]);
+
+/// The registry rows that are the choice box's class rather than a Screen
+/// of their own: SpotPass's, and Profile's Yes/No (whose class the game
+/// also opens elsewhere). Their own layouts draw only when no Screen is
+/// found under them.
+fn dialog_row(index: usize) -> bool {
+    matches!(index, 10 | CHOICE_BOX)
 }
 
-fn scene_has_idol(system: &mut System, scene: u32) -> bool {
-    let layers = read_word(system, scene + SCENE_LAYERS);
-    for layer in BOTTOM_LAYERS {
-        let list = read_word(system, layers + layer * LAYER_SIZE + 4);
-        if list == 0 { continue; }
-        let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
-        if end < start || end - start > 0x1000 { continue; }
-        if (start..end).step_by(4).any(|at| {
-            let model = read_word(system, at);
-            model_name(system, model) == "MenColVisionBt0005"
-        }) { return true; }
+/// a menu text's draw priority, in the record FONT_DRAW takes (its place
+/// at +0x2C/+0x30). Every Dialog's words draw at 0x111 (the choice box's
+/// question and No/Yes, Redeem Hearts' "Buy this weapon?"); Rows draw at
+/// others (Convert to Hearts' names 0 and values 0x22, Redeem Hearts' 0x100
+/// and 0x122). A Dialog's own words are those near its window: Redeem's
+/// question sits 18 pixels above its buttons.
+const TEXT_PRIORITY: u32 = 0x5C;
+const DIALOG_PRIORITY: u32 = 0x111;
+const DIALOG_WORDS_MARGIN: f32 = 24.0;
+
+/// a Dialog's model and the nodes that are its window (not its dim).
+type DialogModel = (&'static str, &'static [&'static str]);
+
+/// Screens' own popups, drawn by a model of the Screen's scene and shown
+/// by animation, not by a class of their own.
+const SCREEN_DIALOGS: &[(Screen, DialogModel)] = &[
+    // "Buy this weapon?" No/Yes; `base` is the dim over the list
+    (Screen::ArmoryRedeemHearts, ("MenAlterbuyBt0130", &["NN_B0000", "NN_B0001", "cursor", "cursor8", "base2"])),
+    // Fuse/Cancel (`NN_B0000`, `NN_B0001`) and Equip? No/Yes (`NN_B00003`,
+    // `NN_B00005`), one pair shown at a time; `base2` the line under the
+    // question. Measured closed only (x 1828..2488): no question opened in
+    // the harness with menus on the top screen.
+    (Screen::ArmoryFuseWeapons, ("MenAltermixBt0010", &["NN_B0000", "NN_B0001", "cursor8", "cursor9",
+        "NN_B00003", "NN_B00005", "cursor3", "cursor5", "base2"])),
+    // a weapon's Try It!/Equip It!/Back; `base` is the dim
+    (Screen::ArmoryWeapons, ("MenEquipBt0130", &["NN_B0000", "NN_B0001", "NN_B0003", "cursor", "cursor7", "cursor8"])),
+];
+
+/// the Screen's own popup, if it has one.
+fn screen_dialog(index: usize) -> Option<DialogModel> {
+    let screen = (index < ScreenTransform::scripted_len()).then(|| ScreenTransform::scripted(index).id)?;
+    SCREEN_DIALOGS.iter().find(|&&(owner, _)| owner == screen).map(|&(_, source)| source)
+}
+
+/// the Screen open under the choice box, and its object: the newest other
+/// menu still updating whose class is a registry row of its own.
+fn dialog_host(system: &mut System) -> Option<(usize, u32)> {
+    let open: Vec<(u32, u64)> = system.aim_mouse.as_ref()?.menus_open.iter().map(|&(object, first, _)| (object, first)).collect();
+    let mut hosts: Vec<(usize, u32, u64)> = open.into_iter().filter_map(|(object, first)| {
+        let vtable = read_word(system, object);
+        let row = (0..ScreenTransform::scripted_len()).find(|&row| !dialog_row(row) && ScreenTransform::scripted(row).vtable() == Some(vtable))?;
+        Some((screen_of_row(row), object, first))
+    }).collect();
+    hosts.sort_by_key(|&(.., first)| std::cmp::Reverse(first));
+    hosts.first().map(|&(index, object, _)| (index, object))
+}
+
+/// a Dialog's window on the bottom screen: its window nodes whose meshes
+/// have their middle on the screen; none while it is not up. Popups wait
+/// slid off the screen (the Armory's at x 2000, the choice box at x -250
+/// over Fuse Weapons and -508 over Treasure Hunt, half of it showing), and
+/// Fuse Weapons keeps its other question's buttons off to the side.
+fn dialog_window(system: &mut System, bottom: u32, (name, window): DialogModel) -> Option<[f32; 4]> {
+    let lens = ListLens::of(system, bottom)?;
+    let model = super::scene_models(system).into_iter().find(|(_, _, model, _)| model == name)?.1;
+    let mut union: Option<[f32; 4]> = None;
+    for &node in window {
+        let Some(rect) = mesh_rect(system, model, &lens, |name| name == node) else { continue };
+        if rect[2] <= 1.0 || rect[3] <= 1.0 || !inside([rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5], [0.0, 0.0, 320.0, 240.0]) { continue; }
+        union = Some(union.map_or(rect, |o| {
+            let (l, t) = (o[0].min(rect[0]), o[1].min(rect[1]));
+            [l, t, (o[0] + o[2]).max(rect[0] + rect[2]) - l, (o[1] + o[3]).max(rect[1] + rect[3]) - t]
+        }));
     }
-    false
+    union
+}
+
+/// the model a layer draws: its own, or a node layer's owner.
+fn part_model(index: usize, part: &Part) -> Option<&'static str> {
+    let model = part.model?;
+    Some(bottom_layers(index).iter().find(|&&(layer, ..)| layer == model).map_or(model, |&(_, owner, _)| owner))
+}
+
+/// the Dialog's layer: the bottom screen moved so the window's middle is
+/// the top screen's, at its own size unless that does not fit.
+fn dialog_part(model: &'static str, window: [f32; 4], width: f32) -> (Part, [f32; 4]) {
+    let scale = 1.0_f32.min((width - 8.0) / window[2]).min(232.0 / window[3]);
+    let middle = [window[0] + window[2] * 0.5, window[1] + window[3] * 0.5];
+    let to = [width * 0.5 - middle[0] * scale, 120.0 - middle[1] * scale, 320.0 * scale, 240.0 * scale];
+    let place = Placement { from: [0.0, 0.0, 320.0, 240.0], to };
+    let [x, y] = place.map_point([window[0], window[1]]);
+    let part = Part { visible: true, backdrop: false, chapter: false, dialog: true, idol: None, top: false, model: Some(model), place };
+    (part, [x, y, window[2] * scale, window[3] * scale])
+}
+
+/// whether a word of a replay is drawn while a Dialog is up: none when it
+/// says nothing. The Dialog draws its own (high priority, inside its
+/// window); the Screen under it drops what the window covers, on the bottom
+/// screen as the game drew it and on the top screen where it is placed.
+fn dialog_word(system: &mut System, step: usize) -> Option<bool> {
+    let menu_top = &system.aim_mouse.as_ref()?.menu_top;
+    let dialog = menu_top.dialog?;
+    let part = menu_top.part(step / 8)?.clone();
+    let text = system.cpu.regs[0];
+    let point = [f32::from_bits(read_word(system, text + 0x2C)), f32::from_bits(read_word(system, text + 0x30))];
+    if part.dialog {
+        let [x, y, w, h] = dialog.window;
+        let words = [x - DIALOG_WORDS_MARGIN, y - DIALOG_WORDS_MARGIN, w + DIALOG_WORDS_MARGIN * 2.0, h + DIALOG_WORDS_MARGIN * 2.0];
+        return Some(inside(point, words) && read_word(system, text + TEXT_PRIORITY) == DIALOG_PRIORITY);
+    }
+    let covered = (!part.top && inside(point, dialog.window)) || inside(part.place.map_point(point), dialog.shown);
+    covered.then_some(false)
 }
 
 /// Screens whose graph navigation is redirected by `navigate`.
@@ -1409,13 +1520,13 @@ fn navigation_control(screen: usize, part: &Part) -> bool {
 impl AimMouse {
     /// The native choice box is horizontal; it has no Up/Down actions.
     pub fn editor_navigation_directions(&self) -> [bool; 4] {
-        if self.menu_screen.is_some_and(|(screen, ..)| screen == 11) {
+        if self.edited_screen() == Some(CHOICE_BOX) {
             [false, false, true, true]
         } else { [true; 4] }
     }
 
     pub fn editor_navigation_controls(&self) -> Vec<(usize, [Option<usize>; 4])> {
-        if !self.editing_scripted() { return Vec::new(); }
+        if !self.editing_scripted() || self.menu_top.dialog.is_some() { return Vec::new(); }
         let Some((screen, ..)) = self.menu_screen else { return Vec::new() };
         if !NAVIGABLE_SCREENS.contains(&screen) { return Vec::new(); }
         self.menu_top.parts.iter().enumerate().filter(|(_, part)|
@@ -1431,7 +1542,7 @@ impl AimMouse {
     }
 
     pub fn set_editor_navigation_link(&mut self, from: usize, direction: NavigationDirection, to: Option<usize>) {
-        if !self.editing_scripted() { return; }
+        if !self.editing_scripted() || self.menu_top.dialog.is_some() { return; }
         let Some((screen, ..)) = self.menu_screen else { return };
         if !NAVIGABLE_SCREENS.contains(&screen) { return; }
         if screen == 11 && matches!(direction, NavigationDirection::Up | NavigationDirection::Down) { return; }
@@ -1488,7 +1599,8 @@ pub(super) fn navigate(system: &mut System, pc: u32) {
     if pc == 0x00241368 {
         let object = system.cpu.regs[4];
         let Some(_) = system.aim_mouse.as_ref().filter(|mouse| mouse.menus_on_top
-            && !mouse.menu_top.idol_dialog && mouse.menu_screen.is_some_and(|(screen, owner, ..)| screen == 11 && owner == object)) else { return };
+            && mouse.menu_top.dialog.is_none()
+            && mouse.menu_screen.is_some_and(|(screen, owner, ..)| screen == CHOICE_BOX && owner == object)) else { return };
         let direction = match system.cpu.regs[14] {
             0x002412A4 => NavigationDirection::Left,
             0x0024130C => NavigationDirection::Right,
@@ -1630,7 +1742,8 @@ impl AimMouse {
                 && if index >= ScreenTransform::scripted_len() {
                     self.menu_screen.is_none_or(|(_, _, seen)| seen <= drawn)
                 } else {
-                    self.menu_screen.is_some_and(|(active, owner, seen)| active == index && owner == object && frame >= seen
+                    self.menu_screen.is_some_and(|(active, owner, seen)| (active == index && owner == object
+                        || self.menu_top.dialog.is_some() && dialog_row(active)) && frame >= seen
                         && (self.menu_top.passthrough || frame <= seen + age))
                 })
     }
@@ -1659,12 +1772,18 @@ impl AimMouse {
             let fuse = self.menu_screen.is_some_and(|(index, ..)| ScreenTransform::scripted(index).id == super::screen_transform::Screen::ArmoryFuseWeapons);
             self.menu_top.candidates = self.menu_top.parts.iter().enumerate().rev().filter_map(|(index, part)| {
                 if !self.menu_top.enabled(part) || part.top || part.idol == Some(IdolGroup::Fountain)
-                    || (self.menu_top.idol_dialog && part.idol != Some(IdolGroup::Dialog))
+                    || (self.menu_top.dialog.is_some() && !part.dialog)
+                    || self.menu_top.dialog_owners.contains(&index)
                     || (idols && !idols_takes_pointer(part.model, self.menu_top.idols_list))
                     || (fuse && !fuse_takes_pointer(part.model, self.menu_top.fuse_phase)) { return None; }
                 let addressable = part.model.and_then(button_hash).is_some();
                 if file && !addressable { return None; }
-                let hit = part.hit(point);
+                // the Dialog takes the pointer over its window, and only there
+                let hit = match self.menu_top.dialog.filter(|_| part.dialog) {
+                    Some(dialog) => inside(point, dialog.shown),
+                    None => part.hit(point),
+                };
+                if part.dialog && !hit { return None; }
                 let isolated = addressable && !cropped && on_screen && (!file || part.file_book().is_some());
                 if !hit && !isolated { return None; }
                 let native = mapped(point, part.place.to, part.place.from);
@@ -1767,7 +1886,7 @@ impl AimMouse {
         if !self.menus_on_top_shown(frame) { return None; }
         let part = self.menu_top.parts.iter().rev().find(|part| self.menu_top.enabled(part) && !part.top
             && (!self.menu_top.file_select() || part.model.and_then(button_hash).is_some())
-            && (!self.menu_top.idol_dialog || part.idol == Some(IdolGroup::Dialog))
+            && (self.menu_top.dialog.is_none() || part.dialog)
             && (inside([x, y], part.place.from) || button.is_some())
             && button.is_none_or(|button| part.model.and_then(button_hash) == Some(button)))?;
         let [x, y] = part.place.map_point([x, y]);
@@ -1810,14 +1929,15 @@ impl AimMouse {
                     11 => "Bottom-left decoration", 12 => "Bottom-right decoration", 13 => "Right-edge decoration",
                     14 => "Feather decoration", _ => "Coloured crest",
                 }.to_owned()
+            } else if part.dialog {
+                "Dialog".to_owned()
             } else if part.backdrop {
-                let screen = self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen));
-                if screen.is_some_and(details_of) { "Details card" } else { "Top screen" }.to_owned()
+                if self.edited_screen().is_some_and(details_of) { "Details card" } else { "Top screen" }.to_owned()
             } else if let Some(chapter) = self.menu_top.row_chapter(index) {
                 format!("Chapter {chapter}")
             } else if part.chapter {
                 CHAPTER_LAYERS.get(index).map_or("controls", |&(name, ..)| name).to_owned()
-            } else if self.menu_screen.is_some_and(|(screen, ..)| screen == 11) && !self.menu_top.idol_dialog {
+            } else if self.edited_screen() == Some(CHOICE_BOX) {
                 match index { 0 => "Dialog", 1 => "No", 2 => "Yes", _ => part.model.unwrap_or("hint") }.to_owned()
             } else if let Some(group) = part.idol {
                 group.name().to_owned()
@@ -1831,7 +1951,15 @@ impl AimMouse {
     /// none for the Cauldron, Pause and the Retreat Dialog.
     pub fn editor_scripted_index(&self) -> Option<usize> {
         if self.editing_cauldron() || !self.editing_scripted() { return None; }
-        self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen))
+        self.edited_screen()
+    }
+
+    /// the Screen whose layers are shown: the one taking input, or the
+    /// one drawn under a Dialog while it is up.
+    fn edited_screen(&self) -> Option<usize> {
+        let drawn = self.menu_top.drawn.map(|(_, screen, ..)| screen);
+        if self.menu_top.dialog.is_some() { return drawn; }
+        self.menu_screen.map(|(screen, ..)| screen).or(drawn)
     }
 
     /// the dev editor's saved moves, by screen and part index.
@@ -1858,8 +1986,7 @@ impl AimMouse {
 
     pub fn set_editor_hidden_layers(&mut self, hidden: Vec<(usize, usize)>) {
         self.menu_top.hidden = hidden;
-        if let Some(screen) = self.menu_screen.map(|(screen, ..)| screen)
-            .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) {
+        if let Some(screen) = self.edited_screen() {
             let saved: Vec<_> = (0..self.menu_top.parts.len()).map(|index| self.menu_top.saved_as(screen, index)).collect();
             for (part, saved) in self.menu_top.parts.iter_mut().zip(saved) {
                 part.visible = saved.is_none_or(|entry| !self.menu_top.hidden.contains(&entry));
@@ -1890,14 +2017,12 @@ impl AimMouse {
     /// index; an empty order goes back to the game's own.
     pub fn set_editor_layer_order(&mut self, front_to_back: Vec<usize>) {
         if self.editing_cauldron() || self.editing_loading() || !self.editing_scripted() { return; }
-        let Some(screen) = self.menu_screen.map(|(screen, ..)| screen)
-            .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) else { return };
-        let edits = if self.menu_top.idol_dialog { IDOL_TOSS_SCREEN } else { screen };
-        self.menu_top.orders.retain(|&(kept, _)| kept != edits);
+        let Some(screen) = self.edited_screen() else { return };
+        self.menu_top.orders.retain(|&(kept, _)| kept != screen);
         if !front_to_back.is_empty() {
             let saved: Vec<usize> = front_to_back.iter().rev().filter_map(|&index| self.menu_top.saved_as(screen, index))
-                .filter(|&(kept, _)| kept == edits).map(|(_, part)| part).collect();
-            self.menu_top.orders.push((edits, saved));
+                .filter(|&(kept, _)| kept == screen).map(|(_, part)| part).collect();
+            self.menu_top.orders.push((screen, saved));
             let parts = self.menu_top.parts.len();
             let back_to_front: Vec<usize> = front_to_back.iter().rev().copied().filter(|&index| index < parts).collect();
             self.menu_top.layer_order = merge_order(&self.menu_top.layer_order, Some(&back_to_front));
@@ -1911,8 +2036,7 @@ impl AimMouse {
         if self.editing_loading() { return self.set_loading_editor_visible(index, visible); }
         if self.editing_pause() { return self.set_pause_editor_visible(index, visible); }
         if !self.editing_scripted() { return; }
-        let Some(screen) = self.menu_screen.map(|(screen, ..)| screen)
-            .or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen)) else { return };
+        let Some(screen) = self.edited_screen() else { return };
         let Some(part) = self.menu_top.parts.get_mut(index) else { return };
         part.visible = visible;
         let Some(entry) = self.menu_top.saved_as(screen, index) else { return };
@@ -1929,7 +2053,7 @@ impl AimMouse {
         if self.editing_loading() { return self.set_loading_editor_layer(index, to); }
         if self.editing_pause() { return self.set_pause_editor_layer(index, to); }
         if !self.editing_scripted() { return; }
-        let screen = self.menu_screen.map(|(screen, ..)| screen).or_else(|| self.menu_top.drawn.map(|(_, screen, ..)| screen));
+        let screen = self.edited_screen();
         // A texture layer rides on the layer drawing its texture: moving
         // that owner moves and scales it the same way.
         if let (Some(screen), Some(owner)) = (screen, self.menu_top.parts.get(index).cloned()) {
@@ -2032,6 +2156,10 @@ pub(super) fn accept_hit(system: &mut System, found: Option<u32>) -> bool {
     let Some(expected) = mouse.menu_top.parts[index].model.and_then(button_hash) else { return true };
     log::debug!("menu hit {:?} at {point:?}: expected {expected:08X}, found {found:08X?}", mouse.menu_top.parts[index].model);
     if found == Some(expected) { return true; }
+    // the box's window part is named per use (B1EBC922 over Other, AAB3C02B
+    // over Convert to Hearts); it is all the box hit-tests, and its No and
+    // Yes are told apart by element (`outline_dialog`)
+    if found.is_some() && mouse.menu_top.parts[index].dialog { return true; }
     mouse.menu_top.candidate += 1;
     mouse.menu_top.retrying_hit = true;
     mouse.pointer = mouse.menu_top.candidates.get(mouse.menu_top.candidate).map(|&(index, point)|
@@ -2056,7 +2184,14 @@ fn scene(system: &mut System, top: u32) -> Option<(usize, u32, u32, bool)> {
     // the last Screen to take input can still be the one it left.
     let game = current_menu(system);
     let agrees = |index: usize| game.is_none_or(|id| menus_of(index).is_empty() || menus_of(index).contains(&id));
-    if let Some((index, object, _)) = active.filter(|&(index, ..)| agrees(index)) { return Some((index, object, bottom, false)); }
+    if let Some((index, object, _)) = active.filter(|&(index, ..)| agrees(index)) {
+        // the choice box draws as a Dialog over the Screen under it
+        // (on screen or sliding in or out)
+        if dialog_row(index) && super::scene_models(system).iter().any(|(_, _, name, _)| name == CHOICE_BOX_DIALOG.0) {
+            if let Some((host, object)) = dialog_host(system) { return Some((host, object, bottom, false)); }
+        }
+        return Some((index, object, bottom, false));
+    }
     if let Some(index) = game.and_then(screen_of) { return Some((index, 0, bottom, false)); }
     // Models are present during entrance and exit animations before the
     // corresponding input update runs. Draw their layout without enabling input.
@@ -2148,7 +2283,6 @@ pub(super) fn begin(system: &mut System) -> bool {
         return false;
     };
     let current = read_word(system, top + 0x40);
-    let idol_dialog = matches!(index, 10 | 11) && scene_has_idol(system, current);
     let controls_more = index == 5 && read_word(system, object + 0x11C) & 0x100 != 0;
     let fuse_phase = if index < ScreenTransform::scripted_len()
         && ScreenTransform::scripted(index).id == super::screen_transform::Screen::ArmoryFuseWeapons
@@ -2156,10 +2290,16 @@ pub(super) fn begin(system: &mut System) -> bool {
     let idol_revealing = index < ScreenTransform::scripted_len()
         && matches!(ScreenTransform::scripted(index).layout, LayoutKind::Idol)
         && idol_revealing(system, object);
+    // the choice box over the Screen under it (whichever class opened it),
+    // or the Screen's own popup
+    let window = if dialog_row(index) { None } else {
+        let own = screen_dialog(index).and_then(|source| Some((source.0, dialog_window(system, bottom, source)?)));
+        own.or_else(|| Some((CHOICE_BOX_DIALOG.0, dialog_window(system, bottom, CHOICE_BOX_DIALOG)?)))
+    };
     let lens = if index == 1 { ListLens::of(system, bottom) } else { None };
     let chapters = lens.map_or_else(Vec::new, |lens| chapter_list(system, bottom, lens));
     let outlined = (index == 1 && object != 0).then(|| read_word(system, object + CHAPTER) + 1);
-    log::debug!("menu begin index {index} idol dialog {idol_dialog}");
+    log::debug!("menu begin index {index} dialog {window:?}");
     // the native fallback screens past the registry draw themselves and have
     // no Screen row to cap
     let screen = (index < ScreenTransform::scripted_len()).then(|| ScreenTransform::scripted(index).id);
@@ -2178,22 +2318,17 @@ pub(super) fn begin(system: &mut System) -> bool {
         mouse.menu_top.chapter_target = 0.0;
         mouse.menu_top.chapter_outlined = None;
     }
-    let (mut native, mut parts) = layout_with_dialog(index, 400.0 * mouse.widen, idol_dialog);
-    // With the Dialog up, the hub draws Idol Toss's layers: its saved
-    // edits apply, each past the Dialog one further along.
-    let dialog_at = idol_dialog.then(|| parts.iter().position(|part| part.idol == Some(IdolGroup::Dialog)).unwrap());
-    let edits = if idol_dialog { IDOL_TOSS_SCREEN } else { index };
-    let shown = |part: usize| part + dialog_at.is_some_and(|at| part >= at) as usize;
+    let (mut native, mut parts) = layout(index, 400.0 * mouse.widen);
     for &(screen, part, to) in &mouse.menu_top.overrides {
-        if screen == edits {
-            if let Some(part) = parts.get_mut(shown(part)) {
+        if screen == index {
+            if let Some(part) = parts.get_mut(part) {
                 part.place.to = seat_override(to, 400.0 * mouse.widen);
             }
         }
     }
     for &(screen, part) in &mouse.menu_top.hidden {
-        if screen == edits {
-            if let Some(part) = parts.get_mut(shown(part)) { part.visible = false; }
+        if screen == index {
+            if let Some(part) = parts.get_mut(part) { part.visible = false; }
         }
     }
     // The revealed idol's name bar draws with the counters but runs past
@@ -2233,23 +2368,33 @@ pub(super) fn begin(system: &mut System) -> bool {
             let (number, [x, y]) = chapters[row];
             let [w, h] = CHAPTER_ROW_SOURCE;
             let from = [x - w * 0.5, y - h * 0.5, w, h];
-            parts.push(Part { visible: true, backdrop: false, chapter: true, idol: None, top: false, model: None, place: Placement { from, to } });
+            parts.push(Part { visible: true, backdrop: false, chapter: true, dialog: false, idol: None, top: false, model: None, place: Placement { from, to } });
             menu_top.chapter_rows.push(number);
         }
     }
     // The game's own top drawing follows its editable backdrop layer.
     let backdrop = parts.iter().find(|part| part.backdrop).map(|part| (part.place.to, part.visible));
     if let Some((to, _)) = backdrop { native.to = to; }
-    mouse.menu_top.idol_dialog = idol_dialog;
-    mouse.menu_top.dialog_at = dialog_at;
     mouse.menu_top.idol_revealing = idol_revealing;
     mouse.menu_top.controls_more = controls_more;
     mouse.menu_top.fuse_phase = fuse_phase;
+    // the Dialog comes after the Screen's own layers, so their saved
+    // indices hold
+    let dialog = window.map(|(model, window)| {
+        let (part, shown) = dialog_part(model, window, 400.0 * mouse.widen);
+        parts.push(part);
+        Dialog { model, part: parts.len() - 1, window, shown }
+    });
+    if mouse.menu_top.dialog.is_some() != dialog.is_some() { mouse.clear_menus_top_pointer(); }
+    mouse.menu_top.dialog = dialog;
+    // the Screen's own layer of the Dialog's model gives way to it
+    mouse.menu_top.dialog_owners = dialog.map_or_else(Vec::new, |dialog| (0..dialog.part)
+        .filter(|&at| part_model(index, &parts[at]) == Some(dialog.model)).collect());
     mouse.menu_top.active = Some((index, object, current, native_touch));
     mouse.menu_top.passthrough = native_touch;
     mouse.menu_top.started = system.frames;
-    let saved_order = mouse.menu_top.orders.iter().find(|&&(screen, _)| screen == edits)
-        .map(|(_, order)| order.iter().map(|&part| shown(part)).collect::<Vec<_>>());
+    let saved_order = mouse.menu_top.orders.iter().find(|&&(screen, _)| screen == index)
+        .map(|(_, order)| order.clone());
     const FILE_SELECT_ORDER: [usize; 16] = [7, 8, 9, 10, 11, 12, 13, 14, 15, 6, 0, 1, 2, 3, 4, 5];
     let file_select = mouse.menu_top.file_select();
     let full: Vec<usize> = if file_select {
@@ -2260,12 +2405,17 @@ pub(super) fn begin(system: &mut System) -> bool {
     };
     // The editor's saved order comes over the game's; a part it does not
     // name (new since it was saved) keeps its place after its neighbour.
-    let layer_order = merge_order(&full, saved_order.as_deref());
+    let mut layer_order = merge_order(&full, saved_order.as_deref());
+    // the Dialog is in front of everything
+    if let Some(dialog) = system.aim_mouse.as_ref().unwrap().menu_top.dialog {
+        layer_order.retain(|&part| part != dialog.part);
+        layer_order.push(dialog.part);
+    }
     let menu_top = &mut system.aim_mouse.as_mut().unwrap().menu_top;
     let replay_details = !top_layers(index).is_empty();
     let order = layer_order.iter().copied().filter(|&at| {
         let part = &parts[at];
-        menu_top.enabled(part) && if file_select { FILE_SELECT_ORDER.contains(&at) } else {
+        menu_top.enabled(part) && !menu_top.dialog_owners.contains(&at) && if file_select { FILE_SELECT_ORDER.contains(&at) } else {
             // A texture layer draws through its owner's mesh, never by itself.
             drawable(part, replay_details) && texture_layer(index, part.model).is_none()
         }
@@ -2600,7 +2750,7 @@ pub(super) fn text(system: &mut System, place: u32) -> bool {
             return true;
         }
         if let Some((index, _, _, _)) = system.aim_mouse.as_ref().unwrap().menu_top.active.filter(|&(index, _, _, _)| !details_of(index)) {
-            let hint_index = if system.aim_mouse.as_ref().unwrap().menu_top.idol_dialog { IDOL_TOSS_SCREEN } else { index };
+            let hint_index = index;
             if let Some([_, y, _, height]) = hint_of(hint_index) {
                 let width = 400.0 * system.aim_mouse.as_ref().unwrap().widen;
                 let rect = if place == TOP_TEXT {
@@ -2686,6 +2836,15 @@ pub(super) fn font(system: &mut System) {
             system.cpu.regs[15] += 4;
             return;
         }
+        match dialog_word(system, step) {
+            Some(false) => {
+                system.cpu.regs[15] += 4;
+                return;
+            }
+            // the Dialog's words take none of the Screen's rules below
+            Some(true) => return,
+            None => {}
+        }
         let text_part = system.aim_mouse.as_ref().and_then(|mouse| {
             let (index, ..) = mouse.menu_top.active?;
             mouse.menu_top.part(step / 8).filter(|part| armory_board(index) && !part.top
@@ -2755,7 +2914,6 @@ pub(super) fn font(system: &mut System) {
         let (x, y) = (f32::from_bits(read_word(system, at + 8)), f32::from_bits(read_word(system, at + 12)));
         let keep = match group {
             IdolGroup::Counters => (0.0..counters_width).contains(&x) && (0.0..65.0).contains(&y),
-            IdolGroup::Dialog => (65.0..225.0).contains(&y),
             _ => false,
         };
         if !keep || (group == IdolGroup::Counters && system.cpu.regs[15] == 0x00A36F74) {
@@ -2859,7 +3017,7 @@ pub(super) fn font_done(system: &mut System) {
 pub(super) fn bottom_translucent(system: &mut System) {
     let Some(Drawing::MenuTop(step)) = drawing(system) else { return };
     if system.aim_mouse.as_ref().is_some_and(|mouse|
-        mouse.menu_top.active.is_some_and(|(index, _, _, _)| matches!(index, 22 | 25) || mouse.menu_top.idol_dialog)
+        mouse.menu_top.active.is_some_and(|(index, _, _, _)| matches!(index, 22 | 25))
             && !mouse.menu_top.part(step / 8).and_then(|part| part.idol).is_some_and(|group| group == IdolGroup::Launcher || group.scenery())) {
         // Idol Toss's translucent pass shades the bowl and is drawn with
         // the launcher and the scenery, whose replays hide every other
@@ -2882,7 +3040,7 @@ pub(super) fn bottom_text(system: &mut System) {
     if let Some((index, ..)) = mouse.menu_top.active.filter(|&(index, ..)| drawn_cut(index)) {
         // Armory text is one dense pass; replay it only where a Control shows text.
         if armory_board(index) && step.and_then(|step| mouse.menu_top.part(step / 8))
-            .is_some_and(|part| !part.top && part.model.is_some() && !board_text_now(index, part.model, mouse.menu_top.idols_list, mouse.menu_top.fuse_phase)) {
+            .is_some_and(|part| !part.top && !part.dialog && part.model.is_some() && !board_text_now(index, part.model, mouse.menu_top.idols_list, mouse.menu_top.fuse_phase)) {
             system.cpu.regs[15] = BOTTOM_TEXT + 4;
         }
         return;
@@ -2890,7 +3048,7 @@ pub(super) fn bottom_text(system: &mut System) {
     if let Some(Drawing::MenuTop(step)) = drawing(system) {
         let menu_top = &system.aim_mouse.as_ref().unwrap().menu_top;
         let row = menu_top.part_index(step / 8).and_then(|index| menu_top.row_chapter(index)).is_some();
-        if row || menu_top.part(step / 8).is_some_and(|part| !part.top && (part.model.is_some() || part.idol.is_some_and(|group| !matches!(group, IdolGroup::Counters | IdolGroup::Dialog)))) {
+        if row || menu_top.part(step / 8).is_some_and(|part| !part.top && (part.model.is_some() || part.idol.is_some_and(|group| group != IdolGroup::Counters)) && !part.dialog) {
             // Hub labels and chapter labels are textures in their meshes.
             // Unrelated text in the other groups must not be replayed with
             // them, and an uncut Row would show the hint enlarged.
@@ -3023,7 +3181,7 @@ fn draw_part(system: &mut System, top: u32, next: usize) -> bool {
         let from = [-200.0, -120.0, 800.0, 480.0];
         let to = [p.to[0] + (from[0] - p.from[0]) * scale[0], p.to[1] + (from[1] - p.from[1]) * scale[1], from[2] * scale[0], from[3] * scale[1]];
         place_scene(system, top, drawing, Placement { from, to }, true, true, &mut moved);
-    } else if !node_layer && (part.file_book().is_some() || row.is_some() || part.idol.is_some_and(IdolGroup::uncut) || part.model.is_some() && !part_cut(index, part.model)
+    } else if !node_layer && !part.dialog && (part.file_book().is_some() || row.is_some() || part.idol.is_some_and(IdolGroup::uncut) || part.model.is_some() && !part_cut(index, part.model)
         && !system.aim_mouse.as_ref().unwrap().menu_top.file_select()) {
         let widen = system.aim_mouse.as_ref().unwrap().widen;
         let canvas = [400.0 * widen, 240.0];
@@ -3101,7 +3259,8 @@ fn draw_part(system: &mut System, top: u32, next: usize) -> bool {
         let owner = bottom_layers(index).iter().find(|&&(layer, ..)| Some(layer) == part.model).map(|&(_, owner, _)| owner);
         // An owner ending in `*` owns every model whose name starts with the rest.
         let owned = |name: &str| owner.is_some_and(|owner| owner.strip_suffix('*').map_or(owner == name, |prefix| name.starts_with(prefix)));
-        filter_models(system, drawing, false, true, &mut moved, |name| owned(name));
+        let boxed = system.aim_mouse.as_ref().unwrap().menu_top.dialog.map(|dialog| dialog.model);
+        filter_models(system, drawing, false, true, &mut moved, |name| owned(name) && boxed != Some(name));
         let layers = read_word(system, scene + SCENE_LAYERS);
         for layer in BOTTOM_LAYERS {
             let list = read_word(system, layers + layer * LAYER_SIZE + 4);
@@ -3117,9 +3276,11 @@ fn draw_part(system: &mut System, top: u32, next: usize) -> bool {
         }
     } else {
         let slider = matches!(part.model, Some("MenOptionSoundBt0002" | "MenOptionSoundBt0003" | "MenOptionSoundBt0004"));
-        filter_models(system, drawing, part.top, !part.top, &mut moved, |name|
+        // while a Dialog is up only its layer draws the choice box
+        let boxed = system.aim_mouse.as_ref().unwrap().menu_top.dialog.filter(|_| !part.dialog).map(|dialog| dialog.model);
+        filter_models(system, drawing, part.top, !part.top, &mut moved, |name| boxed != Some(name) && (
             part.model.is_none_or(|model| name == model || board_companions(model).contains(&name))
-                || (slider && matches!(name, "MenOptionSoundBt0001" | "MenOptionSoundBt0006")));
+                || (slider && matches!(name, "MenOptionSoundBt0001" | "MenOptionSoundBt0006"))));
     }
     if !part.top { change(system, &mut moved, bottom + 0x60, &[0; 4]); }
     system.aim_mouse.as_mut().unwrap().menu_top.clip = Some((part.place, part.top));
@@ -3579,41 +3740,54 @@ mod tests {
         }
     }
 
+    /// a Dialog over a Screen: one more layer after the Screen's own, its
+    /// window in the top screen's middle at any width, the only layer the
+    /// pointer reaches while it is up, and unsaved.
     #[test]
-    fn coin_dialog_keeps_background_and_blocks_parent_controls() {
-        for width in [240.0, 400.0, 560.0] {
-            let (native, parts) = layout_with_dialog(11, width, true);
-            assert_eq!(native.to, [0.0, 0.0, width, 240.0]);
-            assert_eq!(parts.iter().filter(|part| part.top && part.model.is_none() && !part.backdrop).count(), 1);
-            let coin = parts.iter().find(|part| part.idol == Some(IdolGroup::Counters)).unwrap().place;
-            let back = parts.iter().find(|part| part.idol == Some(IdolGroup::Back)).unwrap().place;
-            let mut mouse = shown(11);
-            mouse.widen = width / 400.0;
-            mouse.menu_top.drawn.as_mut().unwrap().3 = mouse.widen;
-            mouse.menu_top.parts = parts;
-            mouse.menu_top.idol_dialog = true;
-            for point in [mapped([30.0, 46.0], coin.from, coin.to), mapped([30.0, 215.0], back.from, back.to)] {
-                assert_eq!(mouse.menus_top_touch(11, point.0 / mouse.widen, point.1, false), None);
-            }
-            for native in [(90.0, 175.0), (230.0, 175.0)] {
-                let point = mouse.menus_top_point(11, native.0, native.1, None).unwrap();
-                assert_eq!(mouse.menus_top_touch(11, point.0, point.1, false), Some(native));
+    fn a_dialog_is_centred_over_its_screen_and_takes_the_pointer() {
+        // the play-coin Dialog's window over Idol Toss, and the one over
+        // Convert to Hearts, as `dialog_window` measured them
+        for window in [[11.2, 17.0, 297.6, 206.0], [0.0, 9.1, 320.3, 221.8]] {
+            for width in [240.0, 400.0, 560.0] {
+                let mut parts = layout(IDOL_TOSS_SCREEN, width).1;
+                let coin = parts.iter().find(|part| part.idol == Some(IdolGroup::Counters)).unwrap().place;
+                let back = parts.iter().find(|part| part.idol == Some(IdolGroup::Back)).unwrap().place;
+                let (part, shown_at) = dialog_part(CHOICE_BOX_DIALOG.0, window, width);
+                parts.push(part);
+                let dialog = Dialog { model: CHOICE_BOX_DIALOG.0, part: parts.len() - 1, window, shown: shown_at };
+                let middle = [shown_at[0] + shown_at[2] * 0.5, shown_at[1] + shown_at[3] * 0.5];
+                assert!((middle[0] - width * 0.5).abs() < 0.01 && (middle[1] - 120.0).abs() < 0.01, "{middle:?} at {width}");
+                assert!(shown_at[0] >= 0.0 && shown_at[0] + shown_at[2] <= width && shown_at[1] >= 0.0 && shown_at[1] + shown_at[3] <= 240.0);
+
+                let mut mouse = shown(CHOICE_BOX);
+                mouse.widen = width / 400.0;
+                mouse.menu_top.drawn = Some((10, IDOL_TOSS_SCREEN, 0x14050000, mouse.widen));
+                mouse.menu_top.parts = parts;
+                mouse.menu_top.dialog = Some(dialog);
+                assert!(mouse.menus_on_top_shown(11), "the box's input shows the Screen under it");
+                for point in [mapped([30.0, 46.0], coin.from, coin.to), mapped([30.0, 215.0], back.from, back.to)] {
+                    if !inside([point.0, point.1], shown_at) {
+                        assert_eq!(mouse.menus_top_touch(11, point.0 / mouse.widen, point.1, false), None);
+                    }
+                }
+                for native in [(90.0, 175.0), (230.0, 175.0)] {
+                    let point = mouse.menus_top_point(11, native.0, native.1, None).unwrap();
+                    let touched = mouse.menus_top_touch(11, point.0, point.1, false).unwrap();
+                    assert!((touched.0 - native.0).abs() < 0.01 && (touched.1 - native.1).abs() < 0.01);
+                }
+                assert_eq!(mouse.menu_top.saved_as(IDOL_TOSS_SCREEN, dialog.part), None, "the Dialog itself is not saved");
+                assert_eq!(mouse.menu_top.saved_as(IDOL_TOSS_SCREEN, 2), Some((IDOL_TOSS_SCREEN, 2)));
             }
         }
     }
 
     #[test]
-    fn idol_toss_keeps_one_screens_edits_leaving_and_under_its_dialog() {
-        // Leaving runs only the first row's thunk, and the play-coin Dialog
-        // shows under its own Screen: both must draw and save Idol Toss's.
+    fn idol_toss_keeps_one_screens_edits_leaving() {
+        // Leaving runs only the first row's thunk: it must draw and save
+        // Idol Toss's.
         assert_eq!(screen_of_row(IDOL_TOSS_FIRST_ROW), IDOL_TOSS_SCREEN);
         assert_eq!(screen_of_row(24), 24);
-        let mut menu_top = MenuTop { idol_dialog: true, dialog_at: Some(3), ..MenuTop::default() };
-        assert_eq!(menu_top.saved_as(11, 2), Some((IDOL_TOSS_SCREEN, 2)));
-        assert_eq!(menu_top.saved_as(11, 3), None, "the Dialog itself is not saved");
-        assert_eq!(menu_top.saved_as(11, 4), Some((IDOL_TOSS_SCREEN, 3)));
-        menu_top.idol_dialog = false;
-        assert_eq!(menu_top.saved_as(IDOL_TOSS_SCREEN, 2), Some((IDOL_TOSS_SCREEN, 2)));
+        assert_eq!(MenuTop::default().saved_as(IDOL_TOSS_SCREEN, 2), Some((IDOL_TOSS_SCREEN, 2)));
     }
 
     #[test]

@@ -715,6 +715,34 @@ its head sentinel; +0x10 is node color, not a leaf marker.
     screens (sliders, a test pad).
 - Two of these update at once while a choice box is over its menu (Other
   under SpotPass's box), so the mouse goes to the newer of the two.
+- The choice box (0x00CF8270) also opens over Convert to Hearts
+  ("Return to the previous screen without converting your selections?",
+  B with weapons picked, MENUID still 37) and over Idol Toss ("You can't
+  make any more eggs from Play Coins.", touching the coin box). Over
+  Convert the window's hit part is AAB3C02B, over Other B1EBC922; No/Yes
+  are elements `fnt_02`/`fnt_03` in both. `MenCmnWindowBt0000`'s `BG`
+  node is the box: native [0, 9, 320, 222] over Convert, [11, 17, 298,
+  206] over Idol Toss; `BG_1` spans [-40, -30, 400, 300], and
+  `ML_B0003` and `zline05` sit at y 600. Menu words carry a draw priority
+  at text record +0x5C: Convert's Row names 0, values 0x22, its header,
+  Convert bar and the box's words 0x111. Glyphs are drawn after every
+  layer's meshes, so a mesh in front never covers words behind it. All
+  three draw as the general Dialog (`docs/agents/screen-transform.md`).
+- Popups that slide in rather than open a class (24 Nov, harness from the
+  Solo hub). Redeem Hearts' "Buy this weapon?" is `MenAlterbuyBt0130`
+  (`MenAlterbuyBt8888` is not it: one node at y 100171): No `NN_B0001`
+  [13, 138, 131, 65], Yes `NN_B0000` [175, 138, 131, 65], their `cursor8`
+  and `cursor`, the line `base2` [23, 54, 274, 20], the dim `base`
+  [-64, -48, 448, 336]; closed, all slid right by 2160. Its words: the
+  question 0x111 at (160, 36), the Rows' names 0x100 and values 0x122.
+  Treasure Hunt's "Use a feather and open this panel?" (pick a feather,
+  then a hidden panel twice) is the choice box, `BG` [-2, 8, 324, 225],
+  waiting at x -508. Fuse Weapons keeps the choice box at x -250 and its
+  `MenAltermixBt0010` Fuse/Cancel and Equip? pairs at x 1828..2488. A
+  double click on a valid grid cell natively opens the choice box ("You're
+  trying to fuse a weapon you have equipped"); with menus on the top
+  screen the bottom stops on the cell's flash and `begin` stops running
+  (also at 7ca46b4, before Dialogs), no fault logged.
 - A save state made on Windows keeps each open archive's Windows path;
   loaded here the game could not open gamecoin.dat (shared extdata) when
   Options opened and stopped (0xC8804471). Loading now moves each archive

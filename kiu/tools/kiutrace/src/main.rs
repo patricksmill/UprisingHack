@@ -518,6 +518,7 @@ fn main() {
                 }
             }
             "rects" => for (name, rect) in zakuro_core::aim_mouse::layer_rects(&mut system) { println!("  {name}: {rect:?}"); },
+            "noderects" => for (name, rect) in zakuro_core::aim_mouse::node_rects(&mut system, words[1]) { println!("  {name}: {rect:?}"); },
             "layers" => {
                 let mouse = system.aim_mouse.get_or_insert_with(Default::default);
                 for (name, to) in mouse.editor_layers() {

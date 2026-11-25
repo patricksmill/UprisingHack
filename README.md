@@ -64,7 +64,13 @@ Set any of these environment variables to `0` to show that part as the 3DS does:
 
 ### Gyro aim
 
-The port passes a controller's gyroscope to the game, but the game only aims with it once Darkshade's **Kid Icarus: Uprising C-Stick & Gyro Patch** is installed (not included). This is experimental and untested. Install only its Base Patch, not its widescreen option, and recompile afterwards. It replaces `code.bin`, so it can't be combined with the 60 FPS patch.
+The port passes a controller's gyroscope to the game, but the game only aims with it once Darkshade's [Kid Icarus: Uprising C-Stick & Gyro Patch](https://gbatemp.net/posts/10932751/) is installed. It isn't included, and with the port it's experimental and untested.
+
+1. Download the patch from its GBAtemp thread and pick its **Base Patch**, not a widescreen option. The port handles widescreen itself.
+2. Copy the patch's `code.bin`, `exheader.bin` and `romfs/` folder into the game's mod folder, `mods/0004000000030100/`, inside Zakuro's data folder (`%APPDATA%\zakuro\` on Windows, `~/.local/share/zakuro/` on Linux). The **Mods** button next to the game in the library opens it.
+3. Recompile the game.
+
+The patch replaces `code.bin`, so remove `code.ips` first if you installed the 60 FPS patch: the two can't be combined.
 
 ## How it works
 
