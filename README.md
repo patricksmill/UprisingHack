@@ -37,23 +37,30 @@ Statically recompiled with [3dsrecomp](https://github.com/patricksmill/3dsrecomp
 - **60 FPS patch**, generated from your own `code.bin` by `kiu/scripts/make_60fps_ips.py` ([how](docs/BUILDING.md#5-optional-the-60-fps-patch)).
 - Headless benchmark harness to track frame rate across upstream merges.
 
-<!-- SCREENSHOT GRID PLACEHOLDERS: replace each with docs/images/<name>.png -->
 <table>
   <tr>
-    <td><img src="docs/images/ground-battle.png" alt="Ground battle" width="440"></td>
+    <td><img src="docs/images/air-battle.webp" alt="Air battle dialogue" width="440"></td>
+    <td><img src="docs/images/palace.webp" alt="Palace menu" width="440"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Air battle with dialogue on the main view</sub></td>
+    <td align="center"><sub>Palace menu on one screen</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/chapter-select.webp" alt="Chapter select" width="440"></td>
     <td><img src="docs/images/menus.png" alt="Single-screen menus" width="440"></td>
   </tr>
   <tr>
-    <td align="center"><sub>Ground battle with mouse-look</sub></td>
+    <td align="center"><sub>Chapter select with its Details card</sub></td>
     <td align="center"><sub>Menus on one screen</sub></td>
   </tr>
   <tr>
-    <td><img src="docs/images/ultrawide.png" alt="Ultrawide" width="440"></td>
-    <td><img src="docs/images/settings.png" alt="Input settings" width="440"></td>
+    <td><img src="docs/images/weapon-viewer.png" alt="Weapon viewer" width="440"></td>
+    <td><img src="docs/images/ground-battle.webp" alt="Ground battle dialogue" width="440"></td>
   </tr>
   <tr>
-    <td align="center"><sub>Ultrawide in battle</sub></td>
-    <td align="center"><sub>Rebinding & PC settings</sub></td>
+    <td align="center"><sub>Weapon viewer with mouse and keyboard prompts</sub></td>
+    <td align="center"><sub>It's hard to play and screenshot at the same time</sub></td>
   </tr>
 </table>
 
