@@ -1381,8 +1381,10 @@ pub(super) fn screen_of_row(index: usize) -> usize {
 /// owns the words where it sits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Dialog {
-    /// the model it draws; while it is up no other layer draws it.
+    /// the model it draws; while it is up no other layer draws it, or, when
+    /// it draws only `nodes` of it, those nodes.
     model: &'static str,
+    nodes: Option<&'static [&'static str]>,
     /// the Dialog's layer, last in `parts`.
     part: usize,
     /// its window on the bottom screen, in native pixels.
@@ -1394,7 +1396,7 @@ struct Dialog {
 /// the choice box's model and its window: the background node, the box
 /// itself (native 0..320 x 9..231 over Convert to Hearts). `BG_1` spans
 /// past the whole screen, and two nodes sit off it, below.
-const CHOICE_BOX_DIALOG: DialogModel = ("MenCmnWindowBt0000", &["BG"]);
+const CHOICE_BOX_DIALOG: DialogModel = ("MenCmnWindowBt0000", &["BG"], None);
 
 /// The registry rows that are the choice box's class rather than a Screen
 /// of their own: SpotPass's, and Profile's Yes/No (whose class the game
@@ -1414,23 +1416,35 @@ const TEXT_PRIORITY: u32 = 0x5C;
 const DIALOG_PRIORITY: u32 = 0x111;
 const DIALOG_WORDS_MARGIN: f32 = 24.0;
 
-/// a Dialog's model and the nodes that are its window (not its dim).
-type DialogModel = (&'static str, &'static [&'static str]);
+/// a Dialog's model, the nodes that are its window (not its dim), and the
+/// nodes it draws: all of the model, or only these, the rest staying with
+/// the Screen where the game draws it.
+type DialogModel = (&'static str, &'static [&'static str], Option<&'static [&'static str]>);
+
+impl Dialog {
+    /// whether the Dialog, not the Screen under it, draws this node.
+    fn draws(&self, model: &str, node: &str) -> bool {
+        model == self.model && self.nodes.is_none_or(|nodes| nodes.contains(&node))
+    }
+}
 
 /// Screens' own popups, drawn by a model of the Screen's scene and shown
 /// by animation, not by a class of their own.
 const SCREEN_DIALOGS: &[(Screen, DialogModel)] = &[
     // "Buy this weapon?" No/Yes; `base` is the dim over the list
-    (Screen::ArmoryRedeemHearts, ("MenAlterbuyBt0130", &["NN_B0000", "NN_B0001", "cursor", "cursor8", "base2"])),
+    (Screen::ArmoryRedeemHearts, ("MenAlterbuyBt0130", &["NN_B0000", "NN_B0001", "cursor", "cursor8", "base2"], None)),
     // Fuse/Cancel (`NN_B0000`, `NN_B0001`) and Equip? No/Yes (`NN_B00003`,
-    // `NN_B00005`), one pair shown at a time; `base2` the line under the
-    // question. Measured closed only (x 1828..2488): no question opened in
-    // the harness with menus on the top screen.
-    (Screen::ArmoryFuseWeapons, ("MenAltermixBt0010", &["NN_B0000", "NN_B0001", "cursor8", "cursor9",
-        "NN_B00003", "NN_B00005", "cursor3", "cursor5", "base2"])),
+    // `NN_B00005`), one pair shown at a time, with their cursors and
+    // `base2`, the line under the question. The model's dim, with its A
+    // strip and B column frames (`pPlane2`, `pPlane4`, `A`, `B`, `Kakeru`)
+    // that light the two picked weapons, stays with the Board.
+    (Screen::ArmoryFuseWeapons, ("MenAltermixBt0010", FUSE_QUESTION, Some(FUSE_QUESTION))),
     // a weapon's Try It!/Equip It!/Back; `base` is the dim
-    (Screen::ArmoryWeapons, ("MenEquipBt0130", &["NN_B0000", "NN_B0001", "NN_B0003", "cursor", "cursor7", "cursor8"])),
+    (Screen::ArmoryWeapons, ("MenEquipBt0130", &["NN_B0000", "NN_B0001", "NN_B0003", "cursor", "cursor7", "cursor8"], None)),
 ];
+
+const FUSE_QUESTION: &[&str] = &["NN_B0000", "NN_B0001", "cursor8", "cursor9",
+    "NN_B00003", "NN_B00005", "cursor3", "cursor5", "base2"];
 
 /// the Screen's own popup, if it has one.
 fn screen_dialog(index: usize) -> Option<DialogModel> {
@@ -1456,7 +1470,7 @@ fn dialog_host(system: &mut System) -> Option<(usize, u32)> {
 /// slid off the screen (the Armory's at x 2000, the choice box at x -250
 /// over Fuse Weapons and -508 over Treasure Hunt, half of it showing), and
 /// Fuse Weapons keeps its other question's buttons off to the side.
-fn dialog_window(system: &mut System, bottom: u32, (name, window): DialogModel) -> Option<[f32; 4]> {
+fn dialog_window(system: &mut System, bottom: u32, (name, window, _): DialogModel) -> Option<[f32; 4]> {
     let lens = ListLens::of(system, bottom)?;
     let model = super::scene_models(system).into_iter().find(|(_, _, model, _)| model == name)?.1;
     let mut union: Option<[f32; 4]> = None;
@@ -1774,8 +1788,9 @@ impl AimMouse {
                 if !self.menu_top.enabled(part) || part.top || part.idol == Some(IdolGroup::Fountain)
                     || (self.menu_top.dialog.is_some() && !part.dialog)
                     || self.menu_top.dialog_owners.contains(&index)
-                    || (idols && !idols_takes_pointer(part.model, self.menu_top.idols_list))
-                    || (fuse && !fuse_takes_pointer(part.model, self.menu_top.fuse_phase)) { return None; }
+                    // a Dialog takes the pointer by its own rule, whichever Screen it is over
+                    || (!part.dialog && idols && !idols_takes_pointer(part.model, self.menu_top.idols_list))
+                    || (!part.dialog && fuse && !fuse_takes_pointer(part.model, self.menu_top.fuse_phase)) { return None; }
                 let addressable = part.model.and_then(button_hash).is_some();
                 if file && !addressable { return None; }
                 // the Dialog takes the pointer over its window, and only there
@@ -2293,8 +2308,8 @@ pub(super) fn begin(system: &mut System) -> bool {
     // the choice box over the Screen under it (whichever class opened it),
     // or the Screen's own popup
     let window = if dialog_row(index) { None } else {
-        let own = screen_dialog(index).and_then(|source| Some((source.0, dialog_window(system, bottom, source)?)));
-        own.or_else(|| Some((CHOICE_BOX_DIALOG.0, dialog_window(system, bottom, CHOICE_BOX_DIALOG)?)))
+        let own = screen_dialog(index).and_then(|source| Some((source, dialog_window(system, bottom, source)?)));
+        own.or_else(|| Some((CHOICE_BOX_DIALOG, dialog_window(system, bottom, CHOICE_BOX_DIALOG)?)))
     };
     let lens = if index == 1 { ListLens::of(system, bottom) } else { None };
     let chapters = lens.map_or_else(Vec::new, |lens| chapter_list(system, bottom, lens));
@@ -2380,15 +2395,16 @@ pub(super) fn begin(system: &mut System) -> bool {
     mouse.menu_top.fuse_phase = fuse_phase;
     // the Dialog comes after the Screen's own layers, so their saved
     // indices hold
-    let dialog = window.map(|(model, window)| {
+    let dialog = window.map(|((model, _, nodes), window)| {
         let (part, shown) = dialog_part(model, window, 400.0 * mouse.widen);
         parts.push(part);
-        Dialog { model, part: parts.len() - 1, window, shown }
+        Dialog { model, nodes, part: parts.len() - 1, window, shown }
     });
     if mouse.menu_top.dialog.is_some() != dialog.is_some() { mouse.clear_menus_top_pointer(); }
     mouse.menu_top.dialog = dialog;
-    // the Screen's own layer of the Dialog's model gives way to it
-    mouse.menu_top.dialog_owners = dialog.map_or_else(Vec::new, |dialog| (0..dialog.part)
+    // the Screen's own layer of the Dialog's model gives way to it, unless
+    // it keeps the model's other nodes
+    mouse.menu_top.dialog_owners = dialog.filter(|dialog| dialog.nodes.is_none()).map_or_else(Vec::new, |dialog| (0..dialog.part)
         .filter(|&at| part_model(index, &parts[at]) == Some(dialog.model)).collect());
     mouse.menu_top.active = Some((index, object, current, native_touch));
     mouse.menu_top.passthrough = native_touch;
@@ -3259,8 +3275,9 @@ fn draw_part(system: &mut System, top: u32, next: usize) -> bool {
         let owner = bottom_layers(index).iter().find(|&&(layer, ..)| Some(layer) == part.model).map(|&(_, owner, _)| owner);
         // An owner ending in `*` owns every model whose name starts with the rest.
         let owned = |name: &str| owner.is_some_and(|owner| owner.strip_suffix('*').map_or(owner == name, |prefix| name.starts_with(prefix)));
-        let boxed = system.aim_mouse.as_ref().unwrap().menu_top.dialog.map(|dialog| dialog.model);
-        filter_models(system, drawing, false, true, &mut moved, |name| owned(name) && boxed != Some(name));
+        let dialog = system.aim_mouse.as_ref().unwrap().menu_top.dialog;
+        let whole = dialog.filter(|dialog| dialog.nodes.is_none()).map(|dialog| dialog.model);
+        filter_models(system, drawing, false, true, &mut moved, |name| owned(name) && whole != Some(name));
         let layers = read_word(system, scene + SCENE_LAYERS);
         for layer in BOTTOM_LAYERS {
             let list = read_word(system, layers + layer * LAYER_SIZE + 4);
@@ -3271,16 +3288,35 @@ fn draw_part(system: &mut System, top: u32, next: usize) -> bool {
                 let model = read_word(system, at);
                 let name = model_name(system, model);
                 if !owned(&name) { continue; }
-                show_nodes(system, &mut moved, model, |node| top_layer(bottom_layers(index), &name, node) == part.model);
+                show_nodes(system, &mut moved, model, |node| top_layer(bottom_layers(index), &name, node) == part.model
+                    && !dialog.is_some_and(|dialog| dialog.draws(&name, node)));
             }
         }
     } else {
         let slider = matches!(part.model, Some("MenOptionSoundBt0002" | "MenOptionSoundBt0003" | "MenOptionSoundBt0004"));
         // while a Dialog is up only its layer draws the choice box
-        let boxed = system.aim_mouse.as_ref().unwrap().menu_top.dialog.filter(|_| !part.dialog).map(|dialog| dialog.model);
+        let dialog = system.aim_mouse.as_ref().unwrap().menu_top.dialog;
+        let boxed = dialog.filter(|dialog| !part.dialog && dialog.nodes.is_none()).map(|dialog| dialog.model);
         filter_models(system, drawing, part.top, !part.top, &mut moved, |name| boxed != Some(name) && (
             part.model.is_none_or(|model| name == model || board_companions(model).contains(&name))
                 || (slider && matches!(name, "MenOptionSoundBt0001" | "MenOptionSoundBt0006"))));
+        // a Dialog drawing only some nodes of its model: those in its layer,
+        // the rest in the Screen's
+        if let Some(dialog) = dialog.filter(|dialog| dialog.nodes.is_some() && !part.top) {
+            let layers = read_word(system, scene + SCENE_LAYERS);
+            for layer in BOTTOM_LAYERS {
+                let list = read_word(system, layers + layer * LAYER_SIZE + 4);
+                if list == 0 { continue; }
+                let (start, end) = (read_word(system, list + 0x18), read_word(system, list + 0x1C));
+                if end < start || end - start > 0x1000 { continue; }
+                for at in (start..end).step_by(4) {
+                    let model = read_word(system, at);
+                    let name = model_name(system, model);
+                    if name != dialog.model { continue; }
+                    show_nodes(system, &mut moved, model, |node| dialog.draws(&name, node) == part.dialog);
+                }
+            }
+        }
     }
     if !part.top { change(system, &mut moved, bottom + 0x60, &[0; 4]); }
     system.aim_mouse.as_mut().unwrap().menu_top.clip = Some((part.place, part.top));
@@ -3754,7 +3790,7 @@ mod tests {
                 let back = parts.iter().find(|part| part.idol == Some(IdolGroup::Back)).unwrap().place;
                 let (part, shown_at) = dialog_part(CHOICE_BOX_DIALOG.0, window, width);
                 parts.push(part);
-                let dialog = Dialog { model: CHOICE_BOX_DIALOG.0, part: parts.len() - 1, window, shown: shown_at };
+                let dialog = Dialog { model: CHOICE_BOX_DIALOG.0, nodes: None, part: parts.len() - 1, window, shown: shown_at };
                 let middle = [shown_at[0] + shown_at[2] * 0.5, shown_at[1] + shown_at[3] * 0.5];
                 assert!((middle[0] - width * 0.5).abs() < 0.01 && (middle[1] - 120.0).abs() < 0.01, "{middle:?} at {width}");
                 assert!(shown_at[0] >= 0.0 && shown_at[0] + shown_at[2] <= width && shown_at[1] >= 0.0 && shown_at[1] + shown_at[3] <= 240.0);

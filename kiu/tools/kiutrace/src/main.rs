@@ -519,6 +519,30 @@ fn main() {
             }
             "rects" => for (name, rect) in zakuro_core::aim_mouse::layer_rects(&mut system) { println!("  {name}: {rect:?}"); },
             "noderects" => for (name, rect) in zakuro_core::aim_mouse::node_rects(&mut system, words[1]) { println!("  {name}: {rect:?}"); },
+            "threads" => {
+                let threads = system.kernel.threads.clone();
+                for thread in &threads {
+                    let waits: Vec<String> = thread.wait_objects.iter().map(|&id| {
+                        let object = format!("{:?}", system.kernel.objects.get(id));
+                        object.chars().take(90).collect()
+                    }).collect();
+                    println!("  {:?} {} {:?} pc {:08X} lr {:08X} address {:08X?} waits {waits:?}", thread.id, thread.name, thread.status,
+                        thread.context.regs[15], thread.context.regs[14], thread.wait_address);
+                    // return addresses on its stack, innermost first
+                    if words.get(1) == Some(&thread.name.as_str()) {
+                        let sp = thread.context.regs[13];
+                        let mut code = Vec::new();
+                        for at in (0..512).map(|i| sp + i * 4) {
+                            if !system.memory.is_readable(at, 4) || code.len() == 32 { break; }
+                            let mut word = [0u8; 4];
+                            system.memory.read_bytes(at, &mut word);
+                            let word = u32::from_le_bytes(word);
+                            if (0x0010_0000..0x00C0_0000).contains(&word) && word & 1 == 0 { code.push(format!("{word:08X}")); }
+                        }
+                        println!("    stack {}", code.join(" "));
+                    }
+                }
+            }
             "layers" => {
                 let mouse = system.aim_mouse.get_or_insert_with(Default::default);
                 for (name, to) in mouse.editor_layers() {

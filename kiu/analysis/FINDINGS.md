@@ -743,6 +743,22 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   trying to fuse a weapon you have equipped"); with menus on the top
   screen the bottom stops on the cell's flash and `begin` stops running
   (also at 7ca46b4, before Dialogs), no fault logged.
+- The "drawing buffer" is the game's GPU command lists: two, each with a
+  0x4B000-byte buffer from its own heap (sized at 0x001018E8, with 0x100
+  requests). A list object (bound one at `0x00DBC4F8 + 0x9C`) keeps its
+  buffer at +4, size +8, used +0xC, requests +0x18 (28 bytes each), count
+  +0x20; `0x001688E0` clears it and takes buffer and size afresh. The game
+  never checks the size: Fuse Weapons' 14 top layers with its question
+  wrote 0x4B910 bytes, the list never finished, and the main thread spun
+  in `0x00168EFC` on `0x00DBC4F8 + 0x11` (the list running) for good, the
+  last frame's lists still resubmitted. Hiding any 4 of the 14 top layers
+  avoided it, 3 did not. The heap has about 300 KB spare at boot: 0x96000
+  each failed to allocate the second list, 0x70000 too. The port now moves
+  both lists to 1 MiB buffers in the SYSTEM region, mapped in the linear
+  window, at their first clear (`aim_mouse::command_lists`); save states
+  keep the mapping. The equipped-weapon box, Fuse/Cancel and the fusion
+  then ran by mouse. Earlier Screens' replay limits (17 bottom layers, 36
+  top layers, Powers' entry) were this same overflow.
 - A save state made on Windows keeps each open archive's Windows path;
   loaded here the game could not open gamecoin.dat (shared extdata) when
   Options opened and stopped (0xC8804471). Loading now moves each archive

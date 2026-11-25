@@ -8,6 +8,7 @@
 use crate::System;
 
 mod idol_view;
+mod command_lists;
 mod menu_top;
 mod screen_transform;
 use menu_top::MenuTop;
@@ -30,7 +31,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 147] = [
+pub const PLACES: [u32; 148] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2, APPLY_CONTROLS, INPUT_FRAME, MOVE_CHOICE_PICK,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -80,6 +81,7 @@ pub const PLACES: [u32; 147] = [
     menu_top::BOTTOM_TRANSLUCENT,
     menu_top::FONT_DRAW,
     menu_top::FONT_DRAWN,
+    command_lists::CLEAR_COMMAND_LIST,
     CAMERA_CALL,
     RIGHT_EYE_LAYER,
     menu_top::START,
@@ -2333,6 +2335,7 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         menu_top::SCISSOR_DONE => menu_top::scissor_done(system),
         menu_top::BOTTOM_TEXT => menu_top::bottom_text(system),
         menu_top::BOTTOM_TRANSLUCENT => menu_top::bottom_translucent(system),
+        command_lists::CLEAR_COMMAND_LIST => command_lists::make_room(system),
         menu_top::FONT_DRAW => menu_top::font_draw(system),
         menu_top::FONT_DRAWN => menu_top::font_done(system),
         TOP_SCENE_DRAWN => top_screen_cauldron(system),
