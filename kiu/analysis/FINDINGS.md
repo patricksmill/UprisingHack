@@ -1181,6 +1181,24 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   and back - but the rows it shows did not come back with it and the probe
   left fewer of them showing, so the third and fourth words the keys pass
   are not known yet and the wheel is not wired to it.
+- Music Gallery as Scripted Screen 29 (MENUID 38, `trace/musicgallery.state`,
+  made from `powerportrait.state`: B, tap Music Gallery, A). Object
+  0x14058748 there; `entered` shows 0x001B4D28 and 0x001B4CF8 entered with
+  it from the dispatcher at lr 0x00417680, which is why `calls` on them
+  caught nothing. The wheel uses the keys' own step, 0x002576C4(object,
+  +1 or -1): 12 notches down take the List's first Row (+0x190 +0xEC) to 12
+  and its pick (+0xE4, an index among the shown Rows) to 8, 12 up take both
+  back to 0. 0x0031AA88 with a third word 1 (Idols') clamps the pick at 7
+  without scrolling and drives it to -1 going up. Models: bottom
+  `MenColSdtstMusicBt0100` the page (clef strip, x -57..454,
+  so it is a node layer cut at its box), `Bt0103` one per Row (x 47..293,
+  carries the Row words), `Bt0104` Cursor and play mark, `Bt0105` the List's
+  top and bottom fades, `MenCmnScbar` x 294..320, `MenColViewerBt9999`
+  Back (no named nodes); top `MenCollectionTopUp0000` (the Vault backdrop),
+  `MenColSdtstMusicUp0001` and `Up0002`.
+- `kiutrace` resolves save data against `KIUTRACE_DATA_DIR` (its `user/`),
+  else `./user`: run from `kiu/` with `KIUTRACE_DATA_DIR=.`, or leaving a
+  Vault page faults (FS error 0xC8804471 at 0x0010D128).
 
 - Screens whose parts act on touches, not on A (Idol Toss, Treasure Hunt),
   take no click of their own: `CLICK_TOUCHES` in their MENU_SCREENS entry
@@ -1224,7 +1242,7 @@ Canonical Screen names are in `GLOSSARY.md`; this table is the only place their 
 | Control Configuration | in-game Options page 5 | 0x00A0ACF0 | none | drags what it holds |
 | Pause | object at ctx+0x243C | 0x0060DC7C input | pause options page at +0x678 | touch: 0x00A0867C main page, 0x00A06188 Options |
 | Retreat Dialog | dialog object | 0x007226C4 input | picked button at +0x294 | touch began now |
-| Music Gallery | 0x00CFB010 (list) | 0x001B4D28, 0x001B4CF8 | none | keys 0x0031AA88 |
+| Music Gallery | 0x00CFB010 | 0x001B4D28 (0x001B4CF8 beside it) | outline_none | none (click is a touch); wheel 0x002576C4 |
 | Fiend's Cauldron | pot task 0x00CF9AEC | 0x00251624, 0x00251C40 | cursor class 0x00CEE170 | touch |
 
 ## The Fiend's Cauldron

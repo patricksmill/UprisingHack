@@ -206,6 +206,6 @@ Canonical names for the Screens a change request can name. Use the game's visibl
 | Treasure Hunt | Scripted Menu | Tile board |
 | Vault | Scripted Menu | Idols, Music Gallery, Power Portrait, Offering, Idol Toss, Records, AR, Back |
 | Idols | Scripted Menu | Idol List and one idol's description inside Vault; Rows, Back, AR |
-| Music Gallery | Scripted Menu | Track List inside Vault |
+| Music Gallery | Scripted Menu | Track List inside Vault (MENUID 38) |
 | Chapter Results | Scripted Menu | The results after a chapter, then each reward with Take (MENUID 34) |
 | Fiend's Cauldron | Scripted Menu | Bet bar, pot, Move Out, Back |

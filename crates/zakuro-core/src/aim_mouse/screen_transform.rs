@@ -45,6 +45,7 @@ pub enum Screen {
     Idols,
     PowerPortrait,
     ChapterResults,
+    MusicGallery,
     FiendsCauldron,
     Pause,
     RetreatDialog,
@@ -245,6 +246,34 @@ const VAULT_TOP: &[TopLayer] = &[
     ("Silhouette", "MenCollectionTopUp0001", &[]),
     ("Page title", "MenCollectionTopUp0005", &[]),
 ];
+/// The Vault's Music Gallery (MENUID 38; `trace/musicgallery.state`),
+/// top back to front: the Vault's shared backdrop, Palutena's figure, and
+/// the emblem under the title with the track box (one model). The title's
+/// words stay with the Details card.
+const MUSIC_GALLERY_TOP: &[TopLayer] = &[
+    ("Backdrop", "MenCollectionTopUp0000", &[]),
+    ("Figure", "MenColSdtstMusicUp0001", &[]),
+    ("Track box", "MenColSdtstMusicUp0002", &[]),
+];
+
+/// The Music Gallery's page reaches past the bottom screen on both sides,
+/// so it is a node layer, cut at its box.
+const MUSIC_GALLERY_BOTTOM: &[TopLayer] = &[
+    ("Background", "MenColSdtstMusicBt0100", &[]),
+];
+
+/// The Music Gallery's bottom Board with native boxes, back to front: the
+/// page (with the clef strip), the Track List's Rows, their Cursor and play
+/// mark, the List's top and bottom fades, the Scroll bar, then Back.
+const MUSIC_GALLERY: &[(&str, [f32; 4])] = &[
+    ("Background", [0.0, 0.0, 320.0, 240.0]),
+    ("MenColSdtstMusicBt0103", [46.0, 0.0, 248.0, 240.0]),
+    ("MenColSdtstMusicBt0104", [46.0, 0.0, 248.0, 240.0]),
+    ("MenColSdtstMusicBt0105", [46.0, 0.0, 248.0, 240.0]),
+    ("MenCmnScbar", [294.0, 0.0, 26.0, 240.0]),
+    ("MenColViewerBt9999", [0.0, 196.0, 46.0, 44.0]),
+];
+
 /// Chapter Results (MENUID 34, `MenOnlineRsltte*`): the results after a
 /// chapter, then each reward with Take. Probed from the user's desktop
 /// slot 5 (a Power's reward page). Its other pages' models (the score
@@ -798,11 +827,11 @@ impl ScreenSpec {
 
 /// the update function of each Scripted Menu, in registry order. Kept
 /// separately so `PLACES` can read it in a const context.
-pub(super) const SCRIPTED_UPDATES: [u32; 29] = [
+pub(super) const SCRIPTED_UPDATES: [u32; 30] = [
     0x002A3EC4, 0x002A3FCC, 0x002A3F9C, 0x00224BA0, 0x001ECB4C, 0x00224C18, 0x001B4C74, 0x001ECBBC, 0x00224BD4,
     0x001ECBF4, 0x0016756C, 0x002A4070, 0x002ECCF4, 0x002A1FD8, 0x002B6DB8, 0x00238CBC, 0x001C9734, 0x00230B5C,
     0x002BB14C, 0x0019CDC8, 0x0019BDC4, 0x0023A9FC, 0x001B4D58, 0x0018AF44, 0x00224B80, 0x001B4D4C, 0x001B4D70,
-    0x0018AEB8, 0x00260868,
+    0x0018AEB8, 0x00260868, 0x001B4D28,
 ];
 
 pub(super) const SCRIPTED_COUNT: usize = SCRIPTED_UPDATES.len();
@@ -865,6 +894,7 @@ pub(super) static SCREENS: &[ScreenSpec] = &[
     scripted!(26, Idols, 0x00CF93D8, outline_none, Activate::Touch, LayoutKind::Board { group: IDOLS, hint: None, top_layers: IDOLS_TOP, bottom_layers: IDOLS_BOTTOM, texture_layers: IDOLS_TEXTURE }),
     scripted!(27, PowerPortrait, 0x00CF9388, outline_none, Activate::Touch, LayoutKind::Board { group: POWER_PORTRAIT, hint: None, top_layers: POWER_PORTRAIT_TOP, bottom_layers: POWER_PORTRAIT_BOTTOM, texture_layers: &[] }),
     scripted!(28, ChapterResults, 0x00CF7414, outline_none, Activate::Touch, LayoutKind::Board { group: RESULTS, hint: None, top_layers: RESULTS_TOP, bottom_layers: RESULTS_BOTTOM, texture_layers: &[] }),
+    scripted!(29, MusicGallery, 0x00CFB010, outline_none, Activate::Touch, LayoutKind::Board { group: MUSIC_GALLERY, hint: None, top_layers: MUSIC_GALLERY_TOP, bottom_layers: MUSIC_GALLERY_BOTTOM, texture_layers: &[] }),
     ScreenSpec {
         id: Screen::FiendsCauldron,
         family: Family::Cauldron,
@@ -2159,7 +2189,7 @@ mod tests {
 
     #[test]
     fn scripted_rows_keep_their_order() {
-        assert_eq!(SCRIPTED_COUNT, 29);
+        assert_eq!(SCRIPTED_COUNT, 30);
         for (index, update) in SCRIPTED_UPDATES.iter().enumerate() {
             assert_eq!(SCREENS[index].update(), Some(*update));
         }
