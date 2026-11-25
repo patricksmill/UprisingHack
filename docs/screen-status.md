@@ -61,13 +61,13 @@ as "look first". Nothing has been checked with a real mouse on Windows yet.
 | Idols | ✅ | ◐ | ✅ | ✅ | Idol View orbits on a stick; the viewer has no Outline of its own. |
 | Power Portrait | ◐ | ☐ | ◐ | ☐ | Top split recorded; no Outline, a click is a touch. |
 | Chapter Results | ✅ | ✅ | ✅ | ✅ | Bottom node layers drawn whole. |
+| Music Gallery | ◐ | ✅ | ✅ | ☐ | Screen 29. Back is part of the Background layer, so it can't move alone. Default layout is still the generic one. |
 | Fiend's Cauldron | ✅ | ✅ | ✅ | ✅ | Own F2 editor; dial drag checked. |
 
 ## Not registered yet
 
 | Screen | Layerized | Controller | Mouse | Rearranged | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Music Gallery | ☐ | ? | ◐ | ☐ | Rows take a tap; wheel not connected (`0x0031AA88`'s 3rd and 4th words unknown). |
 | Offering | ☐ | ? | ☐ | ☐ | Only the dial depth fix. |
 | Records | ☐ | ? | ☐ | ☐ | |
 | AR (Vault, Main Menu) | ☐ | ☐ | ☐ | ☐ | Needs AR cards; probably `wontfix`. |

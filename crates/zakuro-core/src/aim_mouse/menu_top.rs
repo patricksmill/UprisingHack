@@ -1083,6 +1083,7 @@ const BOARD_TEXT: &[&str] = &[
     "MenEquipBt0120", "MenEquipBt0121", "MenEquipBt0122", "MenEquipBt0123",
     "MenEquipBt0204", "MenEquipBt0211", "MenEquipBt0212",
     "MenColViewlistBt0000", "MenColViewlistBt0003",
+    "MenColSdtstMusicBt0103",
     "MenAlterbuyBt0120", "MenAlterbuyBt0123", "MenAlterbuyBt0130",
     "MenAltersoldBt0120", "MenAltersoldBt0123", "MenAltersoldBt0130",
     "MenStockroomBt0001",
@@ -2244,6 +2245,7 @@ fn scene(system: &mut System, top: u32) -> Option<(usize, u32, u32, bool)> {
                 else if name.starts_with("MenEquipBt0120") { Some(19) }
                 else if name.starts_with("MenEquipBt0102") { Some(20) }
                 else if name.starts_with("MenOptionTopBt") { Some(3) }
+                else if name.starts_with("MenColSdtstMusicBt") { Some(29) }
                 else { None };
             if let Some(index) = hub {
                 matched = Some(index);
@@ -2997,11 +2999,11 @@ const MENUID_HOME: u8 = 3;
 /// each scripted Screen and the MENUIDs it is shown under, measured on the
 /// trace states. Dialogs show under their parent's MENUID, and both Idol
 /// Tosses under 44, so those take the Screen the input last confirmed.
-const SCREEN_MENUS: [(usize, &[u8]); 29] = [
+const SCREEN_MENUS: [(usize, &[u8]); 30] = [
     (0, &[2]), (1, &[1]), (2, &[4]), (3, &[17]), (4, &[22]), (5, &[19]), (6, &[25]),
     (7, &[23]), (8, &[21]), (9, &[39]), (10, &[45]), (11, &[]), (12, &[3]), (13, &[11]),
     (14, &[14]), (15, &[12]), (16, &[37]), (17, &[26]), (18, &[18]), (19, &[43]),
-    (20, &[42]), (21, &[10]), (22, &[44]), (23, &[13]), (24, &[16]), (25, &[44]), (26, &[46]), (27, &[47]), (28, &[34]),
+    (20, &[42]), (21, &[10]), (22, &[44]), (23, &[13]), (24, &[16]), (25, &[44]), (26, &[46]), (27, &[47]), (28, &[34]), (29, &[38]),
 ];
 
 /// the MENUIDs a scripted Screen is shown under, empty for any.
