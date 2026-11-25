@@ -54,7 +54,7 @@ Shots are `.ppm`; view them with `python3 $G <out> <dest.png> <cols> <shots...>`
    (note pre-existing failures by rerunning without your change). Windows:
    `cargo build --release --target x86_64-pc-windows-gnu -p zakuro`, copy
    `target/x86_64-pc-windows-gnu/release/UprisingHack.exe` to
-   `dist/zakuro-kiu-mouse.exe` and `/mnt/c/Users/Patrick/Downloads/zakuro-kiu/zakuro-kiu.exe`,
+   `dist/UprisingHack.exe` and `/mnt/c/Users/Patrick/Downloads/zakuro-kiu/UprisingHack.exe`,
    compare `sha256sum`.
 
 8. **Record** the node map in `kiu/analysis/FINDINGS.md` (next to "Gear top-screen

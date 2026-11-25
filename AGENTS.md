@@ -20,7 +20,7 @@ This repository is a fork of upstream Zakuro (`fearkov/zakuro`, remote `upstream
 
 ## Windows delivery
 
-After code changes, rebuild the Windows release executable and replace `kiu/dist/zakuro-kiu-mouse.exe` before reporting the changes ready to use. Verify the distributed executable matches the new build; report build or runtime-verification blockers explicitly.
+After code changes, rebuild the Windows release executable and replace `kiu/dist/UprisingHack.exe` before reporting the changes ready to use. Verify the distributed executable matches the new build; report build or runtime-verification blockers explicitly.
 
 ## Agent skills
 
