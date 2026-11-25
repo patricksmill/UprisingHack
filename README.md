@@ -23,7 +23,7 @@ You need your own **decrypted** dump of Kid Icarus: Uprising (USA, 0004000000030
 
 To build from source instead, see [docs/BUILDING.md](docs/BUILDING.md).
 
-Found a bug or want a change? [Open an issue](https://github.com/patricksmill/UprisingHack/issues/new/choose).
+Found a bug or want a change? [Open an issue](https://github.com/patricksmill/UprisingHack/issues/new/choose). To help out, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Features
 
