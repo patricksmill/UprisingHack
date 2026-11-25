@@ -149,7 +149,7 @@ fn listen(heard: &Arc<Mutex<Heard>>, running: &AtomicBool) {
         SampleFormat::I16 => stream::<i16>(&device, &config, heard.clone()),
         SampleFormat::U16 => stream::<u16>(&device, &config, heard.clone()),
         SampleFormat::I32 => stream::<i32>(&device, &config, heard.clone()),
-        other => Err(format!("it gives {other} samples, which Zakuro does not take")),
+        other => Err(format!("it gives {other} samples, which UprisingHack does not take")),
     };
     let stream = match stream.and_then(|stream| stream.play().map(|()| stream).map_err(|error| error.to_string())) {
         Ok(stream) => stream,

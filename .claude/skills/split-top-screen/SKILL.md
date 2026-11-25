@@ -53,7 +53,7 @@ Shots are `.ppm`; view them with `python3 $G <out> <dest.png> <cols> <shots...>`
 7. **Test and ship.** `cargo test -p zakuro-core --release`
    (note pre-existing failures by rerunning without your change). Windows:
    `cargo build --release --target x86_64-pc-windows-gnu -p zakuro`, copy
-   `target/x86_64-pc-windows-gnu/release/zakuro.exe` to
+   `target/x86_64-pc-windows-gnu/release/UprisingHack.exe` to
    `dist/zakuro-kiu-mouse.exe` and `/mnt/c/Users/Patrick/Downloads/zakuro-kiu/zakuro-kiu.exe`,
    compare `sha256sum`.
 
@@ -115,7 +115,7 @@ each layer named in `group` with its native box (Idols: `IDOLS_BOTTOM`).
 - A bar under the hint's words can follow the hint: add its layer name to
   `HINT_BACKING`.
 - Old `trace/` states (0.2.30) no longer load; the user's desktop slots are
-  in `/mnt/c/Users/Patrick/AppData/Roaming/zakuro/states/0004000000030100/`
+  in `/mnt/c/Users/Patrick/AppData/Roaming/UprisingHack/states/0004000000030100/`
   ("state N" means `N.state`).
 
 - Boxes probed on one page of a multi-page Screen can cut another page's

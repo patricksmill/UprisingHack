@@ -44,7 +44,7 @@ cargo run --release -p zakuro
 ```
 
 The first build takes several minutes. The executable ends up in
-`target/release/` (`zakuro.exe` on Windows). To launch the game directly,
+`target/release/` as `UprisingHack.exe` (`UprisingHack` on Linux). To launch the game directly,
 pass the dump: `cargo run --release -p zakuro -- kiu/dumps/kiu.cci`.
 
 ### Faster rebuilds while iterating
@@ -89,8 +89,8 @@ python3 scripts/make_60fps_ips.py build/kiu/code.bin build/code.ips
 ```
 
 Copy `kiu/build/code.ips` into the game's mod folder,
-`mods/0004000000030100/`, inside Zakuro's data folder
-(`%APPDATA%\zakuro\` on Windows, `~/.local/share/zakuro/` on Linux). The
+`mods/0004000000030100/`, inside UprisingHack's data folder
+(`%APPDATA%\UprisingHack\` on Windows, `~/.local/share/UprisingHack/` on Linux). The
 **Mods** button next to the game in the library opens it. Then recompile
 the game, so the patched code runs at full speed.
 

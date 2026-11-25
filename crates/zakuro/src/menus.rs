@@ -434,7 +434,7 @@ impl Menus {
         egui::Panel::top("library bar").show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.heading("Zakuro");
+                ui.heading("UprisingHack");
                 ui.separator();
                 match &settings.games {
                     Some(folder) => ui.label(folder.display().to_string()),
@@ -459,7 +459,7 @@ impl Menus {
                     let outdated = idle(library.games.iter().filter(|game| game.outdated).map(Game::wanted), jobs, waiting);
                     if !outdated.is_empty() {
                         let recompile = ui.button(format!("Recompile outdated ({})", outdated.len())).on_hover_text(
-                            "These games were recompiled by an older version of Zakuro. Recompiling them again gives them its improvements. They go one at a time, around ten minutes each, and games can be played meanwhile.",
+                            "These games were recompiled by an older version of UprisingHack. Recompiling them again gives them its improvements. They go one at a time, around ten minutes each, and games can be played meanwhile.",
                         );
                         if recompile.clicked() {
                             actions.push(Action::Recompile(outdated));
@@ -584,7 +584,7 @@ impl Menus {
                                     }
                                     _ => {
                                         let label = if game.recompiled { "Recompile again" } else { "Recompile" };
-                                        if ui.button(label).on_hover_text("Turn the game's code into native code with 3dsrecomp, which makes it run faster. It takes around ten minutes and needs a C compiler, gcc or clang, or Zig, which Zakuro offers to download when the computer has neither.").clicked() {
+                                        if ui.button(label).on_hover_text("Turn the game's code into native code with 3dsrecomp, which makes it run faster. It takes around ten minutes and needs a C compiler, gcc or clang, or Zig, which UprisingHack offers to download when the computer has neither.").clicked() {
                                             actions.push(Action::Recompile(vec![game.wanted()]));
                                         }
                                         if let Some(Stage::Failed(error)) = job.map(Job::stage) {
@@ -1428,7 +1428,7 @@ impl Menus {
                     ui.label(RichText::new("Open a room").strong());
                     ui.horizontal(|ui| {
                         ui.label("Name");
-                        ui.add(egui::TextEdit::singleline(&mut settings.room_name).hint_text("Zakuro"));
+                        ui.add(egui::TextEdit::singleline(&mut settings.room_name).hint_text("UprisingHack"));
                     });
                     ui.horizontal(|ui| {
                         ui.label("Port");
@@ -1501,7 +1501,7 @@ impl Menus {
                 ui.label(
                     RichText::new("F9 switches them while playing, F10 between the top and the bottom screen alone.").weak(),
                 );
-                ui.label(RichText::new("The presenter changes the next time Zakuro starts.").weak());
+                ui.label(RichText::new("The presenter changes the next time UprisingHack starts.").weak());
 
                 ui.separator();
                 ui.heading("Emulation");
@@ -1967,7 +1967,7 @@ impl Menus {
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.label(format!(
-                    "Recompiling needs a C compiler, and Zakuro didn't find one on this computer. It can download Zig, a compiler that needs no installing, into its own folder{size}."
+                    "Recompiling needs a C compiler, and UprisingHack didn't find one on this computer. It can download Zig, a compiler that needs no installing, into its own folder{size}."
                 ));
                 ui.horizontal(|ui| {
                     if ui.button("Download it and recompile").clicked() {
@@ -1986,7 +1986,7 @@ impl Menus {
         let Some(text) = self.message.clone() else { return };
         // a line of recompiles that all fail makes it long, and it scrolls to keep the OK that closes it on the screen
         let room = (ctx.content_rect().height() - 120.0).max(60.0);
-        egui::Window::new("Zakuro")
+        egui::Window::new("UprisingHack")
             .id(egui::Id::new("message"))
             .collapsible(false)
             .resizable(false)

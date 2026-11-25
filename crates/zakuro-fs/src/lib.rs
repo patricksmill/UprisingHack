@@ -47,10 +47,10 @@ pub enum FsError {
     #[error("cartridge has no executable partition")]
     NoExecutablePartition,
 
-    #[error("this NCCH is encrypted (crypto method 0x{0:02X}); Zakuro needs a decrypted dump")]
+    #[error("this NCCH is encrypted (crypto method 0x{0:02X}); UprisingHack needs a decrypted dump")]
     Encrypted(u8),
 
-    #[error("this .cia is encrypted; Zakuro needs a decrypted one")]
+    #[error("this .cia is encrypted; UprisingHack needs a decrypted one")]
     EncryptedCia,
 
     #[error("this .cia is {0}, not a game")]

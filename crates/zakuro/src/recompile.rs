@@ -114,7 +114,7 @@ impl Job {
             // a bug on the way fails this game and the ones waiting get their turn, instead of this one never ending
             let result = compiler.and_then(|compiler| {
                 let build = AssertUnwindSafe(|| recompile(&rom, update.as_deref(), program_id, &game, data_dir.as_deref(), compiler, &stop, &events));
-                std::panic::catch_unwind(build).unwrap_or_else(|_| Err("Zakuro hit a bug recompiling it, please report it".to_owned()))
+                std::panic::catch_unwind(build).unwrap_or_else(|_| Err("UprisingHack hit a bug recompiling it, please report it".to_owned()))
             });
             if let Ok(mut state) = progress.lock() {
                 state.stage = match result {

@@ -702,7 +702,7 @@ pub(crate) fn pipeline_cache(title: u64) -> Option<std::path::PathBuf> {
     } else {
         var("XDG_CACHE_HOME").or_else(|| var("HOME").map(|home| home.join(".cache")))
     }?;
-    let dir = dir.join("zakuro");
+    let dir = dir.join("UprisingHack");
     // the one file every game shared before
     let old = dir.join("pipelines.bin");
     if old.exists() {

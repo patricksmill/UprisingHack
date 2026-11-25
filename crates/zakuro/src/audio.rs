@@ -210,7 +210,7 @@ impl Audio {
             SampleFormat::I16 => stream::<i16>(&device, &config, queue.clone()),
             SampleFormat::U16 => stream::<u16>(&device, &config, queue.clone()),
             SampleFormat::I32 => stream::<i32>(&device, &config, queue.clone()),
-            other => return Err(format!("the output takes {other} samples, which Zakuro does not make")),
+            other => return Err(format!("the output takes {other} samples, which UprisingHack does not make")),
         }?;
         stream.play().map_err(|e| e.to_string())?;
         Ok(Audio { queue, volume: std::cell::Cell::new(1.0), stretch: std::cell::RefCell::new(Stretch::new()), _stream: stream })

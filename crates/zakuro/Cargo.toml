@@ -9,7 +9,7 @@ description = "A high-level-emulation Nintendo 3DS emulator"
 path = "src/lib.rs"
 
 [[bin]]
-name = "zakuro"
+name = "UprisingHack"
 path = "src/main.rs"
 
 [dependencies]

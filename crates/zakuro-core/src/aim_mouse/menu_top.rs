@@ -1441,19 +1441,15 @@ const SCREEN_DIALOGS: &[(Screen, DialogModel)] = &[
     (Screen::ArmoryFuseWeapons, ("MenAltermixBt0010", FUSE_QUESTION, Some(FUSE_QUESTION))),
     // a weapon's Try It!/Equip It!/Back; `base` is the dim
     (Screen::ArmoryWeapons, ("MenEquipBt0130", &["NN_B0000", "NN_B0001", "NN_B0003", "cursor", "cursor7", "cursor8"], None)),
-    // the weapon category filter: ten category icons on a board;
-    // `NN_B0007` is the dim. Measured closed only (x 2027..2288).
-    (Screen::ArmoryWeapons, ("MenEquipBt0131", &["base", "cursor", "icon0", "icon1", "icon2", "icon3",
-        "icon4", "icon5", "icon6", "icon7", "icon8", "icon9"], None)),
 ];
 
 const FUSE_QUESTION: &[&str] = &["NN_B0000", "NN_B0001", "cursor8", "cursor9",
     "NN_B00003", "NN_B00005", "cursor3", "cursor5", "base2"];
 
-/// the Screen's own popups; at most one is up at a time.
-fn screen_dialogs(index: usize) -> impl Iterator<Item = DialogModel> {
-    let screen = (index < ScreenTransform::scripted_len()).then(|| ScreenTransform::scripted(index).id);
-    SCREEN_DIALOGS.iter().filter(move |&&(owner, _)| Some(owner) == screen).map(|&(_, source)| source)
+/// the Screen's own popup, if it has one.
+fn screen_dialog(index: usize) -> Option<DialogModel> {
+    let screen = (index < ScreenTransform::scripted_len()).then(|| ScreenTransform::scripted(index).id)?;
+    SCREEN_DIALOGS.iter().find(|&&(owner, _)| owner == screen).map(|&(_, source)| source)
 }
 
 /// the Screen open under the choice box, and its object: the newest other
@@ -2312,7 +2308,7 @@ pub(super) fn begin(system: &mut System) -> bool {
     // the choice box over the Screen under it (whichever class opened it),
     // or the Screen's own popup
     let window = if dialog_row(index) { None } else {
-        let own = screen_dialogs(index).find_map(|source| Some((source, dialog_window(system, bottom, source)?)));
+        let own = screen_dialog(index).and_then(|source| Some((source, dialog_window(system, bottom, source)?)));
         own.or_else(|| Some((CHOICE_BOX_DIALOG, dialog_window(system, bottom, CHOICE_BOX_DIALOG)?)))
     };
     let lens = if index == 1 { ListLens::of(system, bottom) } else { None };

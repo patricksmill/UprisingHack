@@ -1,6 +1,7 @@
 //! Zakuro's frontend, a window showing the game library or a game w/ a menu over it,
 //! plus the loop that drives the emulated console one frame at a time
 
+mod app_dir;
 mod audio;
 mod bindings;
 mod camera;
@@ -403,7 +404,7 @@ fn default_data_dir() -> Option<PathBuf> {
     } else {
         var("XDG_DATA_HOME").or_else(|| var("HOME").map(|home| home.join(".local/share")))
     };
-    dir.map(|dir| dir.join("zakuro"))
+    dir.map(|dir| app_dir::in_place(&dir))
 }
 
 /// how long ago a state was saved, like a person would say it
@@ -861,7 +862,7 @@ impl ApplicationHandler for App {
         }
 
         let size = self.window_size();
-        let attributes = Window::default_attributes().with_title("Zakuro").with_inner_size(size);
+        let attributes = Window::default_attributes().with_title("UprisingHack").with_inner_size(size);
         let renderer = self.options.renderer.unwrap_or(match self.settings.renderer {
             Renderer::Vulkan => RendererKind::Vulkan,
             Renderer::OpenGl => RendererKind::OpenGl,
@@ -1203,7 +1204,7 @@ impl App {
             in_software.then(|| GPU_FALLBACK.to_owned()),
             outdated.then(|| {
                 format!(
-                    "{} was recompiled by an older version of Zakuro. Recompile it again from the library to get the newest improvements.",
+                    "{} was recompiled by an older version of UprisingHack. Recompile it again from the library to get the newest improvements.",
                     game.name
                 )
             }),
@@ -2069,7 +2070,7 @@ impl App {
             Some(tools) if self.download_compiler && zig::download_size().is_some() && zig::can_download() => return Some(Toolchain::Download(tools)),
             Some(_) if zig::download_size().is_some() && zig::can_download() => self.menus.compiler_offer = Some(games.to_vec()),
             Some(_) if zig::download_size().is_some() => {
-                self.menus.message = Some(format!("Recompiling needs a C compiler, gcc or clang, or curl or wget for Zakuro to download one: {error}."));
+                self.menus.message = Some(format!("Recompiling needs a C compiler, gcc or clang, or curl or wget for UprisingHack to download one: {error}."));
             }
             _ => self.menus.message = Some(format!("Recompiling needs a C compiler: {error}.")),
         }
@@ -2642,8 +2643,8 @@ impl App {
         }
         if let Some(window) = &self.window {
             let title = match &self.game {
-                Some(game) => format!("Zakuro - {} - {}", game.name, game.system.status_line()),
-                None => "Zakuro".to_owned(),
+                Some(game) => format!("UprisingHack - {} - {}", game.name, game.system.status_line()),
+                None => "UprisingHack".to_owned(),
             };
             window.set_title(&title);
         }

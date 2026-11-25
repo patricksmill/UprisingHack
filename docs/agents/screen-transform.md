@@ -214,7 +214,7 @@ Over Other, SpotPass's choice box is a Dialog (below). Only when no Screen is fo
 A **Dialog** is a popup over a Screen, by one rule for all of them. Two kinds:
 
 - The game's choice box (`MenCmnWindowBt0000`), whichever class opened it: SpotPass's No/Yes over Other and the play-coin message over Idol Toss (registry rows 10 and 11, `dialog_row`), "Return to the previous screen without converting your selections?" over Convert to Hearts, "Use a feather and open this panel?" over Treasure Hunt, and its uses over Fuse Weapons and Chapter Results. While a row 10 or 11 is the newest input and the box's model is in the scene, the Screen under it (`dialog_host`: the newest other open menu whose class is a registry row) is the one drawn.
-- A Screen's own popup model (`SCREEN_DIALOGS`): Redeem Hearts' "Buy this weapon?" (`MenAlterbuyBt0130`), a weapon's Try It!/Equip It!/Back on the Armory's Weapons (`MenEquipBt0130`) and its category filter (`MenEquipBt0131`, unverified: it did not open in the harness), Fuse Weapons' Fuse/Cancel and Equip? (`MenAltermixBt0010`).
+- A Screen's own popup model (`SCREEN_DIALOGS`): Redeem Hearts' "Buy this weapon?" (`MenAlterbuyBt0130`), a weapon's Try It!/Equip It!/Back on the Armory's Weapons (`MenEquipBt0130`), Fuse Weapons' Fuse/Cancel and Equip? (`MenAltermixBt0010`).
 
 Each names the model and the nodes that are its window (not its dim). A Dialog is up while some of those nodes have their middle on the bottom screen; the popups wait slid off it (the Armory's at x≈2000, the choice box at x −250 or −508, half showing), and its window is the union of those nodes (`dialog_window`). While it is up:
 

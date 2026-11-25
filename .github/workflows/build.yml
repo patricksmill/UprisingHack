@@ -95,19 +95,19 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           New-Item -ItemType Directory pack | Out-Null
-          Copy-Item target/release/zakuro.exe, README.md pack/
+          Copy-Item target/release/UprisingHack.exe, README.md pack/
           Copy-Item LICENSE pack/LICENSE.txt
           Copy-Item LICENSE-MIT pack/LICENSE-MIT.txt
           Compress-Archive -Path pack/* -DestinationPath ${{ steps.name.outputs.base }}.zip
           $env:RUST_LOG = 'info'
-          pack/zakuro.exe --test-pattern --headless 1 --mute
+          pack/UprisingHack.exe --test-pattern --headless 1 --mute
       - name: Pack for Linux
         if: runner.os == 'Linux'
         run: |
           mkdir pack
-          cp target/release/zakuro README.md LICENSE LICENSE-MIT pack/
+          cp target/release/UprisingHack README.md LICENSE LICENSE-MIT pack/
           tar czf ${{ steps.name.outputs.base }}.tar.gz -C pack .
-          RUST_LOG=info pack/zakuro --test-pattern --headless 1 --mute
+          RUST_LOG=info pack/UprisingHack --test-pattern --headless 1 --mute
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }}
@@ -133,7 +133,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           cat > notes.md <<'NOTES'
-          On Windows, unzip the windows-x86_64 archive and run zakuro.exe. On Linux, extract the linux-x86_64 archive and run ./zakuro; it needs the ALSA library (libasound2 on Debian and Ubuntu). Linux builds are untested.
+          On Windows, unzip the windows-x86_64 archive and run UprisingHack.exe. On Linux, extract the linux-x86_64 archive and run ./UprisingHack; it needs the ALSA library (libasound2 on Debian and Ubuntu). Linux builds are untested.
 
           You need your own decrypted dump of Kid Icarus: Uprising (USA, 0004000000030100). Press Recompile next to the game in the library before playing, and again after each update: it takes about ten minutes and needs a C compiler, which Zakuro offers to download if you have none.
           NOTES
@@ -162,7 +162,7 @@ jobs:
           cat > notes.md <<NOTES
           **Nightly build of [\`$short\`](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA), $(date -u +%Y-%m-%d).** Built automatically from main and replaced whenever main changes: it may be broken. If it is, use the latest v0.x release instead, and name the commit above in bug reports.
 
-          On Windows, unzip the windows-x86_64 archive and run zakuro.exe. On Linux, extract the linux-x86_64 archive and run ./zakuro; it needs the ALSA library (libasound2 on Debian and Ubuntu). Linux builds are untested.
+          On Windows, unzip the windows-x86_64 archive and run UprisingHack.exe. On Linux, extract the linux-x86_64 archive and run ./UprisingHack; it needs the ALSA library (libasound2 on Debian and Ubuntu). Linux builds are untested.
 
           You need your own decrypted dump of Kid Icarus: Uprising (USA, 0004000000030100). Press Recompile next to the game in the library before playing, and again after each update: it takes about ten minutes and needs a C compiler, which Zakuro offers to download if you have none.
           NOTES

@@ -227,7 +227,7 @@ fn addon(path: &Path) -> Option<Result<Addon, String>> {
         return None;
     }
     if cia.contents.iter().any(|content| content.offset.is_some() && content.encrypted()) {
-        return Some(Err("Encrypted, Zakuro needs a decrypted dump".to_owned()));
+        return Some(Err("Encrypted, UprisingHack needs a decrypted dump".to_owned()));
     }
     Some(Ok(Addon { path: path.to_owned(), title_id: cia.title_id, version: cia.version }))
 }
@@ -236,7 +236,7 @@ fn addon(path: &Path) -> Option<Result<Addon, String>> {
 fn read_or_list_unreadable(path: &Path, data_dir: Option<&Path>) -> Game {
     std::panic::catch_unwind(|| read_game(path, data_dir)).unwrap_or_else(|_| {
         log::error!("reading {} failed", path.display());
-        unplayable(path, "Zakuro couldn't read it, please report it".to_owned())
+        unplayable(path, "UprisingHack couldn't read it, please report it".to_owned())
     })
 }
 
@@ -295,14 +295,14 @@ fn read_game(path: &Path, data_dir: Option<&Path>) -> Game {
 fn problem(error: &zakuro_fs::FsError) -> String {
     use zakuro_fs::FsError;
     match error {
-        FsError::Encrypted(_) | FsError::EncryptedCia => "Encrypted, Zakuro needs a decrypted dump".to_owned(),
+        FsError::Encrypted(_) | FsError::EncryptedCia => "Encrypted, UprisingHack needs a decrypted dump".to_owned(),
         FsError::UnreadableRomFs(_) => "Partly encrypted or damaged, it needs dumping again".to_owned(),
         FsError::NotAGame(what) => {
             let mut what = what.to_string();
             if let Some(first) = what.get_mut(..1) {
                 first.make_ascii_uppercase();
             }
-            format!("{what} Zakuro couldn't read, it goes in the folder next to its game")
+            format!("{what} UprisingHack couldn't read, it goes in the folder next to its game")
         }
         _ => format!("Can't be read, {error}"),
     }
@@ -386,10 +386,10 @@ mod tests {
 
     #[test]
     fn files_that_cant_be_played_say_why() {
-        assert_eq!(problem(&zakuro_fs::FsError::EncryptedCia), "Encrypted, Zakuro needs a decrypted dump");
+        assert_eq!(problem(&zakuro_fs::FsError::EncryptedCia), "Encrypted, UprisingHack needs a decrypted dump");
         assert_eq!(
             problem(&zakuro_fs::FsError::NotAGame("an update")),
-            "An update Zakuro couldn't read, it goes in the folder next to its game"
+            "An update UprisingHack couldn't read, it goes in the folder next to its game"
         );
     }
 

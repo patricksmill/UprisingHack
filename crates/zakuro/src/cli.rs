@@ -62,9 +62,9 @@ options:
   --mute                           play no sound
   --menu-editor                    open the developer layout editor (F2 toggles)
   --data <dir>                     where saves live (default: the system's
-                                   place for data, ~/.local/share/zakuro,
-                                   ~/Library/Application Support/zakuro or
-                                   %APPDATA%\\zakuro)
+                                   place for data, ~/.local/share/UprisingHack,
+                                   ~/Library/Application Support/UprisingHack or
+                                   %APPDATA%\\UprisingHack)
   -h, --help                       show this message
 
 Without a dump of the system font at sysdata/shared_font.bin, in the working

@@ -173,7 +173,7 @@ fn seat(mut stream: TcpStream, address: String, seats: &Mutex<Seats>, stop: &Ato
     let mac = {
         let Ok(mut room) = seats.lock() else { return };
         let refusal = if version != VERSION {
-            Some("the room is for another version of Zakuro".to_owned())
+            Some("the room is for another version of UprisingHack".to_owned())
         } else if !room.password.is_empty() && password != room.password {
             Some("the password is wrong".to_owned())
         } else if room.taken.len() >= room.most {

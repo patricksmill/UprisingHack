@@ -848,7 +848,7 @@ fn path() -> Option<PathBuf> {
     } else {
         var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|home| home.join(".config")))
     };
-    dir.map(|dir| dir.join("zakuro").join("settings.toml"))
+    dir.map(|dir| crate::app_dir::in_place(&dir).join("settings.toml"))
 }
 
 #[cfg(test)]

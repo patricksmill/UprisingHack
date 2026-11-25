@@ -108,11 +108,11 @@ fn device(message: &str) -> Option<String> {
     Some(format!("{renderer} (OpenGL)"))
 }
 
-/// writes the log to zakuro.log in the data folder from now on, starting w/ what was logged b4, the last run's stays as zakuro.previous.log
+/// writes the log to UprisingHack.log in the data folder from now on, starting w/ what was logged b4, the last run's stays as UprisingHack.previous.log
 pub fn to_file(dir: &Path) {
-    let path = dir.join("zakuro.log");
+    let path = dir.join("UprisingHack.log");
     let _ = std::fs::create_dir_all(dir);
-    let _ = std::fs::rename(&path, dir.join("zakuro.previous.log"));
+    let _ = std::fs::rename(&path, dir.join("UprisingHack.previous.log"));
     let Ok(mut file) = File::create(&path) else { return };
     let mut sink = SINK.lock().unwrap_or_else(PoisonError::into_inner);
     for line in &sink.recent {
@@ -138,7 +138,7 @@ pub fn text(name: &str, system: &System) -> String {
     field("OS", &os());
     field("CPU", &cpu());
     field("GPU", &gpu);
-    field("Zakuro version", concat!("v", env!("CARGO_PKG_VERSION")));
+    field("UprisingHack version", concat!("v", env!("CARGO_PKG_VERSION")));
     field("Recompiled", if system.recompiled.is_some() { "yes" } else { "no" });
     field("Status", "");
     field("What happens", "");

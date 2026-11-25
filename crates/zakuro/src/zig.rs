@@ -40,11 +40,11 @@ pub fn download_size() -> Option<u64> {
     archive().map(|archive| archive.size)
 }
 
-/// where Zakuro keeps the tools it downloads, the local app data on Windows (doesn't roam w/ the user) and the data folder elsewhere
+/// where UprisingHack keeps the tools it downloads, the local app data on Windows (doesn't roam w/ the user) and the data folder elsewhere
 pub fn tools_dir(data_dir: Option<&Path>) -> Option<PathBuf> {
     if cfg!(windows) {
         let local = std::env::var_os("LOCALAPPDATA").filter(|dir| !dir.is_empty())?;
-        Some(PathBuf::from(local).join("zakuro").join("tools"))
+        Some(crate::app_dir::in_place(Path::new(&local)).join("tools"))
     } else {
         data_dir.map(|dir| dir.join("tools"))
     }
@@ -115,8 +115,8 @@ pub fn can_download() -> bool {
 /// the mirrors the Zig project lists go first in a random order, and ziglang.org last like it asks of tools,
 /// and what arrives has to match the SHA256 above whichever served it
 pub fn download(tools: &Path, progress: &dyn Fn(f32), cancel: &AtomicBool) -> Result<Compiler, String> {
-    let archive = archive().ok_or("Zakuro has no compiler to download for this system")?;
-    let fetcher = Fetcher::find().ok_or("Zakuro downloads with curl or wget, and this computer has neither")?;
+    let archive = archive().ok_or("UprisingHack has no compiler to download for this system")?;
+    let fetcher = Fetcher::find().ok_or("UprisingHack downloads with curl or wget, and this computer has neither")?;
     std::fs::create_dir_all(tools).map_err(|error| format!("could not create {}, {error}", tools.display()))?;
     let partial = tools.join(format!("{}.part", archive.name));
     let mut sources = mirrors(fetcher);
@@ -215,7 +215,7 @@ fn verify(path: &Path, archive: &Archive) -> Result<(), String> {
     std::io::copy(&mut file, &mut hasher).map_err(|error| error.to_string())?;
     let hash: String = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
     if hash != archive.sha256 {
-        return Err(format!("its SHA-256 is {hash}, not the one Zakuro knows"));
+        return Err(format!("its SHA-256 is {hash}, not the one UprisingHack knows"));
     }
     Ok(())
 }

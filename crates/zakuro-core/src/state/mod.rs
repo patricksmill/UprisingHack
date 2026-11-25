@@ -160,7 +160,7 @@ impl System {
         let length = reader.u32()? as usize;
         let version = String::from_utf8_lossy(reader.take(length)?).into_owned();
         if version != VERSION {
-            return Err(format!("it was saved by Zakuro {version}, and this is {VERSION}"));
+            return Err(format!("it was saved by UprisingHack {version}, and this is {VERSION}"));
         }
         if reader.u64()? != self.kernel.program_id {
             return Err("it was saved from another game".into());
