@@ -1,0 +1,60 @@
+name: Bug report
+description: A crash, a hang, wrong behaviour or a regression.
+labels: [bug, needs-triage]
+body:
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: The commit or version from the release title, e.g. "Nightly (c9f354c)" or "v0.2.9".
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: System
+      options: [Windows, Linux]
+    validations:
+      required: true
+  - type: dropdown
+    id: input
+    attributes:
+      label: Input
+      multiple: true
+      options: [Mouse and keyboard, Controller, Not input-related]
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: Chapter, mode or Screen where it happens.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start chapter 3
+        2. Open the pause menu
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual
+      description: What should happen, and what happens instead. Screenshots or video help.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Terminal output, especially for crashes. Run with RUST_LOG=info for more detail.
+      render: text
+  - type: checkboxes
+    id: patches
+    attributes:
+      label: Patches
+      options:
+        - label: 60 FPS patch installed
+        - label: Darkshade's C-Stick & Gyro Patch installed
+        - label: I recompiled after my last update

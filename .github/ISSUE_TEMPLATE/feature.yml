@@ -1,0 +1,23 @@
+name: Feature request
+description: Something new, such as an option, a control scheme or a tool.
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: What you'd like added.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: What it would let you do that you can't now.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: How it might work, or similar features elsewhere.

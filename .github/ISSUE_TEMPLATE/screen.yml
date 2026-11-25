@@ -1,0 +1,47 @@
+name: Screen change
+description: Change how one Screen looks or responds (move, restyle, rebind a Control...).
+labels: [enhancement, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: One Screen per issue. Names come from GLOSSARY.md; the format is in docs/agents/change-requests.md.
+  - type: input
+    id: screen
+    attributes:
+      label: Screen
+      placeholder: Chapter Select
+    validations:
+      required: true
+  - type: dropdown
+    id: operation
+    attributes:
+      label: Operation
+      options: [add, remove, move, resize, restyle, relabel, rebind, reorder, relayout, hide]
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Target
+      description: The Control, or the Board, Hint strip or Dialog.
+      placeholder: Hint strip
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: Before → after
+      placeholder: bottom edge → top edge
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance
+      description: One check that shows it's done, e.g. a screenshot state or a named scene.
+    validations:
+      required: true
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
