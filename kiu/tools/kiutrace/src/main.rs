@@ -49,6 +49,7 @@
 //!   layer <index> <x> <y> <w> <h> move/resize a Scripted Menu layer through the editor
 //!   visible <index> <0|1>         hide/show a Scripted Menu editor item, without changing its geometry
 //!   override <screen> <part> <x> <y> <w> <h>  a saved menu-layout.toml layer, as the frontend loads it
+//!   order <screen> <part>...      a saved menu-layout.toml layer order, back to front
 //!   ptouch <x> <y>       touch where a top-screen point lands on Pause (untouch releases)
 //!   pausevisible <span|center|left|right|corner|band|options|loot|row1..row4|back|hint_bar|hint|label> <0|1>  hide/show one Pause part
 //!   navlink <from> <up|down|left|right> <to|native> set an explicit editor navigation link
@@ -567,6 +568,14 @@ fn main() {
                 let index = num(1) as usize;
                 assert!(index < mouse.editor_layers().len(), "visible editor layer");
                 mouse.set_editor_layer(index, [float(2), float(3), float(4), float(5)]);
+            }
+            "order" => {
+                let mouse = system.aim_mouse.as_mut().expect("menutop before order");
+                let screen = num(1) as usize;
+                let mut orders = mouse.editor_orders();
+                orders.retain(|(kept, _)| *kept != screen);
+                orders.push((screen, words[2..].iter().map(|word| word.parse().expect("a part index")).collect()));
+                mouse.set_editor_orders(orders);
             }
             "override" => {
                 let mouse = system.aim_mouse.as_mut().expect("menutop before override");

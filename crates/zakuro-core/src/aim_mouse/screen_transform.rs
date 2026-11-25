@@ -247,11 +247,12 @@ const VAULT_TOP: &[TopLayer] = &[
     ("Page title", "MenCollectionTopUp0005", &[]),
 ];
 /// The Vault's Music Gallery (MENUID 38; `trace/musicgallery.state`),
-/// top back to front: the Vault's shared backdrop, then the page's own
-/// two models (title and track box).
+/// top back to front: the Vault's shared backdrop, Palutena's figure, and
+/// the emblem under the title with the track box (one model). The title's
+/// words stay with the Details card.
 const MUSIC_GALLERY_TOP: &[TopLayer] = &[
     ("Backdrop", "MenCollectionTopUp0000", &[]),
-    ("Title", "MenColSdtstMusicUp0001", &[]),
+    ("Figure", "MenColSdtstMusicUp0001", &[]),
     ("Track box", "MenColSdtstMusicUp0002", &[]),
 ];
 
