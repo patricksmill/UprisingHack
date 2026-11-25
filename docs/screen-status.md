@@ -61,7 +61,7 @@ as "look first". Nothing has been checked with a real mouse on Windows yet.
 | Idols | ✅ | ◐ | ✅ | ✅ | Idol View orbits on a stick; the viewer has no Outline of its own. |
 | Power Portrait | ◐ | ☐ | ◐ | ☐ | Top split recorded; no Outline, a click is a touch. |
 | Chapter Results | ✅ | ✅ | ✅ | ✅ | Bottom node layers drawn whole. |
-| Music Gallery | ◐ | ✅ | ✅ | ✅ | Screen 29. Back is part of the Background layer, so it can't move alone. Layout authored at 16:9; at 21:9 a thin black strip remains on the right. |
+| Music Gallery | ◐ | ✅ | ✅ | ✅ | Screen 29. Layout authored at 16:9. |
 | Fiend's Cauldron | ✅ | ✅ | ✅ | ✅ | Own F2 editor; dial drag checked. |
 
 ## Not registered yet

@@ -1190,11 +1190,11 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   and its pick (+0xE4, an index among the shown Rows) to 8, 12 up take both
   back to 0. 0x0031AA88 with a third word 1 (Idols') clamps the pick at 7
   without scrolling and drives it to -1 going up. Models: bottom
-  `MenColSdtstMusicBt0100` the page (clef strip and Back arrow, x -57..454,
+  `MenColSdtstMusicBt0100` the page (clef strip, x -57..454,
   so it is a node layer cut at its box), `Bt0103` one per Row (x 47..293,
   carries the Row words), `Bt0104` Cursor and play mark, `Bt0105` the List's
   top and bottom fades, `MenCmnScbar` x 294..320, `MenColViewerBt9999`
-  (no nodes); top `MenCollectionTopUp0000` (the Vault backdrop),
+  Back (no named nodes); top `MenCollectionTopUp0000` (the Vault backdrop),
   `MenColSdtstMusicUp0001` and `Up0002`.
 - `kiutrace` resolves save data against `KIUTRACE_DATA_DIR` (its `user/`),
   else `./user`: run from `kiu/` with `KIUTRACE_DATA_DIR=.`, or leaving a
