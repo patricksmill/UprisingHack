@@ -31,7 +31,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 149] = [
+pub const PLACES: [u32; 150] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2, APPLY_CONTROLS, INPUT_FRAME, MOVE_CHOICE_PICK,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -118,6 +118,7 @@ pub const PLACES: [u32; 149] = [
     screen_transform::SCRIPTED_UPDATES[27],
     screen_transform::SCRIPTED_UPDATES[28],
     screen_transform::SCRIPTED_UPDATES[29],
+    screen_transform::SCRIPTED_UPDATES[30],
     0x003506C4,
     0x00321720, 0x0032178C, 0x003217F8, 0x00321864,
     0x0026E0A0, 0x0026E114, 0x0026E18C, 0x0026E204,
@@ -589,11 +590,21 @@ const LIST_SCROLL: u32 = 0x0031AA88;
 /// the Music Gallery's vtable and its keys' Cursor step, (object, ±1).
 const MUSIC_GALLERY: u32 = 0x00CF_B010;
 const MUSIC_GALLERY_STEP: u32 = 0x002576C4;
+/// the Offering's vtable and its key handler, (object, buttons, direction):
+/// 0 rolls the outlined reel down a digit, 1 up, 2 and 3 move the outline.
+const OFFERING: u32 = 0x00CF_8AC0;
+const OFFERING_KEYS: u32 = 0x00245624;
 
 fn scroll_armory(system: &mut System, object: u32, steps: [i32; 2], scratch: u32) -> Vec<MenuCall> {
     let vtable = read_word(system, object);
     // the Music Gallery's keys move its Cursor a Row through its own step,
     // which scrolls the Track List to keep it shown (FINDINGS.md)
+    // the Offering's keys roll the outlined reel a digit (0 down, 1 up)
+    // through its key handler, given a buttons word with bit 0 set
+    if vtable == OFFERING {
+        system.memory.write_bytes(scratch + 0x30, &1u32.to_le_bytes());
+        return (0..steps[1].unsigned_abs()).map(|_| (OFFERING_KEYS, [object, scratch + 0x30, u32::from(steps[1] < 0)])).collect();
+    }
     if vtable == MUSIC_GALLERY {
         return (0..steps[1].unsigned_abs()).map(|_| (MUSIC_GALLERY_STEP, [object, if steps[1] > 0 { 1 } else { u32::MAX }, 0])).collect();
     }

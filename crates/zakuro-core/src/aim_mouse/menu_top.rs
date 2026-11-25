@@ -561,6 +561,10 @@ fn touch_point(point: (f32, f32)) -> (f32, f32) {
     (pixel(point.0, 319.0), pixel(point.1, 239.0))
 }
 
+/// the two hashes the game's Back buttons report.
+const BACK: u32 = 0x9A07E025;
+const OPTIONS_BACK: u32 = 0x928BEAA4;
+
 fn button_hash(model: &str) -> Option<u32> {
     Some(match model {
         "MenSelfileBt0000" => FILE_PARTS[0], "MenSelfileBt0001" => FILE_PARTS[1],
@@ -1084,6 +1088,7 @@ const BOARD_TEXT: &[&str] = &[
     "MenEquipBt0204", "MenEquipBt0211", "MenEquipBt0212",
     "MenColViewlistBt0000", "MenColViewlistBt0003",
     "MenColSdtstMusicBt0103",
+    "MenColGifBt0002", "MenColGifBt0004",
     "MenAlterbuyBt0120", "MenAlterbuyBt0123", "MenAlterbuyBt0130",
     "MenAltersoldBt0120", "MenAltersoldBt0123", "MenAltersoldBt0130",
     "MenStockroomBt0001",
@@ -2176,6 +2181,9 @@ pub(super) fn accept_hit(system: &mut System, found: Option<u32>) -> bool {
     let Some(expected) = mouse.menu_top.parts[index].model.and_then(button_hash) else { return true };
     log::debug!("menu hit {:?} at {point:?}: expected {expected:08X}, found {found:08X?}", mouse.menu_top.parts[index].model);
     if found == Some(expected) { return true; }
+    // Back has two hashes: the Offering's CmnBack0000 reports the Options
+    // pages' 928BEAA4 rather than 9A07E025
+    if expected == BACK && found == Some(OPTIONS_BACK) { return true; }
     // the box's window part is named per use (B1EBC922 over Other, AAB3C02B
     // over Convert to Hearts); it is all the box hit-tests, and its No and
     // Yes are told apart by element (`outline_dialog`)
@@ -2246,6 +2254,7 @@ fn scene(system: &mut System, top: u32) -> Option<(usize, u32, u32, bool)> {
                 else if name.starts_with("MenEquipBt0102") { Some(20) }
                 else if name.starts_with("MenOptionTopBt") { Some(3) }
                 else if name.starts_with("MenColSdtstMusicBt") { Some(29) }
+                else if name.starts_with("MenColGifBt") { Some(30) }
                 else { None };
             if let Some(index) = hub {
                 matched = Some(index);
@@ -2999,11 +3008,11 @@ const MENUID_HOME: u8 = 3;
 /// each scripted Screen and the MENUIDs it is shown under, measured on the
 /// trace states. Dialogs show under their parent's MENUID, and both Idol
 /// Tosses under 44, so those take the Screen the input last confirmed.
-const SCREEN_MENUS: [(usize, &[u8]); 30] = [
+const SCREEN_MENUS: [(usize, &[u8]); 31] = [
     (0, &[2]), (1, &[1]), (2, &[4]), (3, &[17]), (4, &[22]), (5, &[19]), (6, &[25]),
     (7, &[23]), (8, &[21]), (9, &[39]), (10, &[45]), (11, &[]), (12, &[3]), (13, &[11]),
     (14, &[14]), (15, &[12]), (16, &[37]), (17, &[26]), (18, &[18]), (19, &[43]),
-    (20, &[42]), (21, &[10]), (22, &[44]), (23, &[13]), (24, &[16]), (25, &[44]), (26, &[46]), (27, &[47]), (28, &[34]), (29, &[38]),
+    (20, &[42]), (21, &[10]), (22, &[44]), (23, &[13]), (24, &[16]), (25, &[44]), (26, &[46]), (27, &[47]), (28, &[34]), (29, &[38]), (30, &[48]),
 ];
 
 /// the MENUIDs a scripted Screen is shown under, empty for any.
