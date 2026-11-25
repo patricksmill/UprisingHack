@@ -3,6 +3,9 @@
 # info; a v* tag builds without debug info, then packs, smoke-launches and
 # publishes a GitHub release. Tags with a hyphen (v0.1.0-pre) are published
 # as prereleases.
+# A daily schedule (or a manual run on main) builds the same way and replaces
+# the files of the rolling `nightly` prerelease; the schedule skips days on
+# which main has not moved since the last nightly.
 #
 # This replaces upstream's ci.yml and release.yml: keep them deleted when
 # merging upstream/main.
@@ -15,6 +18,8 @@ on:
     paths-ignore: &docs ["**.md", "docs/**", "LICENSE*"]
   pull_request:
     paths-ignore: *docs
+  schedule:
+    - cron: "0 6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -23,11 +28,30 @@ permissions:
 # A newer push to the same branch or PR cancels the build still running;
 # tag builds publish releases, so they always finish.
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  # schedule only: skip the build when the nightly tag already points at main
+  changed:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          skip=false
+          if [ "${{ github.event_name }}" = schedule ]; then
+            nightly=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
+            [ "$nightly" = "$GITHUB_SHA" ] && skip=true
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: changed
+    if: needs.changed.outputs.skip != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -52,8 +76,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # branch and pull request builds keep debug = 1; releases ship without it
-      - name: Drop debug info from tagged builds
-        if: github.ref_type == 'tag'
+      - name: Drop debug info from published builds
+        if: github.ref_type == 'tag' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           echo "CARGO_PROFILE_RELEASE_DEBUG=false" >> "$GITHUB_ENV"
@@ -116,3 +140,40 @@ jobs:
           prerelease=
           case "$TAG" in *-*) prerelease=--prerelease ;; esac
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag $prerelease --title "$TAG" --notes-file notes.md --generate-notes
+
+  nightly:
+    needs: build
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency: nightly
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          short=${GITHUB_SHA::7}
+          cat > notes.md <<NOTES
+          **Nightly build of [\`$short\`](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA), $(date -u +%Y-%m-%d).** Built automatically from main and replaced whenever main changes: it may be broken. If it is, use the latest v0.x release instead, and name the commit above in bug reports.
+
+          On Windows, unzip the windows-x86_64 archive and run zakuro.exe. On Linux, extract the linux-x86_64 archive and run ./zakuro; it needs the ALSA library (libasound2 on Debian and Ubuntu). Linux builds are untested.
+
+          You need your own decrypted dump of Kid Icarus: Uprising (USA, 0004000000030100). Press Recompile next to the game in the library before playing, and again after each update: it takes about ten minutes and needs a C compiler, which Zakuro offers to download if you have none.
+          NOTES
+          if gh release view nightly >/dev/null 2>&1; then
+            old=$(gh release view nightly --json assets --jq '.assets[].name')
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true
+            gh release upload nightly dist/* --clobber
+            for a in $old; do
+              case " $(cd dist && echo *) " in *" $a "*) ;; *) gh release delete-asset nightly "$a" --yes ;; esac
+            done
+            gh release edit nightly --prerelease --title "Nightly ($short)" --notes-file notes.md
+          else
+            gh release create nightly dist/* --target "$GITHUB_SHA" --prerelease --title "Nightly ($short)" --notes-file notes.md
+          fi
