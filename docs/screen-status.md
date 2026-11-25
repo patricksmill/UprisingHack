@@ -62,13 +62,13 @@ as "look first". Nothing has been checked with a real mouse on Windows yet.
 | Power Portrait | ◐ | ☐ | ◐ | ☐ | Top split recorded; no Outline, a click is a touch. |
 | Chapter Results | ✅ | ✅ | ✅ | ✅ | Bottom node layers drawn whole. |
 | Music Gallery | ◐ | ✅ | ✅ | ✅ | Screen 29. Layout authored at 16:9. |
+| Offering | ◐ | ✅ | ✅ | ✅ | Screen 30. The wheel rolls the outlined reel; a click on a reel outlines it. |
 | Fiend's Cauldron | ✅ | ✅ | ✅ | ✅ | Own F2 editor; dial drag checked. |
 
 ## Not registered yet
 
 | Screen | Layerized | Controller | Mouse | Rearranged | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Offering | ☐ | ? | ☐ | ☐ | Only the dial depth fix. |
 | Records | ☐ | ? | ☐ | ☐ | |
 | AR (Vault, Main Menu) | ☐ | ☐ | ☐ | ☐ | Needs AR cards; probably `wontfix`. |
 

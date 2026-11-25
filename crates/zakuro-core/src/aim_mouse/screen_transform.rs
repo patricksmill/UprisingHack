@@ -46,6 +46,7 @@ pub enum Screen {
     PowerPortrait,
     ChapterResults,
     MusicGallery,
+    Offering,
     FiendsCauldron,
     Pause,
     RetreatDialog,
@@ -272,6 +273,32 @@ const MUSIC_GALLERY: &[(&str, [f32; 4])] = &[
     ("MenColSdtstMusicBt0105", [46.0, 0.0, 248.0, 240.0]),
     ("MenCmnScbar", [294.0, 0.0, 26.0, 240.0]),
     ("MenColViewerBt9999", [0.0, 196.0, 46.0, 44.0]),
+];
+
+/// The Vault's Offering (MENUID 48; `trace/offering.state`), top back to
+/// front: the sky (`MenColGifUp0000`), Palutena (`BosPalu00`) and the
+/// offered hearts' bar.
+const OFFERING_TOP: &[TopLayer] = &[
+    ("Sky", "MenColGifUp0000", &[]),
+    ("Palutena", "BosPalu00", &[]),
+    ("Heart bar", "MenColGifUp0002", &[]),
+];
+
+/// The Offering's backdrop, `MenCmnBg0000`, reaches far past the bottom
+/// screen, so it is a node layer, cut at its box.
+const OFFERING_BOTTOM: &[TopLayer] = &[
+    ("Background", "MenCmnBg0000", &[]),
+];
+
+/// The Offering's bottom Board with native boxes, back to front: the
+/// backdrop, the scale with its dial and reels (`MenColGifBt0002`, which
+/// keeps its depth test), the reels' digits, OFFER, then Back.
+const OFFERING: &[(&str, [f32; 4])] = &[
+    ("Background", [0.0, 0.0, 320.0, 240.0]),
+    ("MenColGifBt0002", [0.0, 0.0, 320.0, 240.0]),
+    ("MenColGifBt0003", [0.0, 0.0, 320.0, 240.0]),
+    ("MenColGifBt0004", [0.0, 0.0, 320.0, 240.0]),
+    ("CmnBack0000", [0.0, 190.0, 60.0, 50.0]),
 ];
 
 /// Chapter Results (MENUID 34, `MenOnlineRsltte*`): the results after a
@@ -827,11 +854,11 @@ impl ScreenSpec {
 
 /// the update function of each Scripted Menu, in registry order. Kept
 /// separately so `PLACES` can read it in a const context.
-pub(super) const SCRIPTED_UPDATES: [u32; 30] = [
+pub(super) const SCRIPTED_UPDATES: [u32; 31] = [
     0x002A3EC4, 0x002A3FCC, 0x002A3F9C, 0x00224BA0, 0x001ECB4C, 0x00224C18, 0x001B4C74, 0x001ECBBC, 0x00224BD4,
     0x001ECBF4, 0x0016756C, 0x002A4070, 0x002ECCF4, 0x002A1FD8, 0x002B6DB8, 0x00238CBC, 0x001C9734, 0x00230B5C,
     0x002BB14C, 0x0019CDC8, 0x0019BDC4, 0x0023A9FC, 0x001B4D58, 0x0018AF44, 0x00224B80, 0x001B4D4C, 0x001B4D70,
-    0x0018AEB8, 0x00260868, 0x001B4D28,
+    0x0018AEB8, 0x00260868, 0x001B4D28, 0x001B4DC4,
 ];
 
 pub(super) const SCRIPTED_COUNT: usize = SCRIPTED_UPDATES.len();
@@ -895,6 +922,7 @@ pub(super) static SCREENS: &[ScreenSpec] = &[
     scripted!(27, PowerPortrait, 0x00CF9388, outline_none, Activate::Touch, LayoutKind::Board { group: POWER_PORTRAIT, hint: None, top_layers: POWER_PORTRAIT_TOP, bottom_layers: POWER_PORTRAIT_BOTTOM, texture_layers: &[] }),
     scripted!(28, ChapterResults, 0x00CF7414, outline_none, Activate::Touch, LayoutKind::Board { group: RESULTS, hint: None, top_layers: RESULTS_TOP, bottom_layers: RESULTS_BOTTOM, texture_layers: &[] }),
     scripted!(29, MusicGallery, 0x00CFB010, outline_none, Activate::Touch, LayoutKind::Board { group: MUSIC_GALLERY, hint: None, top_layers: MUSIC_GALLERY_TOP, bottom_layers: MUSIC_GALLERY_BOTTOM, texture_layers: &[] }),
+    scripted!(30, Offering, 0x00CF8AC0, outline_none, Activate::Touch, LayoutKind::Board { group: OFFERING, hint: None, top_layers: OFFERING_TOP, bottom_layers: OFFERING_BOTTOM, texture_layers: &[] }),
     ScreenSpec {
         id: Screen::FiendsCauldron,
         family: Family::Cauldron,
@@ -2189,7 +2217,7 @@ mod tests {
 
     #[test]
     fn scripted_rows_keep_their_order() {
-        assert_eq!(SCRIPTED_COUNT, 30);
+        assert_eq!(SCRIPTED_COUNT, 31);
         for (index, update) in SCRIPTED_UPDATES.iter().enumerate() {
             assert_eq!(SCREENS[index].update(), Some(*update));
         }

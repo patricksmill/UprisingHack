@@ -1196,6 +1196,21 @@ its head sentinel; +0x10 is node color, not a leaf marker.
   top and bottom fades, `MenCmnScbar` x 294..320, `MenColViewerBt9999`
   Back (no named nodes); top `MenCollectionTopUp0000` (the Vault backdrop),
   `MenColSdtstMusicUp0001` and `Up0002`.
+- Offering as Scripted Screen 30 (MENUID 48, `trace/offering.state`:
+  from the Vault tap Offering, A, then A past its message). Object
+  0x14040770 (vtable 0x00CF8AC0), entered at 0x001B4DC4 and 0x001B4DB8
+  from the dispatcher. +0x394 the amount to offer (from the reels' angles,
+  0x002949D8), +0x398 the outlined reel (0 the rightmost), +0x3E8 the hearts
+  held, whose digit count bounds the outline. Seven reels of 0x34 from
+  +0x1F8: target angle (400 when still), +0x1FC angle, +0x208 spin. The keys
+  go through 0x00245624(object, buttons, direction) with buttons' bit 0 or
+  2 set: direction 0 adds 36 to the outlined reel's target (one digit down),
+  1 one digit up, 2 and 3 move the outline. Models: bottom `MenCmnBg0000`
+  (reaches far past the screen), `MenColGifBt0002` the scale, reels and
+  dial (`Plt_` the pan, `heart` the bag), `Bt0003` the digits, `Bt0004`,
+  `CmnBack0000`; top `MenColGifUp0000` the sky, `BosPalu00` Palutena,
+  `MenColGifUp0002` the heart bar. The Offering's Back reports hash
+  0x928BEAA4 (the Options pages' Back), not CmnBack0000's 0x9A07E025.
 - `kiutrace` resolves save data against `KIUTRACE_DATA_DIR` (its `user/`),
   else `./user`: run from `kiu/` with `KIUTRACE_DATA_DIR=.`, or leaving a
   Vault page faults (FS error 0xC8804471 at 0x0010D128).
