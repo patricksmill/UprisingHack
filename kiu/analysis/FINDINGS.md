@@ -194,6 +194,40 @@ used a probe built against the 0.2.30 tree.
   needed); strafing and firing for 1.5 s matches the unpatched game frame
   for frame.
 
+### Script fades and the 60 FPS patch (26 November)
+
+Chapter 7's Seafloor Palace elevator (user's slot 1: walk forward onto it)
+went black for good at the top under the patch, the HUD still drawn. Not
+the renderer: the game draws its full-screen fade (blend 0x10610000, TEV
+constant 0) over a scene that carries on behind it.
+
+- Gimmicks run scripts of anime commands through a runner
+  (`0x0048CB3C`: +0x28 time, +0x2C frames a step, +0x30 command list,
+  +0x34 current command; +0xC its works map, a tree `0x004C5E44` searches
+  by type key). Commands link at +8 to the next command's node, whose first
+  word is the command. `WaitFrame` (vtable 0x00D0C9D0, frames +0x10) keeps
+  what is left in its work (key 0x00D66E20, +0x24, NaN once done). The
+  screen fade (vtable 0x00D0C8E0, run `0x00AEAD80`): +0x10 kind (0 white, 1
+  black, 2-4 colour fades elsewhere), +0x11 slot, +0x12 screen, +0x14
+  frames, +0x18 fade in. It goes through `0x00538B34` → `0x00461060` →
+  `0x004641E0`: singleton at [0x00D63620], fader [+0xB8 + 4·screen], slot
+  fader + 0x48·slot + 4: +0x1C colour, +0x4C change a frame (1/frames, less
+  than 0 to fade in), +0x3C target (1.0, or [0x00464210] 0.0 to fade in).
+  The fader (vtable 0x00D20244) steps +0x30 to the target at `0x0098D304`.
+- The elevator floor `GIMID_YAK_G07_YUKA_TOKU_00` (vtable 0x00CA046C)
+  runs: wait 80, fade out black 30, wait 30, an effect (vtable 0x00D0B864,
+  run `0x00AE0090`), wait 4, fade in 30. At the top the stage's area change
+  (`0x006E3D38`) deletes the floor; the task list (`0x0098DB74`) destroys it
+  the next update (`0x0099EA58` → `0x009259FC` → `0x00475D48` →
+  `0x0048C578`), its scripts too. Unpatched, the fade-in lands in the same
+  two-frame update as the arrival; patched, the floor goes with 2 frames of
+  its last wait left (script time 113 of 114).
+- The port's hook at `0x0048C578` (`crates/zakuro-core/src/aim_mouse/script_fades.rs`)
+  applies a fade-in that one unpatched update (2 frames) would still have
+  reached, only while the step literal at 0x00828E30 is below 2.0. Slot 1
+  then fades back in at the top as the unpatched game does. A state saved
+  after the floor was deleted has no script left to finish.
+
 ## Training HUD
 
 Air and land Practice Range both flush the defeat and distance counters at

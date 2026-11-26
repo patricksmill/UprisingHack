@@ -11,6 +11,7 @@ mod idol_view;
 mod command_lists;
 mod menu_top;
 mod screen_transform;
+mod script_fades;
 use menu_top::MenuTop;
 pub use menu_top::{current_menu, layer_rects, node_rects, layer_textures, IdolPointer, LayerTexture};
 pub use screen_transform::{CauldronRole, CauldronRules, DialogRules, LoadingRole, LoadingRules, PauseRules, QuadRole, PAUSE_PARTS, Placement, PlacementRule, RuleScale, Screen, ScreenRate};
@@ -31,7 +32,7 @@ pub const RIGHT_EYE: zakuro_gpu::UnseenTarget = zakuro_gpu::UnseenTarget { addre
 /// places are in the top pass TOP_UI_AFTER_HUD is in, and the dialogs'
 /// in one function, their bottom sites in another, and the paused input's
 /// in one.
-pub const PLACES: [u32; 151] = [
+pub const PLACES: [u32; 152] = [
     SOLO_CAMERA, SOLO_CAMERA_RET1, SOLO_CAMERA_RET2, APPLY_CONTROLS, INPUT_FRAME, MOVE_CHOICE_PICK,
     0x0025EF84,
     0x00A390F0, 0x00A3872C, 0x00A38514,
@@ -82,6 +83,7 @@ pub const PLACES: [u32; 151] = [
     menu_top::FONT_DRAW,
     menu_top::FONT_DRAWN,
     command_lists::CLEAR_COMMAND_LIST,
+    script_fades::CLEAR_WORKS,
     CAMERA_CALL,
     RIGHT_EYE_LAYER,
     menu_top::START,
@@ -2374,6 +2376,7 @@ pub(crate) fn apply(system: &mut System, pc: u32) {
         menu_top::BOTTOM_TEXT => menu_top::bottom_text(system),
         menu_top::BOTTOM_TRANSLUCENT => menu_top::bottom_translucent(system),
         command_lists::CLEAR_COMMAND_LIST => command_lists::make_room(system),
+        script_fades::CLEAR_WORKS => script_fades::finish_fade(system),
         menu_top::FONT_DRAW => menu_top::font_draw(system),
         menu_top::FONT_DRAWN => menu_top::font_done(system),
         TOP_SCENE_DRAWN => top_screen_cauldron(system),
