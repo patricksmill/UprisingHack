@@ -2521,10 +2521,13 @@ fn widen_view(system: &mut System) {
     let wanted = given * aim_mouse.widen;
     // the field of view applies to the top screen's lenses in a battle
     // alone (paused too, so the view stays put behind the pause menu): the
-    // bottom screen's (4:3) and the menus' keep the game's
+    // bottom screen's (4:3) and the menus' keep the game's. A flight's
+    // opening camera is a hair narrower than 5:3 (1.6656), hence the
+    // tolerance: missing it left the opening at the game's view until the
+    // HUD's camera took over.
     let battle = aim_mouse.battle_drawn.is_some_and(|drawn| system.frames <= drawn + 3);
     let scale = if battle { aim_mouse.field_of_view } else { 1.0 };
-    let wanted_fovy = match (given - TOP_ASPECT).abs() < 0.001 && scale != 1.0 && scale.is_finite() && scale > 0.0 {
+    let wanted_fovy = match (given - TOP_ASPECT).abs() < 0.01 && scale != 1.0 && scale.is_finite() && scale > 0.0 {
         true => 2.0 * ((given_fovy * 0.5).tan() * scale).atan(),
         false => given_fovy,
     };
@@ -5313,6 +5316,12 @@ mod tests {
         system.memory.write_bytes(lens + LENS_FOVY, &0.5f32.to_le_bytes());
         widen_view(&mut system);
         assert_eq!(fovy(&mut system), 2.0 * ((0.5f32 * 0.5).tan() * 1.2).atan());
+        // a flight's opening lens, a hair narrower than 5:3, is scaled too
+        system.memory.write_bytes(lens + LENS_ASPECT, &1.66561f32.to_le_bytes());
+        system.memory.write_bytes(lens + LENS_FOVY, &0.785f32.to_le_bytes());
+        system.aim_mouse = Some(AimMouse { field_of_view: 1.2, battle_drawn: Some(system.frames), ..AimMouse::default() });
+        widen_view(&mut system);
+        assert_eq!(fovy(&mut system), 2.0 * ((0.785f32 * 0.5).tan() * 1.2).atan());
         // the bottom screen's lens keeps the game's
         system.memory.write_bytes(lens + LENS_ASPECT, &(4.0f32 / 3.0).to_le_bytes());
         system.memory.write_bytes(lens + LENS_FOVY, &0.785f32.to_le_bytes());
