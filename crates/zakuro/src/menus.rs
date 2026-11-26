@@ -155,6 +155,8 @@ fn linked_group(group: &[usize], folders: &[EditorFolder]) -> Vec<usize> {
 struct LayerListResponse {
     /// the Visible checkboxes, for the interaction tests.
     boxes: Vec<egui::Response>,
+    /// the New folder button, for the interaction tests.
+    new_folder: Option<egui::Response>,
     /// a layer was shown or hidden: one edit to undo.
     edited: bool,
     undo: bool,
@@ -211,6 +213,9 @@ pub struct Menus {
     pub editor_order: Vec<usize>,
     /// every Screen's layer folders, saved with the layout.
     pub editor_folders: Vec<EditorFolder>,
+    /// how many layers the edited Screen has this frame; folder parts past
+    /// it are out of sight, not gone.
+    editor_layer_count: usize,
     /// every Screen's layer names, saved with the layout.
     pub editor_names: Vec<EditorName>,
     /// the layer whose name is being written, and the words so far.
@@ -786,6 +791,7 @@ impl Menus {
             self.editor_naming = None;
         }
         // this Screen's folders, kept to layers it has
+        self.editor_layer_count = layers.len();
         let mut folders: Vec<EditorFolder> = self.editor_screen.map_or(Vec::new(), |screen| {
             self.editor_folders.iter().filter(|folder| folder.screen == screen).cloned().collect()
         });
@@ -1010,6 +1016,7 @@ impl Menus {
             #[cfg(test)]
             {
                 navigation.visibility = std::mem::take(&mut list.boxes);
+                navigation.new_folder = list.new_folder.take();
                 navigation.open_texture = open_texture;
             }
             if export {
@@ -1033,8 +1040,11 @@ impl Menus {
         egui::Window::new("Menu editor — Pause").id(egui::Id::new("menu_editor_pause")).open(&mut window_open).default_width(420.0).show(ctx, |ui| {
             ui.label(RichText::new("Drag a part on the canvas to move it; its corner handle resizes it. Parts the page now shown leaves out wait off the canvas. Edits apply live.").weak());
             egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
-                // Pause is not a Scripted Menu, so it keeps no folders
-                list = self.editor_layer_list(ui, &layers, &visibility, &mut Vec::new(), actions);
+                // a Scripted Menu's layers keep their folders here too;
+                // Pause is not one, so its own parts keep none
+                let mut none = Vec::new();
+                let kept = if self.editor_screen.is_some() { &mut folders } else { &mut none };
+                list = self.editor_layer_list(ui, &layers, &visibility, kept, actions);
                 navigation = navigation_editor(ui, &layers, &navigation_controls, navigation_directions, self.editor_layer, actions);
                 if !layers.is_empty() && ui.button("Export layers").clicked() {
                     message = Some(match export_layers(&layers, &visibility) {
@@ -1074,6 +1084,7 @@ impl Menus {
         #[cfg(test)]
         {
             navigation.visibility = std::mem::take(&mut list.boxes);
+            navigation.new_folder = list.new_folder.take();
             navigation.open_texture = open_texture;
         }
         self.editor_history(before, folders, edited || list.edited, undo || list.undo, redo || list.redo, actions);
@@ -1156,8 +1167,27 @@ impl Menus {
     }
 
     /// this Screen's folders in place of the ones kept for it.
-    fn keep_folders(&mut self, folders: Vec<EditorFolder>) {
+    fn keep_folders(&mut self, mut folders: Vec<EditorFolder>) {
         let Some(screen) = self.editor_screen else { return };
+        // a frame with fewer layers, as while the Screen loads, saw only
+        // part of a folder: the parts past them come back with the layers
+        let count = self.editor_layer_count;
+        let kept: Vec<EditorFolder> = self.editor_folders.iter().filter(|folder| folder.screen == screen).cloned().collect();
+        for (at, old) in kept.iter().enumerate() {
+            let away: Vec<usize> = old.parts.iter().copied().filter(|&part| part >= count).collect();
+            if away.is_empty() { continue; }
+            let same = folders.iter().position(|folder| folder.name == old.name)
+                .or_else(|| folders.iter().position(|folder| folder.parts.iter().any(|part| old.parts.contains(part))));
+            match same {
+                Some(same) => {
+                    for part in away {
+                        if !folders.iter().any(|folder| folder.parts.contains(&part)) { folders[same].parts.push(part); }
+                    }
+                }
+                None if away.len() == old.parts.len() => folders.insert(at.min(folders.len()), old.clone()),
+                None => {}
+            }
+        }
         self.editor_folders.retain(|folder| folder.screen != screen);
         self.editor_folders.extend(folders);
         if self.editor_renaming.is_some_and(|folder| folder >= self.editor_folders.iter().filter(|folder| folder.screen == screen).count()) {
@@ -2672,6 +2702,48 @@ mod tests {
         assert!(!actions.iter().any(|action| matches!(action, Action::EditorLayer(1, _))), "{actions:?}");
     }
 
+    /// New folder puts the selected layer in a folder of its own.
+    #[test]
+    fn new_folder_holds_the_selected_layer() {
+        let mut editor = Editor::new(vec![layer("a #0", [10.0, 10.0, 80.0, 40.0]), layer("b #1", [200.0, 10.0, 20.0, 20.0])], [500.0, 0.0, 400.0, 240.0]);
+        editor.menus.editor_screen = Some(26);
+        // the game lists its stacking, as it does for every Scripted Menu
+        editor.menus.editor_order = vec![1, 0];
+        // and Pause's rules, so the Scripted Menu's layers list in its window
+        editor.rules = Some(EditorRules::Pause(PauseRules::default()));
+        editor.click(editor.point(30.0, 20.0));
+        editor.frame(Vec::new());
+        let button = editor.drawn.new_folder.clone().expect("the New folder button");
+        assert!(button.enabled(), "a selected layer enables New folder");
+        editor.click(button.rect.center());
+        for _ in 0..10 { editor.frame(vec![egui::Event::PointerMoved(editor.point(300.0, 200.0))]); }
+        assert_eq!(editor.menus.editor_folders.iter().map(|folder| folder.parts.clone()).collect::<Vec<_>>(), vec![vec![0]]);
+    }
+
+    /// a frame that finds the Screen's layers missing, as while it loads,
+    /// keeps its folders for when they are back.
+    #[test]
+    fn folders_outlast_a_frame_without_their_layers() {
+        let layers = vec![layer("a #0", [10.0, 10.0, 80.0, 40.0]), layer("b #1", [200.0, 10.0, 20.0, 20.0]), layer("c #2", [300.0, 10.0, 20.0, 20.0])];
+        let mut editor = Editor::new(layers.clone(), [500.0, 0.0, 400.0, 240.0]);
+        editor.menus.editor_screen = Some(26);
+        editor.menus.editor_folders = vec![
+            EditorFolder { screen: 26, name: "Both".to_owned(), parts: vec![0, 1], linked: false, collapsed: false },
+            EditorFolder { screen: 26, name: "Third".to_owned(), parts: vec![2], linked: false, collapsed: false },
+        ];
+        let saved = editor.menus.editor_folders.clone();
+        editor.layers = Vec::new();
+        editor.visibility = Vec::new();
+        editor.frame(Vec::new());
+        editor.layers = layers[..1].to_vec();
+        editor.visibility = vec![true];
+        editor.frame(Vec::new());
+        editor.layers = layers;
+        editor.visibility = vec![true; 3];
+        editor.frame(Vec::new());
+        assert_eq!(editor.menus.editor_folders, saved);
+    }
+
     /// Ctrl+Z puts a dragged layer and a hidden one back; Ctrl+Shift+Z
     /// does them again.
     #[test]
@@ -3124,6 +3196,7 @@ fn layer_list(
         if let Some(screen) = screen {
             let new = ui.add_enabled(!group.is_empty(), egui::Button::new("New folder").small())
                 .on_hover_text("Put the selected layers in a new folder.");
+            response.new_folder = Some(new.clone());
             if new.clicked() {
                 let mut parts = group.clone();
                 parts.sort_unstable();
@@ -3463,6 +3536,9 @@ struct NavigationEditorResponse {
     /// the Open texture button.
     #[cfg(test)]
     open_texture: Option<egui::Response>,
+    /// the New folder button.
+    #[cfg(test)]
+    new_folder: Option<egui::Response>,
 }
 
 /// the selected Control's explicit Up, Down, Left and Right links, each
