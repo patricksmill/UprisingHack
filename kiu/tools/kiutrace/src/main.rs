@@ -27,6 +27,7 @@
 //!   peek <addr> <count>           print count words at addr as hex and float
 //!   parts <object>                print the active menu object's retained native descriptor kinds and words
 //!   expectword <addr> <value>      assert a native game-state word, such as the keyboard Cursor's Control hash
+//!   fov <scale>                   the battle field of view, 1 as the game has it
 //!   poke <addr> <value>           write a word, a float when it has a point
 //!   code <addr> <word>            write a word of code, past the page's permissions
 //!   checkcode                    recheck the library after loading a state or patching code
@@ -347,6 +348,7 @@ fn main() {
                 }
                 println!("  [{frame}] power key: {}", if in_battle { "uses the current power" } else { "ZL, not in a battle" });
             }
+            "fov" => system.aim_mouse.get_or_insert_with(Default::default).field_of_view = float(1),
             "camdist" => system.aim_mouse.get_or_insert_with(Default::default).land_camera_distance = float(1),
             "overclock" => system.cpu.overclock = num(1).max(1),
             "mirror" => system.aim_mouse.get_or_insert_with(Default::default).mirror_bottom = words.len() == 1 || num(1) != 0,
